@@ -8,7 +8,7 @@
         "children": [
             {
                 "caption": "TermMate: Start Chat",
-                "command": "term_chat_cli"
+                "command": "term_chat_add_context"
             },
             {
                 "caption": "TermMate: Prompt",
