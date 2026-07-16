@@ -1997,7 +1997,6 @@ class ChatViewListener(sublime_plugin.EventListener):
             view.sel().clear()
             view.sel().add_all(new_sel)
 
-
     def _redirect_cursor(self, view):
         """Helper to move cursor to the end of the view."""
         end_pos = view.size()
@@ -2349,9 +2348,13 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
             self.window.run_command("term_chat_cli", {"initial_msg": tags})
         else:
             self.window.focus_view(chat_view)
-            chat_view.run_command("insert", {"characters": tags + " "})
+            # The selection may still be a copy-selection in the history area
+            # (allowed by on_selection_modified); a programmatic insert there
+            # bypasses on_text_command and would corrupt CHAT_INPUT_START.
+            # Snap to the end of the input line first.
             chat_view.sel().clear()
             chat_view.sel().add(sublime.Region(chat_view.size()))
+            chat_view.run_command("insert", {"characters": tags + " "})
             chat_view.show(chat_view.size())
 
 
@@ -2380,6 +2383,10 @@ class TermChatPromptCommand(sublime_plugin.WindowCommand):
 
         if chat_view:
             self.window.focus_view(chat_view)
+            # Snap the selection out of the history area before inserting
+            # (a copy-selection there would corrupt CHAT_INPUT_START).
+            chat_view.sel().clear()
+            chat_view.sel().add(sublime.Region(chat_view.size()))
             chat_view.run_command("insert", {"characters": prompt})
             chat_view.run_command("term_chat_send_input")
         else:
