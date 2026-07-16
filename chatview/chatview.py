@@ -2076,8 +2076,11 @@ class ChatViewListener(sublime_plugin.EventListener):
                 break
 
     def on_activated(self, view):
-        agent_provider = view.window().settings().get(CHAT_AGENT, "claude") or ""
-        model = view.window().settings().get(f"chatview_model_{agent_provider}") or ""
+        window = view.window()
+        if not window:
+            return
+        agent_provider = window.settings().get(CHAT_AGENT, "claude") or ""
+        model = window.settings().get(f"chatview_model_{agent_provider}") or ""
         if model:
             view.set_status(CHAT_VIEW_NAME, f"{agent_provider}/{model}")
 
