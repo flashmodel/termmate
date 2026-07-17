@@ -36,6 +36,7 @@ LOG = logging.getLogger("TermMate")
 
 CHAT_VIEW_FLAG = "chatview_chat"
 CHAT_INPUT_START = "chatview_input_start"
+CHAT_INPUT_ANCHOR = "chatview_input_anchor"
 CHAT_WORKSPACE = "chatview_active_workspace"
 CHAT_MODEL = "chatview_model"
 CHAT_PLAN_MODE = "chatview_plan_mode"
@@ -49,10 +50,49 @@ PROMPT_PREFIX = "\n❯ "  # transcript prefix for submitted prompts; the live in
 chatview_clients = {}
 
 
+def set_input_start(view, pos):
+    """Record the input start position (the newline preceding the input line).
+
+    Besides the settings value, an anchor region is placed over that newline.
+    Regions shift automatically with buffer modifications, so the position
+    stays correct even when text before it changes
+    """
+    view.settings().set(CHAT_INPUT_START, pos)
+    if pos + 1 <= view.size():
+        view.add_regions(CHAT_INPUT_ANCHOR, [sublime.Region(pos, pos + 1)],
+                         flags=sublime.HIDDEN | sublime.PERSISTENT)
+    else:
+        # No newline to anchor on yet; drop any stale anchor so it can't
+        # shadow the settings value.
+        view.erase_regions(CHAT_INPUT_ANCHOR)
+
+
+def get_input_start(view, default=None):
+    """Current input start position.
+
+    The anchor region is the source of truth; the settings value is a
+    fallback (restored views, older sessions) and is re-synced whenever the
+    two drift apart."""
+    if default is None:
+        default = view.size()
+    regions = view.get_regions(CHAT_INPUT_ANCHOR)
+    if regions and not regions[0].empty():
+        pos = regions[0].begin()
+        if view.settings().get(CHAT_INPUT_START) != pos:
+            view.settings().set(CHAT_INPUT_START, pos)
+        return pos
+    if not view.settings().has(CHAT_INPUT_START):
+        return default
+    pos = min(view.settings().get(CHAT_INPUT_START), view.size())
+    # Re-anchor lazily (view restored from a session, or anchor lost)
+    set_input_start(view, pos)
+    return pos
+
+
 def input_editable_start(view):
-    """Start of the editable input text. CHAT_INPUT_START points at the newline
+    """Start of the editable input text. The input start points at the newline
     that precedes the input line; the ❯ marker is a phantom, not buffer text."""
-    return view.settings().get(CHAT_INPUT_START, 0) + 1
+    return get_input_start(view, 0) + 1
 
 
 class PlanMode(enum.Enum):
@@ -488,7 +528,7 @@ class ModelPanel:
 
     def update(self, plan_mode=PlanMode.FAST):
         """Update the model phantom display."""
-        input_start = self.view.settings().get(CHAT_INPUT_START, self.view.size())
+        input_start = get_input_start(self.view)
         region = sublime.Region(input_start, input_start)
 
         agent_provider = self.window.settings().get(CHAT_AGENT, "claude")
@@ -602,7 +642,7 @@ class PermissionPanel:
 
     def show(self, request_id, tool_name, input_data, approve_mode=None):
         """Show a permission phantom for a tool request."""
-        input_start = self.view.settings().get(CHAT_INPUT_START, self.view.size())
+        input_start = get_input_start(self.view)
         region = sublime.Region(input_start - 1, input_start)
 
         phantom_set = sublime.PhantomSet(self.view, f"permission_{request_id}")
@@ -1017,7 +1057,7 @@ class ChatSession:
         self.has_sent_message = bool(session_id)
 
         # End-of-turn file changes artifact (records edit diffs, renders file list)
-        self.artifact = FileChangesArtifact(self.chat_view, self.window, CHAT_INPUT_START)
+        self.artifact = FileChangesArtifact(self.chat_view, self.window, get_input_start)
 
         self.implement_plan_phantoms = sublime.PhantomSet(self.chat_view, "implement_plan")
         self.implement_plan_buttons = [] # List of (region, phantom) tuples
@@ -1256,7 +1296,7 @@ class ChatSession:
 
     def loading_region(self):
         """Get the region where the loading animation should be displayed."""
-        input_start = self.chat_view.settings().get(CHAT_INPUT_START, self.chat_view.size())
+        input_start = get_input_start(self.chat_view)
         return sublime.Region(input_start-1, input_start)
 
     def stop(self):
@@ -1617,9 +1657,9 @@ class ChatSession:
     def _replay_prompt(self, prompt_text):
         """Append a previously-submitted prompt with gutter highlight, as if the user had just sent it."""
         text = f"{PROMPT_PREFIX}{prompt_text}\n"
-        pos_before = self.chat_view.settings().get(CHAT_INPUT_START, 0) - 1
+        pos_before = get_input_start(self.chat_view, 0) - 1
         self.chat_view.run_command("term_chat_output_append", {"text": text})
-        pos_after = self.chat_view.settings().get(CHAT_INPUT_START, 0) - 1
+        pos_after = get_input_start(self.chat_view, 0) - 1
         region_start = pos_before + len(PROMPT_PREFIX)
         region_end = pos_after - 1  # exclude trailing \n
         if region_end > region_start:
@@ -1736,7 +1776,7 @@ class TermChatCliCommand(sublime_plugin.WindowCommand):
         chat_view.run_command("append", {"characters": welcome_text})
 
         # Set input start position
-        chat_view.settings().set(CHAT_INPUT_START, chat_view.size())
+        set_input_start(chat_view, chat_view.size())
 
         # Create and start the ChatSession
         session = ChatSession(self.window, chat_view, cwd, add_dirs=add_dirs)
@@ -2006,7 +2046,6 @@ class ChatViewListener(sublime_plugin.EventListener):
             view.sel().clear()
             view.sel().add_all(new_sel)
 
-
     def _redirect_cursor(self, view):
         """Helper to move cursor to the end of the view."""
         end_pos = view.size()
@@ -2265,8 +2304,10 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
         if cut_point < self.view.size():
             self.view.erase(edit, sublime.Region(cut_point, self.view.size()))
 
-        self.view.insert(edit, self.view.size(), "\n")
-        self.view.settings().set(CHAT_INPUT_START, self.view.size())
+        # Two newlines: input start points at the second one, which precedes
+        # the input line. It must exist before set_input_start anchors on it.
+        self.view.insert(edit, self.view.size(), "\n\n")
+        set_input_start(self.view, self.view.size() - 1)
 
         window = self.view.window()
         if window and window.id() in chatview_clients:
@@ -2274,7 +2315,6 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
                 plan_mode=chatview_clients[window.id()].plan_mode
             )
 
-        self.view.insert(edit, self.view.size(), "\n")
         if rewind_text:
             self.view.insert(edit, self.view.size(), rewind_text)
         end = self.view.size()
@@ -2289,18 +2329,21 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
 class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
 
     def run(self, edit, text):
-        input_start = self.view.settings().get(CHAT_INPUT_START, 0) - 1
-        inserted = self.view.insert(edit, input_start, text)
-        new_pos = input_start + inserted
-        self.view.settings().set(CHAT_INPUT_START, new_pos+1)
+        insert_at = get_input_start(self.view, 0) - 1
+        inserted = self.view.insert(edit, insert_at, text)
+        # The anchor region shifts with the insert; re-set to keep the
+        # settings value in sync (and re-anchor if the anchor was missing).
+        set_input_start(self.view, insert_at + inserted + 1)
         self.view.show(self.view.size())
 
 
 class TermChatInputPromptCommand(sublime_plugin.TextCommand):
 
     def run(self, edit, text):
-        self.view.insert(edit, self.view.size(), "\n\n\n\n")
-        self.view.settings().set(CHAT_INPUT_START, self.view.size())
+        # The last newline precedes the input line; it must exist before
+        # set_input_start anchors on it.
+        self.view.insert(edit, self.view.size(), "\n\n\n\n\n")
+        set_input_start(self.view, self.view.size() - 1)
 
         # Update model phantom at new position
         window = self.view.window()
@@ -2309,7 +2352,6 @@ class TermChatInputPromptCommand(sublime_plugin.TextCommand):
             session.model_phantom.update(plan_mode=session.plan_mode)
 
         # Next input prompt (the ❯ itself is the InputPromptMarker phantom)
-        self.view.insert(edit, self.view.size(), "\n")
         if text:
             self.view.insert(edit, self.view.size(), text + " ")
         end = self.view.size()
@@ -2358,9 +2400,13 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
             self.window.run_command("term_chat_cli", {"initial_msg": tags})
         else:
             self.window.focus_view(chat_view)
-            chat_view.run_command("insert", {"characters": tags + " "})
+            # The selection may still be a copy-selection in the history area
+            # (allowed by on_selection_modified); a programmatic insert there
+            # bypasses on_text_command and would land in history.
+            # Snap to the end of the input line first.
             chat_view.sel().clear()
             chat_view.sel().add(sublime.Region(chat_view.size()))
+            chat_view.run_command("insert", {"characters": tags + " "})
             chat_view.show(chat_view.size())
 
 
@@ -2389,6 +2435,10 @@ class TermChatPromptCommand(sublime_plugin.WindowCommand):
 
         if chat_view:
             self.window.focus_view(chat_view)
+            # Snap the selection out of the history area before inserting
+            # (a copy-selection there would drop the text into history).
+            chat_view.sel().clear()
+            chat_view.sel().add(sublime.Region(chat_view.size()))
             chat_view.run_command("insert", {"characters": prompt})
             chat_view.run_command("term_chat_send_input")
         else:
@@ -2920,7 +2970,7 @@ class TermChatImplementPlanCommand(sublime_plugin.WindowCommand):
             sublime.status_message("Implementing plan...")
 
             # Get position before appending
-            input_start = session.chat_view.settings().get(CHAT_INPUT_START, 0)
+            input_start = get_input_start(session.chat_view, 0)
             # Display implementation message in chat history
             session.chat_view.run_command("term_chat_output_append", {"text": "\nimplement the plan\n\n"})
 

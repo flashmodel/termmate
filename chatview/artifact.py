@@ -56,13 +56,13 @@ class FileChangesArtifact:
 
     :param view: the chat view the artifact is rendered into.
     :param window: the Sublime window (used to open diff views).
-    :param input_start_key: settings key holding the chat input start position.
+    :param input_start_fn: callable(view) returning the chat input start position.
     """
 
-    def __init__(self, view, window, input_start_key):
+    def __init__(self, view, window, input_start_fn):
         self.view = view
         self.window = window
-        self.input_start_key = input_start_key
+        self.input_start_fn = input_start_fn
         self.file_changes = {}  # abs_path -> {"rel_path": str, "diffs": [], "add": int, "del": int}
         self.pending_changed_files = []  # abs paths changed since last render
         self.file_regions = []  # List of (Region, abs_path, rel_path, diffs_snapshot) for rendered file lines
@@ -110,7 +110,7 @@ class FileChangesArtifact:
 
         view = self.view
         # term_chat_output_append inserts at input_start - 1
-        base = view.settings().get(self.input_start_key, view.size()) - 1
+        base = self.input_start_fn(view) - 1
 
         count = len(files)
         header = "▣ {} file{} changed".format(count, "s" if count != 1 else "")
