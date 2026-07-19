@@ -21,13 +21,13 @@
     //   "bordered" — draw tables with horizontal border lines and
     //                space-aligned columns:
     //
-    //     | Name | Qty |            ┌──────────────┐
+    //     | Name | Qty |            ──────────────
     //     | ---- | --- |             Name     Qty
-    //     | foo  | 1   |    ==>     ├──────────────┤
+    //     | foo  | 1   |    ==>     ──────────────
     //     | bar  | 2   |             foo      1
-    //                               ├──────────────┤
+    //                               ──────────────
     //                                bar      2
-    //                               └──────────────┘
+    //                               ──────────────
     //
     //   "markdown" — keep tables in their original markdown form
     //                (aligned, but with "|" pipe separators).
