@@ -171,6 +171,9 @@ class MarkdownFormatter:
 
         col_widths = [max(w, 3) for w in col_widths]
 
+        if self._get_table_style() == "bordered":
+            return self._render_bordered_table(rows, separator_idx, col_widths)
+
         formatted_lines = []
         for i, row in enumerate(rows):
             new_row = "|"
@@ -191,6 +194,43 @@ class MarkdownFormatter:
                     padding = width - self.str_width(cell)
                     new_row += f" {cell}{' ' * padding} |"
             formatted_lines.append(new_row)
+
+        return formatted_lines
+
+    def _get_table_style(self):
+        """Return the configured table style: "bordered" or "markdown"."""
+        try:
+            settings = sublime.load_settings("TermMate.sublime-settings")
+            return settings.get("table_style", "bordered")
+        except Exception:
+            return "bordered"
+
+    def _render_bordered_table(self, rows, separator_idx, col_widths):
+        """
+        Render the table with box-drawing borders: horizontal separator
+        lines between rows, with no vertical lines at all — neither
+        between columns nor at the left/right edges.  Columns are still
+        aligned by padding.
+        """
+        inner_width = sum(w + 2 for w in col_widths)
+        top = "┌" + "─" * inner_width + "┐"
+        middle = "├" + "─" * inner_width + "┤"
+        bottom = "└" + "─" * inner_width + "┘"
+
+        formatted_lines = [top]
+        first_row = True
+        for i, row in enumerate(rows):
+            if i == separator_idx:
+                continue
+            if not first_row:
+                formatted_lines.append(middle)
+            first_row = False
+            new_row = ""
+            for j, cell in enumerate(row):
+                padding = col_widths[j] - self.str_width(cell)
+                new_row += f" {cell}{' ' * padding} "
+            formatted_lines.append(new_row.rstrip())
+        formatted_lines.append(bottom)
 
         return formatted_lines
 

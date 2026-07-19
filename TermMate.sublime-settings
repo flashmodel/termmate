@@ -17,6 +17,22 @@
     // If false, the agent only has access to the agent working directory(cwd).
     "share_workspace_folders": true,
 
+    // How markdown tables are rendered in the chat view.
+    //   "bordered" — draw tables with horizontal border lines and
+    //                space-aligned columns:
+    //
+    //     | Name | Qty |            ┌──────────────┐
+    //     | ---- | --- |             Name     Qty
+    //     | foo  | 1   |    ==>     ├──────────────┤
+    //     | bar  | 2   |             foo      1
+    //                               ├──────────────┤
+    //                                bar      2
+    //                               └──────────────┘
+    //
+    //   "markdown" — keep tables in their original markdown form
+    //                (aligned, but with "|" pipe separators).
+    "table_style": "bordered",
+
     // Keep the Chat View in a dedicated pane.
     // When true, files you open will not appear in the chat's pane.
     "dedicated_chat_pane": true,
