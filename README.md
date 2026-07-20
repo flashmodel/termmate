@@ -110,15 +110,21 @@ Right-click on any folder in the sidebar and select **Set Working Directory** to
 
 **3. Chat with Current File or Selection**
 
-You can right-click in any file, tab, and select **Chat with Agent**. This will:
+Right-click on open file or text selection and use **TermMate: Chat with Agent** can add it as context for your next prompt. This will:
 
 - Open the TermMate chat view (if not already open).
 - Insert a reference to the file (`@filename`) or selected line range (`@filename#L1-10`) into the message prompt.
 - Tagged files will be automatically sent as context to the active agent.
 
-**4. Smart Completion**
+**4. File Tags `@` Smart Completion**
 
-Type `@` in the chat view for real-time suggestions of files and workspace symbols.
+Tag files in your prompt to give the agent precise project context. Typing `@` in the chat input instantly opens a completion popup with three categories of suggestions:
+
+- 📂 Open files — files currently open in the window
+- 📄 Workspace files — files in the workspace root
+- 📁 Subdirectories — inserted with a trailing `/` to reference a whole directory
+
+A tag can point at a file (`@src/main.py`), a line or range (`@src/main.py#L42`, `@src/main.py#L10-25`), or a directory (`@src/`). Tagged files are sent to the agent as context along with your message. **Chat with Agent** and the sidebar context menu can also insert tags for you.
 
 **5. Split Chat Window**
 

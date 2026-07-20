@@ -114,7 +114,7 @@ class FileChangesArtifact:
 
         count = len(files)
         header = "▣ {} file{} changed".format(count, "s" if count != 1 else "")
-        text = "\n" + header + "\n"
+        text = header + "\n"
         new_regions = []
         for abs_path in files:
             entry = self.file_changes.pop(abs_path, {})
@@ -127,7 +127,7 @@ class FileChangesArtifact:
             new_regions.append((sublime.Region(start, start + len(rel)), abs_path, rel, list(entry.get("diffs", []))))
 
         # Fold from end of header line to end of last file line (excl. trailing \n)
-        fold_start = base + 1 + len(header)
+        fold_start = base + len(header)
         fold_end = base + len(text) - 1
 
         # Non-blank zero-indent terminator on the line after the gutter fold arrow

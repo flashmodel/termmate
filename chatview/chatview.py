@@ -2368,15 +2368,41 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
     Command to add file context to the ChatView chat prompt.
     Called from the context menu (current view + selection) or sidebar (files/dirs args).
     Sidebar callers pass files=[...] with no line numbers; context menu uses active view + selection.
+    In the chat view itself, the selected history text is quoted into the next prompt.
     """
     def run(self, files=[], dirs=[]):
         paths = files + dirs
+        view = self.window.active_view()
         if paths:
             # Sidebar: insert @path for each selected file/dir, no line numbers
             tags = " ".join(f"@{p}" for p in paths)
+            insert_text = tags + " "
+        elif view and view.settings().get(CHAT_VIEW_FLAG, False):
+            # Chat view: quote the selected history text as context for the
+            # next prompt (there is no file to @-tag). Capture before the
+            # selection gets snapped to the input line below.
+            editable_start = input_editable_start(view)
+            selected = "\n".join(
+                view.substr(s) for s in view.sel()
+                if not s.empty() and s.begin() < editable_start
+            )
+            if not selected.strip():
+                return
+            tags = "\n".join("> " + line for line in selected.splitlines())
+            # Lead-in tells the agent the quote refers back to the
+            # conversation; add it once per prompt so multiple quoted
+            # passages accumulate under a single lead-in.
+            lead = "Quoting from earlier in the conversation:"
+            input_text = view.substr(sublime.Region(editable_start, view.size()))
+            if lead not in input_text:
+                tags = lead + "\n" + tags
+            # A blank line always precedes and follows the quote block,
+            insert_text = tags + "\n\n"
+            trailing = len(input_text) - len(input_text.rstrip("\n"))
+            needed = 2 if input_text else 1
+            insert_text = "\n" * max(0, needed - trailing) + insert_text
         else:
             # Context menu: use active view + selection
-            view = self.window.active_view()
             if not view:
                 return
             file_path = view.file_name()
@@ -2389,6 +2415,7 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
                 tags = f"@{file_path}#L{row_start + 1}"
             else:
                 tags = f"@{file_path}#L{row_start + 1}-{row_end + 1}"
+            insert_text = tags + " "
 
         chat_view = None
         for v in self.window.views():
@@ -2406,7 +2433,7 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
             # Snap to the end of the input line first.
             chat_view.sel().clear()
             chat_view.sel().add(sublime.Region(chat_view.size()))
-            chat_view.run_command("insert", {"characters": tags + " "})
+            chat_view.run_command("insert", {"characters": insert_text})
             chat_view.show(chat_view.size())
 
 
