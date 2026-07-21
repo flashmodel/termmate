@@ -7,6 +7,7 @@ import xml.etree.ElementTree
 import sublime
 
 from . import utils
+from .md_render import MarkdownFormatter
 
 LOG = logging.getLogger("TermMate")
 
@@ -113,7 +114,7 @@ class BaseChatMessageProcessor:
 
     def __init__(self, session):
         self.session = session
-        self.markdown_formatter = utils.MarkdownFormatter()
+        self.markdown_formatter = MarkdownFormatter()
         self.last_is_tool_call = False
         self._plan_text = ""
         self._tool_file_re = _make_tool_file_re(self._TOOL_FILE_NAMES) if self._TOOL_FILE_NAMES else None
