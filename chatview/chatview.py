@@ -16,7 +16,7 @@ from ..genfoundry.codex_agent import get_codex_session_info
 from ..genfoundry.pi_agent import get_pi_session_tail
 from .chatprocessor import ClaudeMessageProcessor, CodexMessageProcessor, PiMessageProcessor
 from .chatpanel import LoadingAnimation, RewindConfirmPanel
-from .artifact import FileChangesArtifact
+from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
 from .install import run_install, find_existing_cli, get_agent_list_items
 
 def get_available_agents(settings):
@@ -1748,7 +1748,7 @@ class TermChatCliCommand(sublime_plugin.WindowCommand):
         chat_view = self.window.new_file()
         chat_view.set_name(CHAT_VIEW_NAME)
         chat_view.set_scratch(True)
-        chat_view.set_syntax_file(f"Packages/{PACKAGE_NAME}/ChatMD.sublime-syntax")
+        chat_view.set_syntax_file(f"Packages/{PACKAGE_NAME}/chatview/ChatMD.sublime-syntax")
 
         chat_view.settings().set("draw_minimap", False)
         chat_view.settings().set("line_numbers", False)
@@ -2055,6 +2055,22 @@ class ChatViewListener(sublime_plugin.EventListener):
 
     def on_text_command(self, view, command_name, args):
         """Intercept text commands to protect content before prompt area."""
+        # Double-click in a diff view → open the actual file
+        abs_path = view.settings().get(DIFF_VIEW_PATH_KEY)
+        if (abs_path and command_name == "drag_select" and args
+                and args.get("by") == "words"
+                and not args.get("extend", False)
+                and not args.get("additive", False)):
+            point = args.get("event", {}).get("x"), args.get("event", {}).get("y")
+            click_point = (
+                view.window_to_text((point[0], point[1]))
+                if point[0] is not None and point[1] is not None
+                else None
+            )
+            if click_point is not None:
+                if diff_view_click(view, abs_path, click_point):
+                    return ("noop", {})
+
         # Only monitor ChatView chat views
         if not view.settings().get(CHAT_VIEW_FLAG, False) and view.name() != CHAT_VIEW_NAME:
             return None

@@ -1,0 +1,47 @@
+%YAML 1.2
+---
+# http://www.sublimetext.com/docs/syntax.html
+# Diff syntax for TermMate artifact diff views. Extends the built-in Diff
+# syntax and re-scopes the file-path portion of the header lines
+# (`diff a/.. b/..`, `--- a/..`, `+++ b/..`) as variable.function.chatview
+# — the same clickable-file coloring used for artifact file names in
+# ChatMD.sublime-syntax — signalling that these paths jump to the file.
+#
+# The hunk range lines (`@@ -175,24 +175,6 @@`) have their number spans
+# colored as variable.function.chatview via line-range-span override.
+# The inserted/deleted delta lines keep their inherited Diff coloring untouched.
+name: ChatDiff
+hidden: true
+scope: source.diff.chatview
+version: 2
+
+extends: Packages/Diff/Diff.sublime-syntax
+
+contexts:
+  diff-header:
+    - meta_prepend: true
+    # `diff a/path b/path` command line (not matched by the base syntax);
+    # both path halves get the clickable file coloring.
+    - match: '{{bol}}(diff )([ab]/\S+)( )([ab]/\S+){{eol}}'
+      captures:
+        1: keyword.other.diff
+        2: variable.function.chatview
+        4: variable.function.chatview
+
+  diff-header-unified-from-file:
+    - meta_prepend: true
+    # `--- a/path` — the path after the `--- ` prefix is clickable.
+    - match: '([ab]/\S+)'
+      scope: variable.function.chatview
+
+  diff-header-unified-to-file:
+    - meta_prepend: true
+    # `+++ b/path` — the path after the `+++ ` prefix is clickable.
+    - match: '([ab]/\S+)'
+      scope: variable.function.chatview
+
+  line-range-span:
+    - match: '\d+(?:(,)\d+)?'
+      scope: variable.function.chatview
+      captures:
+        1: punctuation.separator.sequence.diff
