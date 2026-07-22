@@ -7,9 +7,8 @@
 # — the same clickable-file coloring used for artifact file names in
 # ChatMD.sublime-syntax — signalling that these paths jump to the file.
 #
-# The hunk range lines (`@@ -175,24 +175,6 @@`) have their number spans
-# colored as variable.function.chatview via line-range-span override.
-# The inserted/deleted delta lines keep their inherited Diff coloring untouched.
+# The hunk range lines (`@@ -175,24 +175,6 @@`) have their line numbers
+# colored as variable.function.chatview; the `,count` suffix is left unstyled.
 name: ChatDiff
 hidden: true
 scope: source.diff.chatview
@@ -20,28 +19,28 @@ extends: Packages/Diff/Diff.sublime-syntax
 contexts:
   diff-header:
     - meta_prepend: true
-    # `diff a/path b/path` command line (not matched by the base syntax);
-    # both path halves get the clickable file coloring.
-    - match: '{{bol}}(diff )([ab]/\S+)( )([ab]/\S+){{eol}}'
+    # `diff a/path b/path` — highlight each path, skip the `a/`/`b/` prefix.
+    - match: '{{bol}}diff (?:[ab]/(\S+) [ab]/(\S+)){{eol}}'
       captures:
-        1: keyword.other.diff
+        1: variable.function.chatview
         2: variable.function.chatview
-        4: variable.function.chatview
 
+  # `--- a/path` and `+++ b/path` share the same rule: skip prefix, highlight path.
   diff-header-unified-from-file:
     - meta_prepend: true
-    # `--- a/path` — the path after the `--- ` prefix is clickable.
-    - match: '([ab]/\S+)'
-      scope: variable.function.chatview
+    - match: '[ab]/(\S+)'
+      captures:
+        1: variable.function.chatview
 
   diff-header-unified-to-file:
     - meta_prepend: true
-    # `+++ b/path` — the path after the `+++ ` prefix is clickable.
-    - match: '([ab]/\S+)'
-      scope: variable.function.chatview
+    - match: '[ab]/(\S+)'
+      captures:
+        1: variable.function.chatview
 
   line-range-span:
-    - match: '\d+(?:(,)\d+)?'
+    - match: '\d+'
       scope: variable.function.chatview
+    - match: '(,)\d+'
       captures:
         1: punctuation.separator.sequence.diff
