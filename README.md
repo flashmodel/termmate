@@ -159,6 +159,20 @@ Use `TermMate: Switch Agent` to swap between Claude, Codex, and Pi Agent at any 
 
 Use `TermMate: Select Model` to pick a specific LLM model per agent (e.g. `claude-opus-4-5` vs `claude-sonnet-4-5`).
 
+## Artifact
+
+### file changes artifact
+
+The artifact panel shows generated files and file changes produced during the conversation. When the agent edits code, a summary appears in the panel listing every modified file along with the number of lines added and removed.
+
+```
+▣ 2 files changed
+    src/foo.py  +12 -3
+    src/bar.py  +5 -1
+```
+
+Click a file entry to jump directly to the file in the editor. Artifacts are folded by default. Click the `▶` arrow in the gutter to expand and view the full diff inline.
+
 ## Session Management: Clear, Resume & Rewind
 
 **1. Clear Session**
