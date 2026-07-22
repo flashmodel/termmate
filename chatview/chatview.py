@@ -2396,13 +2396,7 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
             if not selected.strip():
                 return
             tags = "\n".join("> " + line for line in selected.splitlines())
-            # Lead-in tells the agent the quote refers back to the
-            # conversation; add it once per prompt so multiple quoted
-            # passages accumulate under a single lead-in.
-            lead = "Quoting from earlier in the conversation:"
             input_text = view.substr(sublime.Region(editable_start, view.size()))
-            if lead not in input_text:
-                tags = lead + "\n" + tags
             # A blank line always precedes and follows the quote block,
             insert_text = tags + "\n\n"
             trailing = len(input_text) - len(input_text.rstrip("\n"))
