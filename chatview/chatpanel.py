@@ -7,7 +7,7 @@ LOG = logging.getLogger("TermMate")
 class StatusHint:
     """Renders the inline stop-status control shown in the model panel."""
 
-    def __init__(self, text="Stopping…"):
+    def __init__(self, text="stopping…"):
         self.text = text
         self.visible = False
         self.stopping = False
@@ -33,20 +33,12 @@ class StatusHint:
     update = set_text
 
     def render(self):
-        """Return the stop control HTML, including its existing styling."""
+        """Return the stop control HTML."""
         if not self.visible:
             return ""
 
         label = f"■ {self.text}" if self.stopping else "■"
         return f'''\
-            <style>
-                .stop-hint {{
-                    color: var(--accent);
-                    display: inline-block;
-                    margin-left: 6px;
-                    text-decoration: none;
-                }}
-            </style>
             <a href="stop_conversation" class="stop-hint" title="Stop conversation">{label}</a>'''
 
 

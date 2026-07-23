@@ -2,9 +2,5 @@
     {
         "caption": "TermMate: Chat with Agent",
         "command": "term_chat_add_context"
-    },
-    {
-        "caption": "TermMate: Stop Conversation",
-        "command": "term_chat_interrupt"
     }
 ]

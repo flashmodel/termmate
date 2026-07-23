@@ -595,13 +595,17 @@ class ModelPanel:
                     font-size: 0.85em;
                     font-family: var(--font-mono);
                     text-decoration: none;
-                    padding: 4px 6px;
+                    padding: 4px 2px;
                     border-radius: 4px;
                     line-height: 1.2;
                 }}
-                .model-tag:hover {{
-                    background-color: color(var(--accent) alpha(0.15));
-                    border-color: color(var(--accent) alpha(0.3));
+                .stop-hint {{
+                    color: var(--accent);
+                    display: inline-block;
+                    text-decoration: none;
+                    margin-left: 6px;
+                    padding: 4px 2px;
+                    line-height: 1.2;
                 }}
                 .icon {{
                     padding-right: 2px;
