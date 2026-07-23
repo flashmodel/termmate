@@ -15,7 +15,7 @@ from ..genfoundry.claude_agent import get_claude_session_tail
 from ..genfoundry.codex_agent import get_codex_session_info
 from ..genfoundry.pi_agent import get_pi_session_tail
 from .chatprocessor import ClaudeMessageProcessor, CodexMessageProcessor, PiMessageProcessor
-from .chatpanel import LoadingAnimation, RewindConfirmPanel
+from .chatpanel import LoadingAnimation, RewindConfirmPanel, StatusHint
 from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
 from .install import run_install, find_existing_cli, get_agent_list_items
 
@@ -525,6 +525,28 @@ class ModelPanel:
         self.view = view
         self.window = window
         self.phantom_set = sublime.PhantomSet(view, "chatview_model")
+        self.status_hint = StatusHint()
+
+    def _refresh(self):
+        """Redraw while preserving the current plan-mode label."""
+        plan_mode_value = self.window.settings().get(CHAT_PLAN_MODE, PlanMode.FAST.value)
+        try:
+            plan_mode = PlanMode(plan_mode_value)
+        except ValueError:
+            plan_mode = PlanMode.FAST
+        self.update(plan_mode=plan_mode)
+
+    def set_running(self, running):
+        """Show the stop hint only while the agent is processing a turn."""
+        if self.status_hint.visible == running:
+            return
+        self.status_hint.set_visible(running)
+        self._refresh()
+
+    def set_stopping(self, stopping, text=None):
+        """Update the stop label while the agent processes an interrupt."""
+        if self.status_hint.visible and self.status_hint.set_stopping(stopping, text):
+            self._refresh()
 
     def update(self, plan_mode=PlanMode.FAST):
         """Update the model phantom display."""
@@ -543,18 +565,20 @@ class ModelPanel:
         plan_tag_html = ""
         if plan_mode == PlanMode.PLANNING:
             plan_tag_html = """
-                <a href="toggle_plan" class="model-tag" style="margin-left: 8px;">
+                <a href="toggle_plan" class="model-tag" style="margin-left: 4px;">
                     <span class="label">PlanMode:</span>
                     <span class="value">planning</span>
                 </a>
             """
         else:
             plan_tag_html = """
-                <a href="toggle_plan" class="model-tag" style="margin-left: 8px;">
+                <a href="toggle_plan" class="model-tag" style="margin-left: 4px;">
                     <span class="label">PlanMode:</span>
                     <span class="value">fast</span>
                 </a>
             """
+
+        stop_hint_html = self.status_hint.render()
 
         html = f"""
         <body id="chatview-model" style="margin: 0; padding: 0;">
@@ -596,10 +620,10 @@ class ModelPanel:
                     <span class="label">Agent:</span>
                     <span class="value">{agent_provider}</span>
                 </a>
-                <a href="set_model" class="model-tag" style="margin-left: 8px;">
+                <a href="set_model" class="model-tag" style="margin-left: 4px;">
                     <span class="label">Model:</span>
                     <span class="value">{display_model}</span>
-                </a>{plan_tag_html}
+                </a>{plan_tag_html}{stop_hint_html}
             </div>
         </body>
         """
@@ -611,6 +635,8 @@ class ModelPanel:
                 self.window.run_command("term_chat_set_model")
             elif href == "toggle_plan":
                 self.window.run_command("term_chat_toggle_plan_mode")
+            elif href == "stop_conversation":
+                self.window.run_command("term_chat_interrupt", {"confirm": True})
 
         self.phantom_set.update([sublime.Phantom(
             region,
@@ -1289,10 +1315,18 @@ class ChatSession:
 
     def start_loading(self, text=None):
         """Start the loading animation."""
-        sublime.set_timeout(lambda: self.loading_animation.start(self.loading_region, text), 0)
+        def start():
+            self.loading_animation.start(self.loading_region, text)
+            self.model_phantom.set_running(True)
+
+        sublime.set_timeout(start, 0)
 
     def stop_loading(self):
-        sublime.set_timeout(lambda: self.loading_animation.stop(), 0)
+        def stop():
+            self.loading_animation.stop()
+            self.model_phantom.set_running(False)
+
+        sublime.set_timeout(stop, 0)
 
     def loading_region(self):
         """Get the region where the loading animation should be displayed."""
@@ -1301,6 +1335,7 @@ class ChatSession:
 
     def stop(self):
         self.loading_animation.stop()
+        self.model_phantom.set_running(False)
         self.model_phantom.clear()
         self.input_marker.clear()
         self.rewind_confirm_panel.clear()
@@ -2666,7 +2701,7 @@ class TermChatInterruptCommand(sublime_plugin.WindowCommand):
     """
     Interrupts the current chat session.
     """
-    def run(self):
+    def run(self, confirm=False):
         window_id = self.window.id()
         if window_id not in chatview_clients:
             sublime.status_message("No active ChatView session found")
@@ -2675,6 +2710,9 @@ class TermChatInterruptCommand(sublime_plugin.WindowCommand):
         session = chatview_clients[window_id]
         if not session.loading_animation.is_loading:
             sublime.status_message("No active conversation to interrupt")
+            return
+
+        if confirm and not sublime.ok_cancel_dialog("Stop the running conversation?", "Stop"):
             return
 
         if session.agent_thread and session.agent_thread.agent:
@@ -2686,6 +2724,7 @@ class TermChatInterruptCommand(sublime_plugin.WindowCommand):
                     session.agent_thread.agent.interrupt(),
                     session.agent_thread.loop
                 )
+                session.model_phantom.set_stopping(True)
                 sublime.set_timeout(
                     lambda: session.chat_view.run_command(
                         "term_chat_output_append",
@@ -2696,6 +2735,7 @@ class TermChatInterruptCommand(sublime_plugin.WindowCommand):
                 sublime.status_message("Interrupting agent")
                 LOG.info(f"Interrupt conversation for window {window_id}")
             except Exception as e:
+                session.model_phantom.set_stopping(False)
                 LOG.error(f"Failed to interrupt agent: {e}")
 
     def is_enabled(self):
