@@ -1,4 +1,4 @@
-# TermMate
+# TermMate — Agentic Coding Assistant for Sublime Text
 
 **Agentic Coding Mate from Mind to Code**
 
@@ -94,8 +94,8 @@ The example above sets `GEMINI_API_KEY` for Pi Agent authentication.
 
 - Open the command palette (`Cmd+Shift+P` on macOS, `Ctrl+Shift+P` on Windows/Linux).
 - Type `TermMate: Start Chat` and press `Enter`.
-- A new view will open for the TermMate chat.
-- Type your message and press `Cmd+Enter` (macOS) or `Ctrl+Enter` (Windows/Linux) to send.
+- A new chat view will open for the TermMate chat.
+- Type your message and press `Cmd+Enter` (macOS) or `Ctrl+Enter` (Windows/Linux) to send. You can even edit prompts in Vim mode.
 - You can stop a running conversation at any time. Use the shortcut `Cmd+Escape` (Mac) / `Shift+Escape` (Windows/Linux) in the chat window, or run `TermMate: Stop Conversation` from the command palette.
 
 ## Usage & Key Features
