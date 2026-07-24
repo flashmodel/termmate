@@ -2467,14 +2467,21 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
             self.window.run_command("term_chat_cli", {"initial_msg": tags})
         else:
             self.window.focus_view(chat_view)
-            # The selection may still be a copy-selection in the history area
-            # (allowed by on_selection_modified); a programmatic insert there
-            # bypasses on_text_command and would land in history.
-            # Snap to the end of the input line first.
-            chat_view.sel().clear()
-            chat_view.sel().add(sublime.Region(chat_view.size()))
+            # Preserve the current cursor/selection when it is in the input
+            # area. A history selection is allowed for copying/quoting, but a
+            # programmatic insert there would bypass on_text_command and
+            # modify history, so fall back to the end of the input instead.
+            editable_start = input_editable_start(chat_view)
+            selections = list(chat_view.sel())
+            # Multiple selections would insert the same context more than once.
+            if not (
+                len(selections) == 1
+                and selections[0].begin() >= editable_start
+            ):
+                chat_view.sel().clear()
+                chat_view.sel().add(sublime.Region(chat_view.size()))
             chat_view.run_command("insert", {"characters": insert_text})
-            chat_view.show(chat_view.size())
+            chat_view.show(chat_view.sel()[0].end())
 
 
 class TermChatPromptHandler(sublime_plugin.TextInputHandler):
