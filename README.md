@@ -1,4 +1,4 @@
-# TermMate
+# TermMate — Agentic Coding Assistant for Sublime Text
 
 **Agentic Coding Mate from Mind to Code**
 
@@ -94,8 +94,8 @@ The example above sets `GEMINI_API_KEY` for Pi Agent authentication.
 
 - Open the command palette (`Cmd+Shift+P` on macOS, `Ctrl+Shift+P` on Windows/Linux).
 - Type `TermMate: Start Chat` and press `Enter`.
-- A new view will open for the TermMate chat.
-- Type your message and press `Cmd+Enter` (macOS) or `Ctrl+Enter` (Windows/Linux) to send.
+- A new chat view will open for the TermMate chat.
+- Type your message and press `Cmd+Enter` (macOS) or `Ctrl+Enter` (Windows/Linux) to send. You can even edit prompts in Vim mode.
 - You can stop a running conversation at any time. Use the shortcut `Cmd+Escape` (Mac) / `Shift+Escape` (Windows/Linux) in the chat window, or run `TermMate: Stop Conversation` from the command palette.
 
 ## Usage & Key Features
@@ -158,6 +158,20 @@ Use `TermMate: Switch Agent` to swap between Claude, Codex, and Pi Agent at any 
 ### Select Model
 
 Use `TermMate: Select Model` to pick a specific LLM model per agent (e.g. `claude-opus-4-5` vs `claude-sonnet-4-5`).
+
+## Artifact
+
+### file changes artifact
+
+The artifact panel shows generated files and file changes produced during the conversation. When the agent edits code, a summary appears in the panel listing every modified file along with the number of lines added and removed.
+
+```
+▣ 2 files changed
+    src/foo.py  +12 -3
+    src/bar.py  +5 -1
+```
+
+Click a file entry to jump directly to the file in the editor. Artifacts are folded by default. Click the `▶` arrow in the gutter to expand and view the full diff inline.
 
 ## Session Management: Clear, Resume & Rewind
 

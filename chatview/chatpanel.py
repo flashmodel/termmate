@@ -4,6 +4,46 @@ import sublime
 LOG = logging.getLogger("TermMate")
 
 
+class StatusHint:
+    """Renders the inline stop-status control shown in the model panel."""
+
+    def __init__(self, text="stopping…"):
+        self.text = text
+        self.visible = False
+        self.stopping = False
+
+    def set_visible(self, visible):
+        """Show or hide the control, resetting its stopping state."""
+        self.visible = visible
+        self.stopping = False
+
+    def set_stopping(self, stopping, text=None):
+        """Update stop state and return whether the rendered hint changed."""
+        text_changed = text is not None and text != self.text
+        if text is not None:
+            self.set_text(text)
+        state_changed = stopping != self.stopping
+        self.stopping = stopping
+        return state_changed or (stopping and text_changed)
+
+    def set_text(self, text):
+        """Update the text displayed while a stop is being processed."""
+        self.text = text
+
+    update = set_text
+
+    def render(self):
+        """Return the stop control HTML."""
+        if not self.visible:
+            return ""
+
+        label = f"■ {self.text}" if self.stopping else "■"
+        shortcut = "⌘+Esc" if sublime.platform() == "osx" else "shift+esc"
+        title = f"Stop conversation ({shortcut})"
+        return f'''\
+            <a href="stop_conversation" class="stop-hint" title="{title}">{label}</a>'''
+
+
 class LoadingAnimation:
     """
     Manages a loading animation phantom with start/stop control.
