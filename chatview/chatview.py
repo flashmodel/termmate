@@ -2443,19 +2443,21 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
             insert_text = "\n" * max(0, needed - trailing) + insert_text
         else:
             # Context menu: use active view + selection
-            if not view:
-                return
-            file_path = view.file_name()
-            if not file_path:
-                return
-            sel = view.sel()[0]
-            row_start, _ = view.rowcol(sel.begin())
-            row_end, _ = view.rowcol(sel.end())
-            if row_start == row_end:
-                tags = f"@{file_path}#L{row_start + 1}"
+            file_path = view.file_name() if view else None
+            if file_path:
+                sel = view.sel()[0]
+                row_start, _ = view.rowcol(sel.begin())
+                row_end, _ = view.rowcol(sel.end())
+                if row_start == row_end:
+                    tags = f"@{file_path}#L{row_start + 1}"
+                else:
+                    tags = f"@{file_path}#L{row_start + 1}-{row_end + 1}"
+                insert_text = tags + " "
             else:
-                tags = f"@{file_path}#L{row_start + 1}-{row_end + 1}"
-            insert_text = tags + " "
+                # No active view, or a non-file view such as Terminus:
+                # continue through the command without adding file context.
+                tags = ""
+                insert_text = ""
 
         chat_view = None
         for v in self.window.views():
@@ -2467,6 +2469,8 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
             self.window.run_command("term_chat_cli", {"initial_msg": tags})
         else:
             self.window.focus_view(chat_view)
+            if not insert_text:
+                return
             # Preserve the current cursor/selection when it is in the input
             # area. A history selection is allowed for copying/quoting, but a
             # programmatic insert there would bypass on_text_command and
