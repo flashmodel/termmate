@@ -603,7 +603,7 @@ class ModelPanel:
                     color: var(--accent);
                     display: inline-block;
                     text-decoration: none;
-                    margin-left: 6px;
+                    margin-left: 2px;
                     padding: 4px 2px;
                     line-height: 1.2;
                 }}
