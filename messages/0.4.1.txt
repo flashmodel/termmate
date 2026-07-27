@@ -1,0 +1,7 @@
+TermMate 0.4.1
+==============
+
+- Stop Button in Model Panel
+  Added a stop button to the model panel, allowing you to stop the current
+  conversation directly from the panel.
+

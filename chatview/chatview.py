@@ -491,30 +491,23 @@ class InputPromptMarker:
 
     def __init__(self, view):
         self.view = view
-        self.phantom_id = None
+        self.phantom_set = sublime.PhantomSet(view, "chatview_input_marker")
 
     def update(self):
-        """Pin the marker at the input line start; re-add only if it drifted."""
+        """Pin the marker at the input line start."""
         start = input_editable_start(self.view)
         if start > self.view.size():
             # Input line not created yet (fresh view before term_chat_input_prompt)
             return
-        if self.phantom_id is not None:
-            current = self.view.query_phantoms([self.phantom_id])
-            if current and current[0].begin() == start:
-                return
-            self.view.erase_phantom_by_id(self.phantom_id)
-        self.phantom_id = self.view.add_phantom(
-            "chatview_input_marker",
+        phantom = sublime.Phantom(
             sublime.Region(start, start),
             self.HTML,
             sublime.LAYOUT_INLINE,
         )
+        self.phantom_set.update([phantom])
 
     def clear(self):
-        if self.phantom_id is not None:
-            self.view.erase_phantom_by_id(self.phantom_id)
-            self.phantom_id = None
+        self.phantom_set.update([])
 
 
 class ModelPanel:
@@ -603,7 +596,7 @@ class ModelPanel:
                     color: var(--accent);
                     display: inline-block;
                     text-decoration: none;
-                    margin-left: 6px;
+                    margin-left: 2px;
                     padding: 4px 2px;
                     line-height: 1.2;
                 }}
@@ -1992,6 +1985,28 @@ class TermChatHistoryDownCommand(sublime_plugin.TextCommand):
 
 
 class ChatViewListener(sublime_plugin.EventListener):
+    def on_activated_async(self, view):
+        """
+        Refresh input marker and reconnect chat view if orphaned when view gains focus.
+        """
+        if not view.settings().get(CHAT_VIEW_FLAG, False):
+            return
+
+        window = view.window()
+        if not window:
+            return
+
+        window_id = window.id()
+        if window_id in chatview_clients:
+            session = chatview_clients[window_id]
+            if session.chat_view.id() == view.id():
+                session.input_marker.update()
+                session.model_phantom.update(plan_mode=session.plan_mode)
+                LOG.debug("refresh chat view input phantom")
+                return
+
+        sublime.set_timeout(lambda: _reconnect_chat_view(view), 100)
+
     def on_load(self, view):
         window = view.window()
         if not window:
