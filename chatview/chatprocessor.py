@@ -576,7 +576,7 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
             header = f"⏺ fileChange {', '.join(file_parts)}" if file_parts else "⏺ fileChange"
 
             if diffs:
-                return header + "\n" + "\n\n".join(diffs)
+                return header + "\n\n" + "\n\n".join(diffs)
 
             return header
 
