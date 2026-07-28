@@ -29,7 +29,7 @@ You can also install manually from github releases:
    - **Linux**: `~/.config/sublime-text/Installed Packages/`
 3. Restart Sublime Text.
 
-### 2. Install an Agent CLI
+### 2. Install Agent CLI
 
 TermMate relies on external agent CLIs. If you already have Claude Code, Codex, or Pi Agent installed, TermMate will detect them automatically — no extra setup needed.
 
@@ -100,23 +100,15 @@ The example above sets `GEMINI_API_KEY` for Pi Agent authentication.
 
 ## Usage & Key Features
 
-**1. Quick Prompt Without Chat View**
+**1. Chat with Agent about Current File or Selection**
 
-Use the command palette (`TermMate: Prompt`) to send a quick instruction to the agent without opening the chat view manually.
-
-**2. Set Working Directory**
-
-Right-click on any folder in the sidebar and select **Set Working Directory** to set the working directory for the agent. This affects the current working directory when agents execute commands or access files. You can also use the command palette.
-
-**3. Chat with Current File or Selection**
-
-Right-click on open file or text selection and use **TermMate: Chat with Agent** can add it as context for your next prompt. This will:
+Right-click on any file or text selection and choose **TermMate: Chat with Agent** to send it as context for your next prompt. This will:
 
 - Open the TermMate chat view (if not already open).
 - Insert a reference to the file (`@filename`) or selected line range (`@filename#L1-10`) into the message prompt.
 - Tagged files will be automatically sent as context to the active agent.
 
-**4. File Tags `@` Smart Completion**
+**2. File Tags `@` Smart Completion**
 
 Tag files in your prompt to give the agent precise project context. Typing `@` in the chat input instantly opens a completion popup with three categories of suggestions:
 
@@ -125,6 +117,16 @@ Tag files in your prompt to give the agent precise project context. Typing `@` i
 - 📁 Subdirectories — inserted with a trailing `/` to reference a whole directory
 
 A tag can point at a file (`@src/main.py`), a line or range (`@src/main.py#L42`, `@src/main.py#L10-25`), or a directory (`@src/`). Tagged files are sent to the agent as context along with your message. **Chat with Agent** and the sidebar context menu can also insert tags for you.
+
+**3. Quick Prompt Without Chat View**
+
+Use the command palette (`TermMate: Prompt`) to send a quick instruction to the agent without opening the chat view manually.
+
+**4. Set Working Directory**
+
+Right-click on any folder in the sidebar and select **Set Working Directory** to choose the agent's primary working directory (`cwd`). This is the default directory used when the agent runs commands or accesses relative paths. You can also use `TermMate: Set Working Directory` from the command palette.
+
+For sublime projects with multi-folder open in the same workspace, TermMate keeps the selected folder as the `cwd` and gives the agent access to the other folders as additional directories. This is equivalent to agent's `add-dir` option.
 
 **5. Split Chat Window**
 
@@ -319,4 +321,3 @@ TermMate is provided under the **Apache License, Version 2.0** with the **Common
 This means it's free to use, modify, and redistribute the code for personal or internal use. However, **commercial resale or providing a paid service is strictly prohibited**.
 
 For complete details, please see the [LICENSE](LICENSE) file.
-

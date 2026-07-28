@@ -16,4 +16,4 @@ Getting Started:
 Data Privacy:
 By default, this plugin does not send your entire workspace to the agents. Only text you type in the chat, files you explicitly @-mention, and tool-driven context are sent to the AI service.
 
-For more information on features and configuration, see https://github.com/flashmodel/termmate#termmate
+For more information on features and configuration, see https://github.com/flashmodel/termmate#getting-started
