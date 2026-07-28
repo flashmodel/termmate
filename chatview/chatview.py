@@ -45,9 +45,11 @@ CHAT_SESSION_ID = "chatview_session_id"
 CHAT_VIEW_NAME = "Chat View"
 PACKAGE_NAME = "TermMate"
 PROMPT_PREFIX = "\n❯ "  # transcript prefix for submitted prompts; the live input line uses InputPromptMarker instead
+PREFERENCES_CHANGE_KEY = "termmate_chatview_preferences"
 
 # Global store for active ChatSession: window_id -> ChatSession
 chatview_clients = {}
+preferences_redraw_scheduled = False
 
 
 def set_input_start(view, pos):
@@ -115,6 +117,8 @@ def plugin_loaded():
     """
     settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
     plugin.update_log_level(settings)
+    LOG.info("TermMate plugin loaded")
+    _watch_preferences()
     # Defer scan to allow ST to finish restoring all scratch views
     sublime.set_timeout(_restore_chat_sessions, 500)
 
@@ -124,6 +128,8 @@ def plugin_unloaded():
     Called by Sublime Text when the plugin is unloaded.
     Cleans up active ChatSessions.
     """
+    _unwatch_preferences()
+
     for window_id, session in list(chatview_clients.items()):
         try:
             LOG.info(f"Stopping ChatView session for window {window_id} on unload")
@@ -132,6 +138,47 @@ def plugin_unloaded():
             LOG.error(f"Failed to stop ChatView session on plugin unload: {e}")
 
     chatview_clients.clear()
+
+
+def _watch_preferences():
+    """Watch preference changes that can invalidate minihtml."""
+    settings = sublime.load_settings("Preferences.sublime-settings")
+    settings.clear_on_change(PREFERENCES_CHANGE_KEY)
+    settings.add_on_change(
+        PREFERENCES_CHANGE_KEY,
+        _on_preferences_changed,
+    )
+
+
+def _unwatch_preferences():
+    """Remove the preferences callback registered by this plugin instance."""
+    settings = sublime.load_settings("Preferences.sublime-settings")
+    settings.clear_on_change(PREFERENCES_CHANGE_KEY)
+
+
+def _on_preferences_changed():
+    """Redraw input phantoms after preferences change."""
+    global preferences_redraw_scheduled
+
+    if preferences_redraw_scheduled:
+        return
+
+    preferences_redraw_scheduled = True
+    LOG.info("TermMate scheduling chat view on preferences changed")
+    sublime.set_timeout(_refresh_input_phantoms, 500)
+
+
+def _refresh_input_phantoms():
+    """Force a redraw after Sublime finishes rebuilding package resources."""
+    global preferences_redraw_scheduled
+
+    try:
+        for window_id, session in list(chatview_clients.items()):
+            session.model_phantom.update()
+            session.input_marker.update()
+            LOG.debug(f"Redrew chat view input phantoms for window {window_id}")
+    finally:
+        preferences_redraw_scheduled = False
 
 
 def _restore_chat_sessions():
@@ -168,7 +215,7 @@ def _reconnect_chat_view(view):
     session = ChatSession(window, view, cwd, add_dirs=add_dirs, session_id=session_id)
     chatview_clients[window_id] = session
     # Restore the model phantom at the existing CHAT_INPUT_START position
-    session.model_phantom.update(plan_mode=session.plan_mode)
+    session.model_phantom.update()
     view.run_command("term_chat_output_append", {"text": "\n\n[Reconnected after restart]\n"})
     LOG.info(f"Reconnected ChatView agent for window {window_id}, cwd={cwd}, add_dirs={add_dirs}, session_id={session_id}")
 
@@ -520,29 +567,37 @@ class ModelPanel:
         self.phantom_set = sublime.PhantomSet(view, "chatview_model")
         self.status_hint = StatusHint()
 
-    def _refresh(self):
-        """Redraw while preserving the current plan-mode label."""
-        plan_mode_value = self.window.settings().get(CHAT_PLAN_MODE, PlanMode.FAST.value)
-        try:
-            plan_mode = PlanMode(plan_mode_value)
-        except ValueError:
-            plan_mode = PlanMode.FAST
-        self.update(plan_mode=plan_mode)
+    def _on_navigate(self, href):
+        """Handle actions from links in the model panel."""
+        if href == "set_agent":
+            self.window.run_command("term_chat_set_agent")
+        elif href == "set_model":
+            self.window.run_command("term_chat_set_model")
+        elif href == "toggle_plan":
+            self.window.run_command("term_chat_toggle_plan_mode")
+        elif href == "stop_conversation":
+            self.window.run_command("term_chat_interrupt", {"confirm": True})
 
     def set_running(self, running):
         """Show the stop hint only while the agent is processing a turn."""
         if self.status_hint.visible == running:
             return
         self.status_hint.set_visible(running)
-        self._refresh()
+        self.update()
 
     def set_stopping(self, stopping, text=None):
         """Update the stop label while the agent processes an interrupt."""
         if self.status_hint.visible and self.status_hint.set_stopping(stopping, text):
-            self._refresh()
+            self.update()
 
-    def update(self, plan_mode=PlanMode.FAST):
+    def update(self):
         """Update the model phantom display."""
+        plan_mode_value = self.window.settings().get(CHAT_PLAN_MODE, PlanMode.FAST.value)
+        try:
+            plan_mode = PlanMode(plan_mode_value)
+        except ValueError:
+            plan_mode = PlanMode.FAST
+
         input_start = get_input_start(self.view)
         region = sublime.Region(input_start, input_start)
 
@@ -625,22 +680,13 @@ class ModelPanel:
         </body>
         """
 
-        def on_navigate(href):
-            if href == "set_agent":
-                self.window.run_command("term_chat_set_agent")
-            elif href == "set_model":
-                self.window.run_command("term_chat_set_model")
-            elif href == "toggle_plan":
-                self.window.run_command("term_chat_toggle_plan_mode")
-            elif href == "stop_conversation":
-                self.window.run_command("term_chat_interrupt", {"confirm": True})
-
-        self.phantom_set.update([sublime.Phantom(
+        phantom = sublime.Phantom(
             region,
             html,
             sublime.LAYOUT_BLOCK,
-            on_navigate
-        )])
+            self._on_navigate
+        )
+        self.phantom_set.update([phantom])
 
     def clear(self):
         """Clear the model phantom."""
@@ -1985,28 +2031,6 @@ class TermChatHistoryDownCommand(sublime_plugin.TextCommand):
 
 
 class ChatViewListener(sublime_plugin.EventListener):
-    def on_activated_async(self, view):
-        """
-        Refresh input marker and reconnect chat view if orphaned when view gains focus.
-        """
-        if not view.settings().get(CHAT_VIEW_FLAG, False):
-            return
-
-        window = view.window()
-        if not window:
-            return
-
-        window_id = window.id()
-        if window_id in chatview_clients:
-            session = chatview_clients[window_id]
-            if session.chat_view.id() == view.id():
-                session.input_marker.update()
-                session.model_phantom.update(plan_mode=session.plan_mode)
-                LOG.debug("refresh chat view input phantom")
-                return
-
-        sublime.set_timeout(lambda: _reconnect_chat_view(view), 100)
-
     def on_load(self, view):
         window = view.window()
         if not window:
@@ -2381,9 +2405,7 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
 
         window = self.view.window()
         if window and window.id() in chatview_clients:
-            chatview_clients[window.id()].model_phantom.update(
-                plan_mode=chatview_clients[window.id()].plan_mode
-            )
+            chatview_clients[window.id()].model_phantom.update()
 
         if rewind_text:
             self.view.insert(edit, self.view.size(), rewind_text)
@@ -2419,7 +2441,7 @@ class TermChatInputPromptCommand(sublime_plugin.TextCommand):
         window = self.view.window()
         if window and window.id() in chatview_clients:
             session = chatview_clients[window.id()]
-            session.model_phantom.update(plan_mode=session.plan_mode)
+            session.model_phantom.update()
 
         # Next input prompt (the ❯ itself is the InputPromptMarker phantom)
         if text:
@@ -2889,7 +2911,7 @@ class TermChatSetAgentCommand(sublime_plugin.WindowCommand):
                 session = chatview_clients[window_id]
                 if agent != current_agent:
                     session.switch_agent(agent)
-                session.model_phantom.update(plan_mode=session.plan_mode)
+                session.model_phantom.update()
 
     def input(self, args):
         current_agent = self.window.settings().get(CHAT_AGENT, "claude")
@@ -2928,7 +2950,7 @@ class TermChatSetModelCommand(sublime_plugin.WindowCommand):
             window_id = self.window.id()
             if window_id in chatview_clients:
                 session = chatview_clients[window_id]
-                session.model_phantom.update(plan_mode=session.plan_mode)
+                session.model_phantom.update()
                 # Update the running agent directly
                 if session.agent_thread:
                     session.agent_thread.update_config(model=model.strip())
@@ -3041,7 +3063,7 @@ class TermChatTogglePlanModeCommand(sublime_plugin.WindowCommand):
         window_id = self.window.id()
         if window_id in chatview_clients:
             session = chatview_clients[window_id]
-            session.model_phantom.update(plan_mode=plan_mode_enum)
+            session.model_phantom.update()
             # Update plan mode (reconnects for Claude, dynamic update for Codex)
             session.update_plan_mode(plan_mode=plan_mode_enum)
 
