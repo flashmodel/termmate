@@ -35,24 +35,19 @@ TermMate relies on external agent CLIs. If you already have Claude Code, Codex, 
 
 Otherwise, the easiest way is to install directly from within Sublime Text: open the Command Palette, type `TermMate: Install Agent`, and select the agent you want. TermMate will run the installation in dedicated panel and notify you when it's complete. CLIs are installed to `~/.local/bin` on macOS/Linux and `%APPDATA%\npm` on Windows.
 
-**or install manually from your terminal:**
+Alternatively, install manually from your terminal:
 
-**Claude Code:**
-```bash
+```shell
+# Claude Code
 curl -fsSL https://claude.ai/install.sh | bash
-```
 
-**Codex:**
-```bash
+# Codex (macOS/Linux)
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
-```
-Windows:
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
-```
 
-**Pi Agent:**
-```bash
+# Codex (Windows PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+
+# Pi Agent
 curl -fsSL https://pi.dev/install.sh | sh
 ```
 
@@ -96,7 +91,8 @@ The example above sets `GEMINI_API_KEY` for Pi Agent authentication.
 - Type `TermMate: Start Chat` and press `Enter`.
 - A new chat view will open for the TermMate chat.
 - Type your message and press `Cmd+Enter` (macOS) or `Ctrl+Enter` (Windows/Linux) to send. You can even edit prompts in Vim mode.
-- You can stop a running conversation at any time. Use the shortcut `Cmd+Escape` (Mac) / `Shift+Escape` (Windows/Linux) in the chat window, or run `TermMate: Stop Conversation` from the command palette.
+
+You can stop a running conversation at any time. Use the shortcut `Cmd+Escape` (Mac) / `Shift+Escape` (Windows/Linux) in the chat window, or run `TermMate: Stop Conversation` from the command palette.
 
 ## Usage & Key Features
 
@@ -118,15 +114,15 @@ Tag files in your prompt to give the agent precise project context. Typing `@` i
 
 A tag can point at a file (`@src/main.py`), a line or range (`@src/main.py#L42`, `@src/main.py#L10-25`), or a directory (`@src/`). Tagged files are sent to the agent as context along with your message. **Chat with Agent** and the sidebar context menu can also insert tags for you.
 
-**3. Quick Prompt Without Chat View**
-
-Use the command palette (`TermMate: Prompt`) to send a quick instruction to the agent without opening the chat view manually.
-
-**4. Set Working Directory**
+**3. Set Working Directory**
 
 Right-click on any folder in the sidebar and select **Set Working Directory** to choose the agent's primary working directory (`cwd`). This is the default directory used when the agent runs commands or accesses relative paths. You can also use `TermMate: Set Working Directory` from the command palette.
 
 For sublime projects with multi-folder open in the same workspace, TermMate keeps the selected folder as the `cwd` and gives the agent access to the other folders as additional directories. This is equivalent to agent's `add-dir` option.
+
+**4. Quick Prompt**
+
+Use the command palette (`TermMate: Prompt`) to send a quick instruction to the agent without opening the chat view manually.
 
 **5. Split Chat Window**
 
