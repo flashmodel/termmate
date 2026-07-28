@@ -35,7 +35,7 @@ TermMate relies on external agent CLIs. If you already have Claude Code, Codex, 
 
 Otherwise, the easiest way is to install directly from within Sublime Text: open the Command Palette, type `TermMate: Install Agent`, and select the agent you want. TermMate will run the installation in dedicated panel and notify you when it's complete. CLIs are installed to `~/.local/bin` on macOS/Linux and `%APPDATA%\npm` on Windows.
 
-Alternatively, install manually from your terminal:
+Alternatively, manually install an agent from your terminal:
 
 ```shell
 # Claude Code
@@ -270,16 +270,16 @@ By default, TermMate does not register a shortcut for `TermMate: Start Chat` to 
 ]
 ```
 
-If you prefer using just the `Escape` key to interrupt the conversation when the chat view is focused, you can add this:
+To add the current file location or selected lines to **Chat with Agent**, configure `Cmd+Option+K` on macOS or `Ctrl+Alt+K` on Windows/Linux:
 
 ```json
 [
     {
-        "keys": ["escape"],
-        "command": "term_chat_interrupt",
+        "keys": ["primary+alt+k"],
+        "command": "term_chat_add_context",
         "context":
         [
-            { "key": "setting.chatview_chat", "operator": "equal", "operand": true }
+            { "key": "setting.is_widget", "operand": false }
         ]
     }
 ]
