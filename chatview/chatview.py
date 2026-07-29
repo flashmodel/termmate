@@ -2172,6 +2172,9 @@ class ChatViewListener(sublime_plugin.EventListener):
                     line_text = view.substr(view.line(click_point))
                     if session.message_processor.open_tool_file(line_text, window, view=view, point=click_point):
                         return ("noop", {})
+                    if session.message_processor.open_local_file_link(
+                            line_text, window, view, click_point):
+                        return ("noop", {})
                     if session.open_artifact_diff_at(click_point):
                         return ("noop", {})
 

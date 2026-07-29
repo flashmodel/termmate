@@ -20,15 +20,6 @@ Install TermMate via [Package Control](https://packagecontrol.io/packages/TermMa
 2. Type `Package Control: Install Package` and press `Enter`.
 3. Search for `TermMate` and press `Enter`.
 
-You can also install manually from github releases:
-
-1. Download `TermMate.sublime-package` from the [latest release](https://github.com/flashmodel/termmate/releases).
-2. Copy `TermMate.sublime-package` into your Sublime Text **Installed Packages** directory:
-   - **macOS**: `~/Library/Application Support/Sublime Text/Installed Packages/`
-   - **Windows**: `%APPDATA%\Sublime Text\Installed Packages\`
-   - **Linux**: `~/.config/sublime-text/Installed Packages/`
-3. Restart Sublime Text.
-
 ### 2. Install Agent CLI
 
 TermMate relies on external agent CLIs. If you already have Claude Code, Codex, or Pi Agent installed, TermMate will detect them automatically — no extra setup needed.
