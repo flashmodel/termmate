@@ -1,4 +1,5 @@
 import difflib
+import json
 import logging
 import os
 import re
@@ -13,11 +14,52 @@ from .md_render import MarkdownFormatter
 LOG = logging.getLogger("TermMate")
 
 _WINDOWS_DRIVE_PATH_RE = re.compile(r'^[a-zA-Z]:[\\/]')
+_TOOL_ARGUMENTS_MAX_CHARS = 300
 
 
 def _is_windows_abs_path(path):
     return bool(_WINDOWS_DRIVE_PATH_RE.match(path)) or path.startswith(
         ("\\\\", "//"))
+
+
+def _format_tool_value(value):
+    """Return a readable single-line representation of a tool argument value."""
+    if isinstance(value, str):
+        return value.replace("\r", "\\r").replace("\n", "\\n")
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if value is None:
+        return "null"
+    if isinstance(value, (int, float)):
+        return str(value)
+    try:
+        text = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        text = str(value)
+    text = text.replace("\r", "\\r").replace("\n", "\\n")
+    return text
+
+
+def _format_tool_arguments(arguments):
+    """Return bounded key/value text for a tool invocation."""
+    if arguments is None:
+        return ""
+    if isinstance(arguments, dict):
+        text = ", ".join(
+            f"{key}: {_format_tool_value(value)}"
+            for key, value in arguments.items()
+        )
+    else:
+        text = _format_tool_value(arguments)
+    if len(text) > _TOOL_ARGUMENTS_MAX_CHARS:
+        text = text[:_TOOL_ARGUMENTS_MAX_CHARS - 1] + "…"
+    return text
 
 
 def _make_tool_file_re(tool_names):
@@ -514,7 +556,7 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
 
 
 class CodexMessageProcessor(BaseChatMessageProcessor):
-    _TOOL_FILE_NAMES = ("fileChange",)
+    _TOOL_FILE_NAMES = ("fileChange", "ImageView")
 
     def _handle_typed_message(self, message):
         if message.type == "assistant":
@@ -662,6 +704,57 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
 
             return ("\n\n".join(rendered_parts)
                     if rendered_parts else "⏺ fileChange")
+        elif name in ("mcpToolCall", "dynamicToolCall"):
+            namespace = block.get("server") or block.get("namespace")
+            tool = block.get("tool") or "unknown_tool"
+            qualified_name = (
+                f"{namespace}·{tool}"
+                if namespace else tool
+            )
+            arguments = block.get("arguments", block.get("input", {}))
+            detail = _format_tool_arguments(arguments)
+            return f"⏺ {qualified_name} ({detail})" if detail else f"⏺ {qualified_name}"
+        elif name == "collabAgentToolCall":
+            tool = block.get("tool") or "unknown_tool"
+            arguments = {}
+            receiver_ids = block.get("receiverThreadIds") or []
+            if receiver_ids:
+                arguments["agents"] = ", ".join(receiver_ids)
+            if block.get("prompt"):
+                arguments["prompt"] = block["prompt"]
+            if block.get("model"):
+                arguments["model"] = block["model"]
+            if block.get("reasoningEffort"):
+                arguments["reasoning"] = block["reasoningEffort"]
+            detail = _format_tool_arguments(arguments)
+            return f"⏺ {tool} ({detail})" if detail else f"⏺ {tool}"
+        elif name == "webSearch":
+            detail = block.get("query") or ""
+            action = block.get("action") or {}
+            action_type = action.get("type") if isinstance(action, dict) else None
+            if action_type == "search":
+                queries = action.get("queries") or []
+                detail = action.get("query") or (queries[0] if queries else detail)
+            elif action_type == "openPage":
+                detail = action.get("url") or detail
+            elif action_type == "findInPage":
+                pattern = action.get("pattern")
+                url = action.get("url")
+                if pattern and url:
+                    detail = f"'{pattern}' in {url}"
+                else:
+                    detail = pattern or url or detail
+            return f"⏺ {name} ({detail})" if detail else f"⏺ {name}"
+        elif name == "imageView":
+            path = block.get("path") or ""
+            if path:
+                cwd = (self.session.agent_thread.cwd
+                       if self.session.agent_thread else self.session.cwd) or ""
+                _, rel_path = _resolve_rel_path(path, cwd)
+                return f"⏺ {name} {rel_path}"
+            return f"⏺ {name}"
+        elif name == "imageGeneration":
+            return f"⏺ {name}"
 
         return f"⏺ {name}" if name else ""
 

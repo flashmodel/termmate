@@ -618,15 +618,77 @@ class CodexAgent(BaseAgent):
             await self._message_queue.put(tool_msg)
 
         elif item_type == "mcpToolCall":
-            server = item.get("server", "")
-            tool = item.get("tool", "")
             tool_msg = Message(
                 MessageType.TOOL_USE.value,
                 content={
-                    "name": f"{server}/{tool}",
-                    "input": item.get("arguments", {}),
-                    "result": item.get("result", {}),
-                    "error": item.get("error", {}),
+                    "name": "mcpToolCall",
+                    "server": item.get("server", ""),
+                    "tool": item.get("tool", ""),
+                    "arguments": item.get("arguments", {}),
+                    "status": item.get("status"),
+                },
+                msg_id=item.get("id"),
+            )
+            await self._message_queue.put(tool_msg)
+
+        elif item_type == "dynamicToolCall":
+            tool_msg = Message(
+                MessageType.TOOL_USE.value,
+                content={
+                    "name": "dynamicToolCall",
+                    "namespace": item.get("namespace"),
+                    "tool": item.get("tool", ""),
+                    "arguments": item.get("arguments", {}),
+                    "status": item.get("status"),
+                },
+                msg_id=item.get("id"),
+            )
+            await self._message_queue.put(tool_msg)
+
+        elif item_type == "collabAgentToolCall":
+            tool_msg = Message(
+                MessageType.TOOL_USE.value,
+                content={
+                    "name": "collabAgentToolCall",
+                    "tool": item.get("tool", ""),
+                    "receiverThreadIds": item.get("receiverThreadIds", []),
+                    "prompt": item.get("prompt"),
+                    "model": item.get("model"),
+                    "reasoningEffort": item.get("reasoningEffort"),
+                    "status": item.get("status"),
+                },
+                msg_id=item.get("id"),
+            )
+            await self._message_queue.put(tool_msg)
+
+        elif item_type == "webSearch":
+            tool_msg = Message(
+                MessageType.TOOL_USE.value,
+                content={
+                    "name": "webSearch",
+                    "query": item.get("query", ""),
+                    "action": item.get("action"),
+                },
+                msg_id=item.get("id"),
+            )
+            await self._message_queue.put(tool_msg)
+
+        elif item_type == "imageView":
+            tool_msg = Message(
+                MessageType.TOOL_USE.value,
+                content={
+                    "name": "imageView",
+                    "path": item.get("path", ""),
+                },
+                msg_id=item.get("id"),
+            )
+            await self._message_queue.put(tool_msg)
+
+        elif item_type == "imageGeneration":
+            tool_msg = Message(
+                MessageType.TOOL_USE.value,
+                content={
+                    "name": "imageGeneration",
                     "status": item.get("status"),
                 },
                 msg_id=item.get("id"),

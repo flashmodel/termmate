@@ -274,6 +274,82 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
             finally:
                 await agent.disconnect()
 
+    async def test_completed_tool_items_are_forwarded_for_formatting(self):
+        agent = CodexAgent(options=AgentOptions(cli_path="/usr/bin/true"))
+        items = [
+            {
+                "type": "mcpToolCall",
+                "id": "mcp-1",
+                "server": "github",
+                "tool": "search_repositories",
+                "arguments": {"query": "codex"},
+                "status": "completed",
+            },
+            {
+                "type": "dynamicToolCall",
+                "id": "dynamic-1",
+                "namespace": "design",
+                "tool": "choose",
+                "arguments": {"theme": "editorial"},
+                "status": "completed",
+            },
+            {
+                "type": "collabAgentToolCall",
+                "id": "collab-1",
+                "tool": "spawnAgent",
+                "receiverThreadIds": ["thread-2"],
+                "prompt": "Inspect tests",
+                "model": "gpt-5",
+                "reasoningEffort": "high",
+                "status": "completed",
+            },
+            {
+                "type": "webSearch",
+                "id": "search-1",
+                "query": "Codex app-server protocol",
+                "action": {"type": "search"},
+            },
+            {
+                "type": "imageView",
+                "id": "image-view-1",
+                "path": "/tmp/preview.png",
+            },
+            {
+                "type": "imageGeneration",
+                "id": "image-generation-1",
+                "status": "completed",
+                "result": "ignored",
+            },
+        ]
+
+        for item in items:
+            await agent._handle_item_completed({"item": item})
+
+        messages = [await agent._message_queue.get() for _ in items]
+
+        self.assertEqual(
+            [message.content["name"] for message in messages],
+            [
+                "mcpToolCall",
+                "dynamicToolCall",
+                "collabAgentToolCall",
+                "webSearch",
+                "imageView",
+                "imageGeneration",
+            ],
+        )
+        self.assertEqual(
+            messages[0].content,
+            {
+                "name": "mcpToolCall",
+                "server": "github",
+                "tool": "search_repositories",
+                "arguments": {"query": "codex"},
+                "status": "completed",
+            },
+        )
+        self.assertNotIn("result", messages[-1].content)
+
 
 if __name__ == "__main__":
     unittest.main()
