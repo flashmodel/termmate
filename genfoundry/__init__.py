@@ -23,6 +23,11 @@ from .jcode_agent import JCodeAgent, find_jcode_cli
 from .vibe_agent import VibeAgent, find_vibe_cli
 from .acp_agent import ACPAgent
 from .junie_agent import JunieAgent, find_junie_cli
+from .gemini_acp_agent import GeminiACPAgent, find_gemini_acp_cli
+from .grok_acp_agent import GrokACPAgent, find_grok_acp_cli
+from .opencode_acp_agent import OpenCodeACPAgent, find_opencode_acp_cli
+from .vibe_acp_agent import VibeACPAgent, find_vibe_acp_cli
+from .kimi_acp_agent import KimiACPAgent, find_kimi_acp_cli
 
 __all__ = [
     "BaseAgent",
@@ -65,4 +70,14 @@ __all__ = [
     "ACPAgent",
     "JunieAgent",
     "find_junie_cli",
+    "GeminiACPAgent",
+    "find_gemini_acp_cli",
+    "GrokACPAgent",
+    "find_grok_acp_cli",
+    "OpenCodeACPAgent",
+    "find_opencode_acp_cli",
+    "VibeACPAgent",
+    "find_vibe_acp_cli",
+    "KimiACPAgent",
+    "find_kimi_acp_cli",
 ]

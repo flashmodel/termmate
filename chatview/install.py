@@ -18,23 +18,71 @@ from ..genfoundry.mimo_agent import find_mimo_cli
 from ..genfoundry.jcode_agent import find_jcode_cli
 from ..genfoundry.vibe_agent import find_vibe_cli
 from ..genfoundry.junie_agent import find_junie_cli
+from ..genfoundry.gemini_acp_agent import find_gemini_acp_cli
+from ..genfoundry.grok_acp_agent import find_grok_acp_cli
+from ..genfoundry.opencode_acp_agent import find_opencode_acp_cli
+from ..genfoundry.vibe_acp_agent import find_vibe_acp_cli
+from ..genfoundry.kimi_acp_agent import find_kimi_acp_cli
 from .chatpanel import LoadingAnimation
 
-AGENT_CLI_NAME = {"claude": "claude", "codex": "codex", "pi": "pi", "grok": "grok", "kimi": "kimi", "qwen": "qwen", "gemini": "gemini", "opencode": "opencode", "mimo": "mimo", "jcode": "jcode", "vibe": "vibe", "junie": "junie"}
-AGENT_FIND_FN  = {"claude": find_claude_cli, "codex": find_codex_cli, "pi": find_pi_cli, "grok": find_grok_cli, "kimi": find_kimi_cli, "qwen": find_qwen_cli, "gemini": find_gemini_cli, "opencode": find_opencode_cli, "mimo": find_mimo_cli, "jcode": find_jcode_cli, "vibe": find_vibe_cli, "junie": find_junie_cli}
-AGENT_LABEL    = {"claude": "Claude Code",   "codex": "Codex",        "pi": "Pi Agent",  "grok": "Grok Build", "kimi": "Kimi CLI", "qwen": "Qwen Code", "gemini": "Gemini CLI", "opencode": "OpenCode", "mimo": "MiMo Code", "jcode": "jcode", "vibe": "Vibe Code", "junie": "Junie"}
+# Providers with a real ACP implementation (gemini/grok/opencode/vibe/kimi) use
+# ACP as their primary key -- real streaming + a genuine bidirectional
+# permission channel, not guessed from reverse-engineered output. The
+# original spawn-per-turn/headless adapters are kept reachable under a
+# "-headless" key as a fallback (older CLI versions without ACP support,
+# or if ACP mode has issues). Qwen's ACP is HTTP+SSE and experimental
+# (`qwen serve`), a different transport than this codebase's stdio-based
+# ACPAgent, so it stays on its spawn-per-turn adapter only.
+AGENT_CLI_NAME = {
+    "claude": "claude", "codex": "codex", "pi": "pi",
+    "grok": "grok", "grok-headless": "grok",
+    "kimi": "kimi", "kimi-headless": "kimi",
+    "qwen": "qwen",
+    "gemini": "gemini", "gemini-headless": "gemini",
+    "opencode": "opencode", "opencode-headless": "opencode",
+    "mimo": "mimo", "jcode": "jcode",
+    "vibe": "vibe-acp", "vibe-headless": "vibe",
+    "junie": "junie",
+}
+AGENT_FIND_FN = {
+    "claude": find_claude_cli, "codex": find_codex_cli, "pi": find_pi_cli,
+    "grok": find_grok_acp_cli, "grok-headless": find_grok_cli,
+    "kimi": find_kimi_acp_cli, "kimi-headless": find_kimi_cli,
+    "qwen": find_qwen_cli,
+    "gemini": find_gemini_acp_cli, "gemini-headless": find_gemini_cli,
+    "opencode": find_opencode_acp_cli, "opencode-headless": find_opencode_cli,
+    "mimo": find_mimo_cli, "jcode": find_jcode_cli,
+    "vibe": find_vibe_acp_cli, "vibe-headless": find_vibe_cli,
+    "junie": find_junie_cli,
+}
+AGENT_LABEL = {
+    "claude": "Claude Code", "codex": "Codex", "pi": "Pi Agent",
+    "grok": "Grok Build (ACP)", "grok-headless": "Grok Build (headless)",
+    "kimi": "Kimi CLI (ACP)", "kimi-headless": "Kimi CLI (print mode)",
+    "qwen": "Qwen Code",
+    "gemini": "Gemini CLI (ACP)", "gemini-headless": "Gemini CLI (headless)",
+    "opencode": "OpenCode (ACP)", "opencode-headless": "OpenCode (headless)",
+    "mimo": "MiMo Code", "jcode": "jcode",
+    "vibe": "Vibe Code (ACP)", "vibe-headless": "Vibe Code (headless)",
+    "junie": "Junie",
+}
 AGENT_DOCS_URL = {
     "claude": "https://code.claude.com/docs/en/setup",
     "codex":  "https://developers.openai.com/codex/cli",
     "pi":     "https://pi.dev/",
     "grok":   "https://github.com/xai-org/grok-build",
+    "grok-headless": "https://github.com/xai-org/grok-build",
     "kimi":   "https://github.com/moonshotai/kimi-cli",
+    "kimi-headless": "https://github.com/moonshotai/kimi-cli",
     "qwen":   "https://github.com/QwenLM/qwen-code",
     "gemini": "https://github.com/google-gemini/gemini-cli",
+    "gemini-headless": "https://github.com/google-gemini/gemini-cli",
     "opencode": "https://opencode.ai/docs",
+    "opencode-headless": "https://opencode.ai/docs",
     "mimo":   "https://mimo.xiaomi.com/mimocode/start",
     "jcode":  "https://github.com/1jehuang/jcode",
     "vibe":   "https://docs.mistral.ai/vibe/code/overview",
+    "vibe-headless": "https://docs.mistral.ai/vibe/code/overview",
     "junie":  "https://junie.jetbrains.com/docs/junie-cli.html",
 }
 

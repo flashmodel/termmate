@@ -9,7 +9,8 @@ import sublime_plugin
 
 from . import utils as plugin
 from ..genfoundry import (
-    ClaudeCodeAgent, CodexAgent, PiAgent, GrokAgent, KimiAgent, QwenAgent, GeminiAgent, OpenCodeAgent, MimoAgent, JCodeAgent, VibeAgent, JunieAgent, AgentOptions, AssistantMessage, TextBlock,
+    ClaudeCodeAgent, CodexAgent, PiAgent, GrokAgent, KimiAgent, QwenAgent, GeminiAgent, OpenCodeAgent, MimoAgent, JCodeAgent, VibeAgent, JunieAgent,
+    GeminiACPAgent, GrokACPAgent, OpenCodeACPAgent, VibeACPAgent, KimiACPAgent, AgentOptions, AssistantMessage, TextBlock,
     PermissionResultAllow, PermissionResultDeny, list_sessions_for_cwd, list_codex_sessions, list_pi_sessions)
 from ..genfoundry.claude_agent import get_claude_session_tail
 from ..genfoundry.codex_agent import get_codex_session_info
@@ -22,6 +23,31 @@ def get_available_agents(settings):
     """Returns a list of available agents."""
     from .install import AGENT_FIND_FN
     return [agent for agent in AGENT_FIND_FN if find_existing_cli(agent, settings)]
+
+# agent_provider setting -> BaseAgent subclass. Keys match install.py's
+# AGENT_CLI_NAME/AGENT_FIND_FN/AGENT_LABEL -- providers with a real ACP
+# implementation use it as their primary key (real streaming + bidirectional
+# permissions); the original spawn-per-turn/headless adapters stay reachable
+# under a "-headless" key. See install.py for the per-provider rationale.
+AGENT_PROVIDER_CLASSES = {
+    "codex": CodexAgent,
+    "pi": PiAgent,
+    "grok": GrokACPAgent,
+    "grok-headless": GrokAgent,
+    "kimi": KimiACPAgent,
+    "kimi-headless": KimiAgent,
+    "qwen": QwenAgent,
+    "gemini": GeminiACPAgent,
+    "gemini-headless": GeminiAgent,
+    "opencode": OpenCodeACPAgent,
+    "opencode-headless": OpenCodeAgent,
+    "mimo": MimoAgent,
+    "jcode": JCodeAgent,
+    "vibe": VibeACPAgent,
+    "vibe-headless": VibeAgent,
+    "junie": JunieAgent,
+    "claude": ClaudeCodeAgent,
+}
 
 # Constants for gutter highlights
 PROMPT_HIGHLIGHT_KEY = "chatview_prompt_highlight"
@@ -206,30 +232,7 @@ class AgentThread(threading.Thread):
         )
 
         agent_provider = self.anthropic_config.get("agent_provider", "claude")
-        if agent_provider == "codex":
-            AgentClass = CodexAgent
-        elif agent_provider == "pi":
-            AgentClass = PiAgent
-        elif agent_provider == "grok":
-            AgentClass = GrokAgent
-        elif agent_provider == "kimi":
-            AgentClass = KimiAgent
-        elif agent_provider == "qwen":
-            AgentClass = QwenAgent
-        elif agent_provider == "gemini":
-            AgentClass = GeminiAgent
-        elif agent_provider == "opencode":
-            AgentClass = OpenCodeAgent
-        elif agent_provider == "mimo":
-            AgentClass = MimoAgent
-        elif agent_provider == "jcode":
-            AgentClass = JCodeAgent
-        elif agent_provider == "vibe":
-            AgentClass = VibeAgent
-        elif agent_provider == "junie":
-            AgentClass = JunieAgent
-        else:
-            AgentClass = ClaudeCodeAgent
+        AgentClass = AGENT_PROVIDER_CLASSES.get(agent_provider, ClaudeCodeAgent)
 
         try:
             async with AgentClass(options) as agent:
@@ -2609,19 +2612,35 @@ class TermChatAgentProviderInputHandler(sublime_plugin.ListInputHandler):
             "claude": "claude: (Claude Code CLI by Anthropic)",
             "codex":  "codex: (Codex CLI by OpenAI)",
             "pi":     "pi: (Pi Coding Agent by Earendil)",
-            "grok":   "grok: (Grok Build CLI by xAI)",
-            "kimi":   "kimi: (Kimi CLI by Moonshot AI)",
+            "grok":   "grok: (Grok Build CLI by xAI, via ACP)",
+            "grok-headless": "grok-headless: (Grok Build, headless mode)",
+            "kimi":   "kimi: (Kimi CLI by Moonshot AI, via ACP)",
+            "kimi-headless": "kimi-headless: (Kimi CLI, print mode)",
             "qwen":   "qwen: (Qwen Code CLI by Alibaba)",
-            "gemini": "gemini: (Gemini CLI by Google)",
-            "opencode": "opencode: (OpenCode)",
+            "gemini": "gemini: (Gemini CLI by Google, via ACP)",
+            "gemini-headless": "gemini-headless: (Gemini CLI, headless mode)",
+            "opencode": "opencode: (OpenCode, via ACP)",
+            "opencode-headless": "opencode-headless: (OpenCode, headless mode)",
             "mimo": "mimo: (MiMo Code by Xiaomi)",
             "jcode": "jcode: (jcode CLI)",
-            "vibe": "vibe: (Vibe Code CLI by Mistral)",
+            "vibe": "vibe: (Vibe Code CLI by Mistral, via ACP)",
+            "vibe-headless": "vibe-headless: (Vibe Code, headless mode)",
             "junie": "junie: (Junie by JetBrains, via ACP)",
         }
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
         items = []
-        for agent in ("claude", "codex", "pi", "grok", "kimi", "qwen", "gemini", "opencode", "mimo", "jcode", "vibe", "junie"):
+        agent_order = (
+            "claude", "codex", "pi",
+            "grok", "grok-headless",
+            "kimi", "kimi-headless",
+            "qwen",
+            "gemini", "gemini-headless",
+            "opencode", "opencode-headless",
+            "mimo", "jcode",
+            "vibe", "vibe-headless",
+            "junie",
+        )
+        for agent in agent_order:
             if agent not in self.available_agents:
                 continue
             path = find_existing_cli(agent, settings) or ""
