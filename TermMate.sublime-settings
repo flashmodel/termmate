@@ -26,6 +26,7 @@
     "codex_command": "",
     "pi_command": "",
     "grok_command": "",
+    "kimi_command": "",
 
     // Extra environment variables to inject into Claude and Codex subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.
@@ -39,6 +40,10 @@
     // "--allow bash:*". No tool-allowlist flags are passed by default;
     // headless Grok turns run with whatever Grok's own default permission
     // behavior is until you set this.
+    // KIMI_EXTRA_ARGS is the same escape hatch for the Kimi agent (e.g.
+    // "--model k2" or "--yolo") -- only --work-dir is passed by default,
+    // since --model/--yolo were only confirmed for a separately-documented
+    // "kimi-agent" binary that may not share plain "kimi"'s flag surface.
     "env": {},
 
     // Enable file-based conversation checkpoint.

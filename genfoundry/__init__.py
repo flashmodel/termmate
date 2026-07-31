@@ -14,6 +14,7 @@ from .codex_agent import CodexAgent, query as codex_query, list_codex_sessions, 
 from .pi_agent import PiAgent, query as pi_query, list_pi_sessions
 from .spawn_per_turn_agent import SpawnPerTurnAgent
 from .grok_agent import GrokAgent, find_grok_cli
+from .kimi_agent import KimiAgent, find_kimi_cli
 
 __all__ = [
     "BaseAgent",
@@ -39,4 +40,6 @@ __all__ = [
     "SpawnPerTurnAgent",
     "GrokAgent",
     "find_grok_cli",
+    "KimiAgent",
+    "find_kimi_cli",
 ]
