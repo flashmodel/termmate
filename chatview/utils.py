@@ -96,6 +96,28 @@ class MarkdownFormatter:
     def str_width(self, text):
         return sum(self.char_width(c) for c in text)
 
+    # Cap on a single table column's display width. Without this, a cell
+    # containing one long unbroken run of text (a full path, a stack trace
+    # fragment, ...) makes the separator row's "-" * width fill balloon to
+    # match -- rendered as one very long horizontal-rule-looking line.
+    MAX_COL_WIDTH = 60
+
+    def _truncate_to_width(self, text, max_width):
+        """Truncate text to at most max_width display columns, adding an
+        ellipsis if truncated. Assumes max_width >= 1."""
+        if self.str_width(text) <= max_width:
+            return text
+        budget = max_width - 1  # leave room for the ellipsis char (width 1)
+        out = []
+        used = 0
+        for ch in text:
+            w = self.char_width(ch)
+            if used + w > budget:
+                break
+            out.append(ch)
+            used += w
+        return "".join(out) + "…"
+
     def format_table(self, lines):
         if not lines:
             return []
@@ -150,7 +172,7 @@ class MarkdownFormatter:
             if i == separator_idx:
                 continue
             for j, cell in enumerate(row):
-                w = self.str_width(cell)
+                w = min(self.str_width(cell), self.MAX_COL_WIDTH)
                 if w > col_widths[j]:
                     col_widths[j] = w
 
@@ -173,6 +195,7 @@ class MarkdownFormatter:
                         fill = "-" * max(3, width)
                     new_row += f" {fill} |"
                 else:
+                    cell = self._truncate_to_width(cell, width)
                     padding = width - self.str_width(cell)
                     new_row += f" {cell}{' ' * padding} |"
             formatted_lines.append(new_row)
