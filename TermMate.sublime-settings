@@ -33,6 +33,7 @@
     "mimo_command": "",
     "jcode_command": "",
     "vibe_command": "",
+    "junie_command": "",
 
     // Extra environment variables to inject into Claude and Codex subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.
@@ -76,6 +77,10 @@
     // "--enabled-tools Read,Grep" or "--auto-approve"/"--yolo". Also note:
     // --resume/--continue require session logging enabled in Vibe's own
     // config to work at all.
+    // Junie has no extra-args escape hatch here: it's launched via the
+    // Agent Client Protocol (--acp=true) rather than a per-turn CLI prompt,
+    // and gets a real interactive approve/deny permission UI as a result --
+    // see genfoundry/acp_agent.py.
     "env": {},
 
     // Enable file-based conversation checkpoint.

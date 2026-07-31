@@ -21,6 +21,8 @@ from .opencode_agent import OpenCodeAgent, find_opencode_cli
 from .mimo_agent import MimoAgent, find_mimo_cli
 from .jcode_agent import JCodeAgent, find_jcode_cli
 from .vibe_agent import VibeAgent, find_vibe_cli
+from .acp_agent import ACPAgent
+from .junie_agent import JunieAgent, find_junie_cli
 
 __all__ = [
     "BaseAgent",
@@ -60,4 +62,7 @@ __all__ = [
     "find_jcode_cli",
     "VibeAgent",
     "find_vibe_cli",
+    "ACPAgent",
+    "JunieAgent",
+    "find_junie_cli",
 ]
