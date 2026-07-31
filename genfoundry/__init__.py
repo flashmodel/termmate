@@ -20,6 +20,7 @@ from .gemini_agent import GeminiAgent, find_gemini_cli
 from .opencode_agent import OpenCodeAgent, find_opencode_cli
 from .mimo_agent import MimoAgent, find_mimo_cli
 from .jcode_agent import JCodeAgent, find_jcode_cli
+from .vibe_agent import VibeAgent, find_vibe_cli
 
 __all__ = [
     "BaseAgent",
@@ -57,4 +58,6 @@ __all__ = [
     "find_mimo_cli",
     "JCodeAgent",
     "find_jcode_cli",
+    "VibeAgent",
+    "find_vibe_cli",
 ]

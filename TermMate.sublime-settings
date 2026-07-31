@@ -32,6 +32,7 @@
     "opencode_command": "",
     "mimo_command": "",
     "jcode_command": "",
+    "vibe_command": "",
 
     // Extra environment variables to inject into Claude and Codex subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.
@@ -71,6 +72,10 @@
     // JCODE_EXTRA_ARGS is the same escape hatch for the jcode agent. No
     // tool-allowlist/yolo-equivalent flag was found documented anywhere
     // for jcode; add flags here once you know your build supports them.
+    // VIBE_EXTRA_ARGS is the same for the Vibe agent -- e.g.
+    // "--enabled-tools Read,Grep" or "--auto-approve"/"--yolo". Also note:
+    // --resume/--continue require session logging enabled in Vibe's own
+    // config to work at all.
     "env": {},
 
     // Enable file-based conversation checkpoint.
