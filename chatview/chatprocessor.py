@@ -2,13 +2,23 @@ import difflib
 import logging
 import os
 import re
+import urllib.parse
 import xml.etree.ElementTree
 
 import sublime
 
 from . import utils
+from .md_render import MarkdownFormatter
 
 LOG = logging.getLogger("TermMate")
+
+_WINDOWS_DRIVE_PATH_RE = re.compile(r'^[a-zA-Z]:[\\/]')
+
+
+def _is_windows_abs_path(path):
+    return bool(_WINDOWS_DRIVE_PATH_RE.match(path)) or path.startswith(
+        ("\\\\", "//"))
+
 
 def _make_tool_file_re(tool_names):
     alt = "|".join(re.escape(n) for n in tool_names)
@@ -16,7 +26,9 @@ def _make_tool_file_re(tool_names):
 
 
 def _resolve_path(path_part, cwd):
-    return path_part if os.path.isabs(path_part) else os.path.normpath(os.path.join(cwd, path_part))
+    return (path_part
+            if os.path.isabs(path_part) or _is_windows_abs_path(path_part)
+            else os.path.normpath(os.path.join(cwd, path_part)))
 
 
 def _resolve_rel_path(path, cwd):
@@ -24,6 +36,7 @@ def _resolve_rel_path(path, cwd):
     abs_path = _resolve_path(path, cwd)
     try:
         rel = os.path.relpath(abs_path, cwd)
+        rel = rel.replace("\\", "/")
     except Exception:
         rel = path
     return abs_path, rel
@@ -82,6 +95,20 @@ def _make_edit_diff(old_str, new_str, rel_path, start_line=None):
     return diff
 
 
+def _diff_from_structured_patch(patches):
+    """Build unified diff hunk text from Claude structuredPatch data, or None."""
+    parts = []
+    for hunk in patches or []:
+        try:
+            header = "@@ -{},{} +{},{} @@".format(
+                hunk["oldStart"], hunk["oldLines"], hunk["newStart"], hunk["newLines"])
+        except (KeyError, TypeError):
+            continue
+        lines = hunk.get("lines") or []
+        parts.append("\n".join([header] + list(lines)))
+    return "\n".join(parts) + "\n" if parts else None
+
+
 def _diff_start_line(diff_text):
     """Return the destination start line from the first @@ hunk, or None."""
     m = re.search(r'^@@ -\d+(?:,\d+)? \+(\d+)', diff_text, re.MULTILINE)
@@ -89,6 +116,47 @@ def _diff_start_line(diff_text):
 
 
 _HUNK_LINE_RE = re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@')
+_MARKDOWN_LINK_RE = re.compile(
+    r'(?<!!)\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)\n]+))'
+)
+
+
+def _parse_markdown_file_target(target, cwd):
+    """Resolve a Markdown link target to (absolute path, line, column)."""
+    target = urllib.parse.unquote(target.strip())
+    if target.lower().startswith("file://"):
+        parsed = urllib.parse.urlparse(target)
+        path = parsed.path
+        if parsed.netloc and parsed.netloc.lower() != "localhost":
+            path = f"//{parsed.netloc}{path}"
+        elif re.match(r'^/[a-zA-Z]:[\\/]', path):
+            path = path[1:]
+        target = path
+        if parsed.fragment:
+            target += f"#{parsed.fragment}"
+    elif (not _is_windows_abs_path(target)
+          and re.match(r'^[a-z][a-z0-9+.-]*:', target, re.IGNORECASE)):
+        return None
+
+    line = None
+    column = None
+    fragment = re.search(r'#L(\d+)(?:C(\d+)|-L\d+)?$', target)
+    if fragment:
+        line = int(fragment.group(1))
+        column = int(fragment.group(2)) if fragment.group(2) else None
+        target = target[:fragment.start()]
+    else:
+        encoded_position = re.match(r'^(.*?):(\d+)(?::(\d+))?$', target)
+        if encoded_position:
+            target = encoded_position.group(1)
+            line = int(encoded_position.group(2))
+            column = (int(encoded_position.group(3))
+                      if encoded_position.group(3) else None)
+
+    path = _resolve_path(target, cwd)
+    if not os.path.isfile(path):
+        return None
+    return path, line, column
 
 
 class BaseChatMessageProcessor:
@@ -99,7 +167,7 @@ class BaseChatMessageProcessor:
 
     def __init__(self, session):
         self.session = session
-        self.markdown_formatter = utils.MarkdownFormatter()
+        self.markdown_formatter = MarkdownFormatter()
         self.last_is_tool_call = False
         self._plan_text = ""
         self._tool_file_re = _make_tool_file_re(self._TOOL_FILE_NAMES) if self._TOOL_FILE_NAMES else None
@@ -172,6 +240,33 @@ class BaseChatMessageProcessor:
             window.open_file(abs_path)
         return True
 
+    def open_local_file_link(self, line_text, window, view, point):
+        """Open the local Markdown link under a double-click."""
+        if view is None or point is None:
+            return False
+        cwd = (self.session.agent_thread.cwd
+               if self.session.agent_thread else self.session.cwd)
+        if not cwd:
+            return False
+
+        line_region = view.line(point)
+        column_in_line = point - line_region.begin()
+        for match in _MARKDOWN_LINK_RE.finditer(line_text):
+            if not (match.start() <= column_in_line < match.end()):
+                continue
+            result = _parse_markdown_file_target(
+                match.group(1) or match.group(2), cwd)
+            if result is None:
+                return False
+            abs_path, line, column = result
+            if line is not None:
+                encoded = f"{abs_path}:{line}:{column or 0}"
+                window.open_file(encoded, sublime.ENCODED_POSITION)
+            else:
+                window.open_file(abs_path)
+            return True
+        return False
+
     def _parse_diff_hunk_line(self, line_text, view, point, cwd):
         """Resolve a diff hunk header (@@ -a,b +c,d @@) to (abs_path, line).
 
@@ -185,7 +280,7 @@ class BaseChatMessageProcessor:
             return None
         dest_line = int(m.group(1))
         row = view.rowcol(point)[0]
-        for r in range(row - 1, max(row - 200, -1), -1):
+        for r in range(row - 1, -1, -1):
             text = view.substr(view.line(view.text_point(r, 0))).strip()
             parsed = _parse_tool_file_line(text, self._tool_file_re, cwd)
             if parsed is not None:
@@ -193,6 +288,7 @@ class BaseChatMessageProcessor:
             if text.startswith("⏺"):
                 return None
         return None
+
 
 class ClaudeMessageProcessor(BaseChatMessageProcessor):
     _TOOL_FILE_NAMES = ("Read", "Edit", "Write")
@@ -273,6 +369,7 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
                 if rendered:
                     self.last_is_tool_call = True
                     self.append_content("\n" + rendered + "\n")
+                self._record_file_change(tool_use_result)
 
         elif message.type == "error":
             self.append_error(message.content)
@@ -284,6 +381,8 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
             # Stop loading on turn completion (heuristic)
             self.session.stop_loading()
             self.append_content("\n")
+            # Show collapsed file-changes artifact after the turn output settles
+            sublime.set_timeout(self.session.show_file_changes_artifact, 0)
 
         elif message.type == "control_response":
             if hasattr(message, "content") and isinstance(message.content, dict):
@@ -389,6 +488,31 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
 
         return header
 
+    def _record_file_change(self, tool_use_result):
+        """Record an Edit/Write diff for the end-of-turn file changes artifact."""
+        file_path = tool_use_result.get("filePath")
+        cwd = (self.session.agent_thread.cwd
+               if self.session.agent_thread else self.session.cwd) or ""
+        abs_path, rel_path = _resolve_rel_path(file_path, cwd)
+
+        patches = tool_use_result.get("structuredPatch")
+        diff = _diff_from_structured_patch(patches)
+        if diff is None:
+            old_str = tool_use_result.get("oldString")
+            new_str = tool_use_result.get("newString")
+            if old_str is not None:
+                start_line = patches[0].get("newStart") if patches else None
+                diff = _make_edit_diff(old_str, new_str or "", rel_path, start_line=start_line)
+            else:
+                # Write with no patch data: treat as a new file
+                content = tool_use_result.get("content") or ""
+                if content:
+                    lines = content.splitlines()
+                    diff = ("@@ -0,0 +1,{} @@\n".format(len(lines))
+                            + "\n".join("+" + l for l in lines) + "\n")
+
+        self.session.record_file_change(abs_path, rel_path, diff)
+
 
 class CodexMessageProcessor(BaseChatMessageProcessor):
     _TOOL_FILE_NAMES = ("fileChange",)
@@ -416,6 +540,8 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
                 self.append_content("\n")
             self.last_is_tool_call = True
             self.append_content(self._format_tool_block(message.content) + "\n")
+            if message.content.get("name") == "fileChange":
+                self._record_file_changes(message.content)
 
         elif message.type == "error":
             self.append_error(message.content)
@@ -485,11 +611,13 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
 
                 self.append_content("\n")
                 self.append_content(plan_text)
-                self.append_content("\n")
+                self.append_content("\n", flush=True)
 
                 # Add Implement button if in plan mode
                 if self.session.agent_thread and self.session.agent_thread.anthropic_config.get("plan_mode"):
                     sublime.set_timeout(lambda pt=plan_text: self.session.show_implement_plan_button(pt), 0)
+            # Show the artifact last so later appends don't land at its fold boundary
+            sublime.set_timeout(self.session.show_file_changes_artifact, 0)
 
     def _format_tool_block(self, block):
         name = block.get("name")
@@ -510,30 +638,47 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
             cwd = (self.session.agent_thread.cwd
                    if self.session.agent_thread else self.session.cwd) or ""
 
-            file_parts = []
-            diffs = []
+            rendered_parts = []
+            previous_path = None
             for change in changes:
                 path = change.get("path", "")
                 diff_text = change.get("diff") or ""
 
                 if path:
-                    _, rel = _resolve_rel_path(path, cwd)
-                    line_no = _diff_start_line(diff_text) if diff_text else None
-                    file_parts.append(f"{rel}#L{line_no}" if line_no else rel)
+                    abs_path, rel = _resolve_rel_path(path, cwd)
+                    path_key = os.path.normcase(os.path.normpath(abs_path))
+                    if path_key != previous_path:
+                        line_no = (_diff_start_line(diff_text)
+                                   if diff_text else None)
+                        file_part = f"{rel}#L{line_no}" if line_no else rel
+                        rendered_parts.append(f"⏺ fileChange {file_part}")
+                    previous_path = path_key
+                else:
+                    rendered_parts.append("⏺ fileChange")
+                    previous_path = None
 
-                if diff_text:
-                    rendered = self._render_diff_block(diff_text)
-                    if rendered:
-                        diffs.append(rendered)
+                rendered_diff = self._render_diff_block(diff_text)
+                if rendered_diff:
+                    rendered_parts.append(rendered_diff)
 
-            header = f"⏺ fileChange {', '.join(file_parts)}" if file_parts else "⏺ fileChange"
-
-            if diffs:
-                return header + "\n" + "\n\n".join(diffs)
-
-            return header
+            return ("\n\n".join(rendered_parts)
+                    if rendered_parts else "⏺ fileChange")
 
         return f"⏺ {name}" if name else ""
+
+    def _record_file_changes(self, block):
+        """Record fileChange diffs for the end-of-turn file changes artifact."""
+        changes = block.get("changes", [])
+        cwd = (self.session.agent_thread.cwd
+               if self.session.agent_thread else self.session.cwd) or ""
+        for change in changes:
+            path = change.get("path", "")
+            if not path:
+                continue
+            abs_path, rel_path = _resolve_rel_path(path, cwd)
+            diff_text = change.get("diff") or ""
+            self.session.record_file_change(abs_path, rel_path, diff_text or None)
+
 
 class PiMessageProcessor(BaseChatMessageProcessor):
     _TOOL_FILE_NAMES = ("read", "edit", "write")

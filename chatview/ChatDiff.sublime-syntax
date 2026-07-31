@@ -1,0 +1,46 @@
+%YAML 1.2
+---
+# http://www.sublimetext.com/docs/syntax.html
+# Diff syntax for TermMate artifact diff views. Extends the built-in Diff
+# syntax and re-scopes the file-path portion of the header lines
+# (`diff a/.. b/..`, `--- a/..`, `+++ b/..`) as variable.function.chatview
+# — the same clickable-file coloring used for artifact file names in
+# ChatMD.sublime-syntax — signalling that these paths jump to the file.
+#
+# The hunk range lines (`@@ -175,24 +175,6 @@`) have their line numbers
+# colored as variable.function.chatview; the `,count` suffix is left unstyled.
+name: ChatDiff
+hidden: true
+scope: source.diff.chatview
+version: 2
+
+extends: Packages/Diff/Diff.sublime-syntax
+
+contexts:
+  diff-header:
+    - meta_prepend: true
+    # `diff a/path b/path` — highlight each path, skip the `a/`/`b/` prefix.
+    - match: '{{bol}}diff (?:[ab]/(\S+) [ab]/(\S+)){{eol}}'
+      captures:
+        1: variable.function.chatview
+        2: variable.function.chatview
+
+  # `--- a/path` and `+++ b/path` share the same rule: skip prefix, highlight path.
+  diff-header-unified-from-file:
+    - meta_prepend: true
+    - match: '[ab]/(\S+)'
+      captures:
+        1: variable.function.chatview
+
+  diff-header-unified-to-file:
+    - meta_prepend: true
+    - match: '[ab]/(\S+)'
+      captures:
+        1: variable.function.chatview
+
+  line-range-span:
+    - match: '\d+'
+      scope: variable.function.chatview
+    - match: '(,)\d+'
+      captures:
+        1: punctuation.separator.sequence.diff

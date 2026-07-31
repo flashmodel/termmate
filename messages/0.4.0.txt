@@ -1,0 +1,20 @@
+TermMate 0.4.0
+==============
+
+- Artifact View
+  Generated files and code changes are now shown in a dedicated artifact
+  panel alongside the chat. you can review exactly what was generated during
+  the conversation.
+
+- Input Area Anchor
+  The cursor always scrolls back to the input area when you start typing.
+  Fixes cursor accidentally inserting text into the message history area.
+
+- Quoting response in Prompt
+  Select any text in the chat and press the quote key to insert it as a
+  cited block in your next prompt. Makes it easy to reference a specific
+  part of the agent's reply without copy-pasting.
+
+- Table Rendering with Borders
+  Markdown tables are now rendered with visible borders, making structured
+  output from the agent easier to scan at a glance.

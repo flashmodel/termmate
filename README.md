@@ -1,12 +1,14 @@
-# TermMate
+# TermMate — Agentic Coding Assistant for Sublime Text
 
 **Agentic Coding Mate from Mind to Code**
 
-![TermMate Screenshot](screenshot.jpg)
+![TermMate Screenshot](screenshot.png)
 
 TermMate is a professional AI coding agent for Sublime Text that supports multi-agent providers, including **Claude Code**, **Codex**, and **[Pi Agent](https://pi.dev)**. It builds a seamless native agentic interface directly within your editor for autonomous task execution, codebase exploration, and smart refactoring. **TermMate Agent, native to your editor.**
 
-For detailed usage, please refer to the [TermMate Documentation](https://termmate.app/docs/setup).
+See TermMate agentic coding features — **[live demo here →](https://termmate.app/sublime/)**
+
+For detailed usage, please refer to the [Setup TermMate Documentation](https://termmate.app/docs/setup).
 
 ## Getting Started
 
@@ -18,39 +20,25 @@ Install TermMate via [Package Control](https://packagecontrol.io/packages/TermMa
 2. Type `Package Control: Install Package` and press `Enter`.
 3. Search for `TermMate` and press `Enter`.
 
-You can also install manually from github releases:
-
-1. Download `TermMate.sublime-package` from the [latest release](https://github.com/flashmodel/termmate/releases).
-2. Copy `TermMate.sublime-package` into your Sublime Text **Installed Packages** directory:
-   - **macOS**: `~/Library/Application Support/Sublime Text/Installed Packages/`
-   - **Windows**: `%APPDATA%\Sublime Text\Installed Packages\`
-   - **Linux**: `~/.config/sublime-text/Installed Packages/`
-3. Restart Sublime Text.
-
-### 2. Install an Agent CLI
+### 2. Install Agent CLI
 
 TermMate relies on external agent CLIs. If you already have Claude Code, Codex, or Pi Agent installed, TermMate will detect them automatically — no extra setup needed.
 
 Otherwise, the easiest way is to install directly from within Sublime Text: open the Command Palette, type `TermMate: Install Agent`, and select the agent you want. TermMate will run the installation in dedicated panel and notify you when it's complete. CLIs are installed to `~/.local/bin` on macOS/Linux and `%APPDATA%\npm` on Windows.
 
-**or install manually from your terminal:**
+Alternatively, manually install an agent from your terminal:
 
-**Claude Code:**
-```bash
+```shell
+# Claude Code
 curl -fsSL https://claude.ai/install.sh | bash
-```
 
-**Codex:**
-```bash
+# Codex (macOS/Linux)
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
-```
-Windows:
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
-```
 
-**Pi Agent:**
-```bash
+# Codex (Windows PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+
+# Pi Agent
 curl -fsSL https://pi.dev/install.sh | sh
 ```
 
@@ -92,31 +80,40 @@ The example above sets `GEMINI_API_KEY` for Pi Agent authentication.
 
 - Open the command palette (`Cmd+Shift+P` on macOS, `Ctrl+Shift+P` on Windows/Linux).
 - Type `TermMate: Start Chat` and press `Enter`.
-- A new view will open for the TermMate chat.
-- Type your message and press `Cmd+Enter` (macOS) or `Ctrl+Enter` (Windows/Linux) to send.
-- You can stop a running conversation at any time. Use the shortcut `Cmd+Escape` (Mac) / `Shift+Escape` (Windows/Linux) in the chat window, or run `TermMate: Stop Conversation` from the command palette.
+- A new chat view will open for the TermMate chat.
+- Type your message and press `Cmd+Enter` (macOS) or `Ctrl+Enter` (Windows/Linux) to send. You can even edit prompts in Vim mode.
+
+You can stop a running conversation at any time. Use the shortcut `Cmd+Escape` (Mac) / `Shift+Escape` (Windows/Linux) in the chat window, or run `TermMate: Stop Conversation` from the command palette.
 
 ## Usage & Key Features
 
-**1. Quick Prompt Without Chat View**
+**1. Chat with Agent about Current File or Selection**
 
-Use the command palette (`TermMate: Prompt`) to send a quick instruction to the agent without opening the chat view manually.
-
-**2. Set Working Directory**
-
-Right-click on any folder in the sidebar and select **Set Working Directory** to set the working directory for the agent. This affects the current working directory when agents execute commands or access files. You can also use the command palette.
-
-**3. Chat with Current File or Selection**
-
-You can right-click in any file, tab, and select **Chat with Agent**. This will:
+Right-click on any file or text selection and choose **TermMate: Chat with Agent** to send it as context for your next prompt. This will:
 
 - Open the TermMate chat view (if not already open).
 - Insert a reference to the file (`@filename`) or selected line range (`@filename#L1-10`) into the message prompt.
 - Tagged files will be automatically sent as context to the active agent.
 
-**4. Smart Completion**
+**2. File Tags `@` Smart Completion**
 
-Type `@` in the chat view for real-time suggestions of files and workspace symbols.
+Tag files in your prompt to give the agent precise project context. Typing `@` in the chat input instantly opens a completion popup with three categories of suggestions:
+
+- 📂 Open files — files currently open in the window
+- 📄 Workspace files — files in the workspace root
+- 📁 Subdirectories — inserted with a trailing `/` to reference a whole directory
+
+A tag can point at a file (`@src/main.py`), a line or range (`@src/main.py#L42`, `@src/main.py#L10-25`), or a directory (`@src/`). Tagged files are sent to the agent as context along with your message. **Chat with Agent** and the sidebar context menu can also insert tags for you.
+
+**3. Set Working Directory**
+
+Right-click on any folder in the sidebar and select **Set Working Directory** to choose the agent's primary working directory (`cwd`). This is the default directory used when the agent runs commands or accesses relative paths. You can also use `TermMate: Set Working Directory` from the command palette.
+
+For sublime projects with multi-folder open in the same workspace, TermMate keeps the selected folder as the `cwd` and gives the agent access to the other folders as additional directories. This is equivalent to agent's `add-dir` option.
+
+**4. Quick Prompt**
+
+Use the command palette (`TermMate: Prompt`) to send a quick instruction to the agent without opening the chat view manually.
 
 **5. Split Chat Window**
 
@@ -150,6 +147,20 @@ Use `TermMate: Switch Agent` to swap between Claude, Codex, and Pi Agent at any 
 ### Select Model
 
 Use `TermMate: Select Model` to pick a specific LLM model per agent (e.g. `claude-opus-4-5` vs `claude-sonnet-4-5`).
+
+## Artifact
+
+### file changes artifact
+
+The artifact panel shows generated files and file changes produced during the conversation. When the agent edits code, a summary appears in the panel listing every modified file along with the number of lines added and removed.
+
+```
+▣ 2 files changed
+    src/foo.py  +12 -3
+    src/bar.py  +5 -1
+```
+
+Click a file entry to jump directly to the file in the editor. Artifacts are folded by default. Click the `▶` arrow in the gutter to expand and view the full diff inline.
 
 ## Session Management: Clear, Resume & Rewind
 
@@ -250,16 +261,16 @@ By default, TermMate does not register a shortcut for `TermMate: Start Chat` to 
 ]
 ```
 
-If you prefer using just the `Escape` key to interrupt the conversation when the chat view is focused, you can add this:
+To add the current file location or selected lines to **Chat with Agent**, configure `Cmd+Option+K` on macOS or `Ctrl+Alt+K` on Windows/Linux:
 
 ```json
 [
     {
-        "keys": ["escape"],
-        "command": "term_chat_interrupt",
+        "keys": ["primary+alt+k"],
+        "command": "term_chat_add_context",
         "context":
         [
-            { "key": "setting.chatview_chat", "operator": "equal", "operand": true }
+            { "key": "setting.is_widget", "operand": false }
         ]
     }
 ]
@@ -297,4 +308,3 @@ TermMate is provided under the **Apache License, Version 2.0** with the **Common
 This means it's free to use, modify, and redistribute the code for personal or internal use. However, **commercial resale or providing a paid service is strictly prohibited**.
 
 For complete details, please see the [LICENSE](LICENSE) file.
-

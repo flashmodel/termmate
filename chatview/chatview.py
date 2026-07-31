@@ -16,7 +16,8 @@ from ..genfoundry.claude_agent import get_claude_session_tail
 from ..genfoundry.codex_agent import get_codex_session_info
 from ..genfoundry.pi_agent import get_pi_session_tail
 from .chatprocessor import ClaudeMessageProcessor, CodexMessageProcessor, PiMessageProcessor
-from .chatpanel import LoadingAnimation, RewindConfirmPanel
+from .chatpanel import LoadingAnimation, RewindConfirmPanel, StatusHint
+from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
 from .install import run_install, find_existing_cli, get_agent_list_items
 
 def get_available_agents(settings):
@@ -61,6 +62,7 @@ LOG = logging.getLogger("TermMate")
 
 CHAT_VIEW_FLAG = "chatview_chat"
 CHAT_INPUT_START = "chatview_input_start"
+CHAT_INPUT_ANCHOR = "chatview_input_anchor"
 CHAT_WORKSPACE = "chatview_active_workspace"
 CHAT_MODEL = "chatview_model"
 CHAT_PLAN_MODE = "chatview_plan_mode"
@@ -69,15 +71,56 @@ CHAT_SESSION_ID = "chatview_session_id"
 CHAT_VIEW_NAME = "Chat View"
 PACKAGE_NAME = "TermMate"
 PROMPT_PREFIX = "\n❯ "  # transcript prefix for submitted prompts; the live input line uses InputPromptMarker instead
+PREFERENCES_CHANGE_KEY = "termmate_chatview_preferences"
 
 # Global store for active ChatSession: window_id -> ChatSession
 chatview_clients = {}
+preferences_redraw_scheduled = False
+
+
+def set_input_start(view, pos):
+    """Record the input start position (the newline preceding the input line).
+
+    Besides the settings value, an anchor region is placed over that newline.
+    Regions shift automatically with buffer modifications, so the position
+    stays correct even when text before it changes
+    """
+    view.settings().set(CHAT_INPUT_START, pos)
+    if pos + 1 <= view.size():
+        view.add_regions(CHAT_INPUT_ANCHOR, [sublime.Region(pos, pos + 1)],
+                         flags=sublime.HIDDEN | sublime.PERSISTENT)
+    else:
+        # No newline to anchor on yet; drop any stale anchor so it can't
+        # shadow the settings value.
+        view.erase_regions(CHAT_INPUT_ANCHOR)
+
+
+def get_input_start(view, default=None):
+    """Current input start position.
+
+    The anchor region is the source of truth; the settings value is a
+    fallback (restored views, older sessions) and is re-synced whenever the
+    two drift apart."""
+    if default is None:
+        default = view.size()
+    regions = view.get_regions(CHAT_INPUT_ANCHOR)
+    if regions and not regions[0].empty():
+        pos = regions[0].begin()
+        if view.settings().get(CHAT_INPUT_START) != pos:
+            view.settings().set(CHAT_INPUT_START, pos)
+        return pos
+    if not view.settings().has(CHAT_INPUT_START):
+        return default
+    pos = min(view.settings().get(CHAT_INPUT_START), view.size())
+    # Re-anchor lazily (view restored from a session, or anchor lost)
+    set_input_start(view, pos)
+    return pos
 
 
 def input_editable_start(view):
-    """Start of the editable input text. CHAT_INPUT_START points at the newline
+    """Start of the editable input text. The input start points at the newline
     that precedes the input line; the ❯ marker is a phantom, not buffer text."""
-    return view.settings().get(CHAT_INPUT_START, 0) + 1
+    return get_input_start(view, 0) + 1
 
 
 class PlanMode(enum.Enum):
@@ -100,6 +143,8 @@ def plugin_loaded():
     """
     settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
     plugin.update_log_level(settings)
+    LOG.info("TermMate plugin loaded")
+    _watch_preferences()
     # Defer scan to allow ST to finish restoring all scratch views
     sublime.set_timeout(_restore_chat_sessions, 500)
 
@@ -109,6 +154,8 @@ def plugin_unloaded():
     Called by Sublime Text when the plugin is unloaded.
     Cleans up active ChatSessions.
     """
+    _unwatch_preferences()
+
     for window_id, session in list(chatview_clients.items()):
         try:
             LOG.info(f"Stopping ChatView session for window {window_id} on unload")
@@ -117,6 +164,47 @@ def plugin_unloaded():
             LOG.error(f"Failed to stop ChatView session on plugin unload: {e}")
 
     chatview_clients.clear()
+
+
+def _watch_preferences():
+    """Watch preference changes that can invalidate minihtml."""
+    settings = sublime.load_settings("Preferences.sublime-settings")
+    settings.clear_on_change(PREFERENCES_CHANGE_KEY)
+    settings.add_on_change(
+        PREFERENCES_CHANGE_KEY,
+        _on_preferences_changed,
+    )
+
+
+def _unwatch_preferences():
+    """Remove the preferences callback registered by this plugin instance."""
+    settings = sublime.load_settings("Preferences.sublime-settings")
+    settings.clear_on_change(PREFERENCES_CHANGE_KEY)
+
+
+def _on_preferences_changed():
+    """Redraw input phantoms after preferences change."""
+    global preferences_redraw_scheduled
+
+    if preferences_redraw_scheduled:
+        return
+
+    preferences_redraw_scheduled = True
+    LOG.info("TermMate scheduling chat view on preferences changed")
+    sublime.set_timeout(_refresh_input_phantoms, 500)
+
+
+def _refresh_input_phantoms():
+    """Force a redraw after Sublime finishes rebuilding package resources."""
+    global preferences_redraw_scheduled
+
+    try:
+        for window_id, session in list(chatview_clients.items()):
+            session.model_phantom.update()
+            session.input_marker.update()
+            LOG.debug(f"Redrew chat view input phantoms for window {window_id}")
+    finally:
+        preferences_redraw_scheduled = False
 
 
 def _restore_chat_sessions():
@@ -147,10 +235,13 @@ def _reconnect_chat_view(view):
     add_dirs = get_all_folders(view) if share_folders else []
     session_id = ChatSession.get_view_session_id(view)
 
+    # Don't draw the NBSP fold terminator appended after the artifact list
+    view.settings().set("draw_unicode_white_space", "none")
+
     session = ChatSession(window, view, cwd, add_dirs=add_dirs, session_id=session_id)
     chatview_clients[window_id] = session
     # Restore the model phantom at the existing CHAT_INPUT_START position
-    session.model_phantom.update(plan_mode=session.plan_mode)
+    session.model_phantom.update()
     view.run_command("term_chat_output_append", {"text": "\n\n[Reconnected after restart]\n"})
     LOG.info(f"Reconnected ChatView agent for window {window_id}, cwd={cwd}, add_dirs={add_dirs}, session_id={session_id}")
 
@@ -409,30 +500,23 @@ class InputPromptMarker:
 
     def __init__(self, view):
         self.view = view
-        self.phantom_id = None
+        self.phantom_set = sublime.PhantomSet(view, "chatview_input_marker")
 
     def update(self):
-        """Pin the marker at the input line start; re-add only if it drifted."""
+        """Pin the marker at the input line start."""
         start = input_editable_start(self.view)
         if start > self.view.size():
             # Input line not created yet (fresh view before term_chat_input_prompt)
             return
-        if self.phantom_id is not None:
-            current = self.view.query_phantoms([self.phantom_id])
-            if current and current[0].begin() == start:
-                return
-            self.view.erase_phantom_by_id(self.phantom_id)
-        self.phantom_id = self.view.add_phantom(
-            "chatview_input_marker",
+        phantom = sublime.Phantom(
             sublime.Region(start, start),
             self.HTML,
             sublime.LAYOUT_INLINE,
         )
+        self.phantom_set.update([phantom])
 
     def clear(self):
-        if self.phantom_id is not None:
-            self.view.erase_phantom_by_id(self.phantom_id)
-            self.phantom_id = None
+        self.phantom_set.update([])
 
 
 class ModelPanel:
@@ -443,10 +527,40 @@ class ModelPanel:
         self.view = view
         self.window = window
         self.phantom_set = sublime.PhantomSet(view, "chatview_model")
+        self.status_hint = StatusHint()
 
-    def update(self, plan_mode=PlanMode.FAST):
+    def _on_navigate(self, href):
+        """Handle actions from links in the model panel."""
+        if href == "set_agent":
+            self.window.run_command("term_chat_set_agent")
+        elif href == "set_model":
+            self.window.run_command("term_chat_set_model")
+        elif href == "toggle_plan":
+            self.window.run_command("term_chat_toggle_plan_mode")
+        elif href == "stop_conversation":
+            self.window.run_command("term_chat_interrupt", {"confirm": True})
+
+    def set_running(self, running):
+        """Show the stop hint only while the agent is processing a turn."""
+        if self.status_hint.visible == running:
+            return
+        self.status_hint.set_visible(running)
+        self.update()
+
+    def set_stopping(self, stopping, text=None):
+        """Update the stop label while the agent processes an interrupt."""
+        if self.status_hint.visible and self.status_hint.set_stopping(stopping, text):
+            self.update()
+
+    def update(self):
         """Update the model phantom display."""
-        input_start = self.view.settings().get(CHAT_INPUT_START, self.view.size())
+        plan_mode_value = self.window.settings().get(CHAT_PLAN_MODE, PlanMode.FAST.value)
+        try:
+            plan_mode = PlanMode(plan_mode_value)
+        except ValueError:
+            plan_mode = PlanMode.FAST
+
+        input_start = get_input_start(self.view)
         region = sublime.Region(input_start, input_start)
 
         agent_provider = self.window.settings().get(CHAT_AGENT, "claude")
@@ -461,18 +575,20 @@ class ModelPanel:
         plan_tag_html = ""
         if plan_mode == PlanMode.PLANNING:
             plan_tag_html = """
-                <a href="toggle_plan" class="model-tag" style="margin-left: 8px;">
+                <a href="toggle_plan" class="model-tag" style="margin-left: 4px;">
                     <span class="label">PlanMode:</span>
                     <span class="value">planning</span>
                 </a>
             """
         else:
             plan_tag_html = """
-                <a href="toggle_plan" class="model-tag" style="margin-left: 8px;">
+                <a href="toggle_plan" class="model-tag" style="margin-left: 4px;">
                     <span class="label">PlanMode:</span>
                     <span class="value">fast</span>
                 </a>
             """
+
+        stop_hint_html = self.status_hint.render()
 
         html = f"""
         <body id="chatview-model" style="margin: 0; padding: 0;">
@@ -489,13 +605,17 @@ class ModelPanel:
                     font-size: 0.85em;
                     font-family: var(--font-mono);
                     text-decoration: none;
-                    padding: 4px 6px;
+                    padding: 4px 2px;
                     border-radius: 4px;
                     line-height: 1.2;
                 }}
-                .model-tag:hover {{
-                    background-color: color(var(--accent) alpha(0.15));
-                    border-color: color(var(--accent) alpha(0.3));
+                .stop-hint {{
+                    color: var(--accent);
+                    display: inline-block;
+                    text-decoration: none;
+                    margin-left: 2px;
+                    padding: 4px 2px;
+                    line-height: 1.2;
                 }}
                 .icon {{
                     padding-right: 2px;
@@ -514,28 +634,21 @@ class ModelPanel:
                     <span class="label">Agent:</span>
                     <span class="value">{agent_provider}</span>
                 </a>
-                <a href="set_model" class="model-tag" style="margin-left: 8px;">
+                <a href="set_model" class="model-tag" style="margin-left: 4px;">
                     <span class="label">Model:</span>
                     <span class="value">{display_model}</span>
-                </a>{plan_tag_html}
+                </a>{plan_tag_html}{stop_hint_html}
             </div>
         </body>
         """
 
-        def on_navigate(href):
-            if href == "set_agent":
-                self.window.run_command("term_chat_set_agent")
-            elif href == "set_model":
-                self.window.run_command("term_chat_set_model")
-            elif href == "toggle_plan":
-                self.window.run_command("term_chat_toggle_plan_mode")
-
-        self.phantom_set.update([sublime.Phantom(
+        phantom = sublime.Phantom(
             region,
             html,
             sublime.LAYOUT_BLOCK,
-            on_navigate
-        )])
+            self._on_navigate
+        )
+        self.phantom_set.update([phantom])
 
     def clear(self):
         """Clear the model phantom."""
@@ -560,7 +673,7 @@ class PermissionPanel:
 
     def show(self, request_id, tool_name, input_data, approve_mode=None):
         """Show a permission phantom for a tool request."""
-        input_start = self.view.settings().get(CHAT_INPUT_START, self.view.size())
+        input_start = get_input_start(self.view)
         region = sublime.Region(input_start - 1, input_start)
 
         phantom_set = sublime.PhantomSet(self.view, f"permission_{request_id}")
@@ -974,6 +1087,9 @@ class ChatSession:
         # Only persist session_id after the first user message
         self.has_sent_message = bool(session_id)
 
+        # End-of-turn file changes artifact (records edit diffs, renders file list)
+        self.artifact = FileChangesArtifact(self.chat_view, self.window, get_input_start)
+
         self.implement_plan_phantoms = sublime.PhantomSet(self.chat_view, "implement_plan")
         self.implement_plan_buttons = [] # List of (region, phantom) tuples
 
@@ -1204,18 +1320,27 @@ class ChatSession:
 
     def start_loading(self, text=None):
         """Start the loading animation."""
-        sublime.set_timeout(lambda: self.loading_animation.start(self.loading_region, text), 0)
+        def start():
+            self.loading_animation.start(self.loading_region, text)
+            self.model_phantom.set_running(True)
+
+        sublime.set_timeout(start, 0)
 
     def stop_loading(self):
-        sublime.set_timeout(lambda: self.loading_animation.stop(), 0)
+        def stop():
+            self.loading_animation.stop()
+            self.model_phantom.set_running(False)
+
+        sublime.set_timeout(stop, 0)
 
     def loading_region(self):
         """Get the region where the loading animation should be displayed."""
-        input_start = self.chat_view.settings().get(CHAT_INPUT_START, self.chat_view.size())
+        input_start = get_input_start(self.chat_view)
         return sublime.Region(input_start-1, input_start)
 
     def stop(self):
         self.loading_animation.stop()
+        self.model_phantom.set_running(False)
         self.model_phantom.clear()
         self.input_marker.clear()
         self.rewind_confirm_panel.clear()
@@ -1267,6 +1392,19 @@ class ChatSession:
         """Send steering message to agent."""
         if self.agent_thread:
             self.agent_thread.steer(text, proceed_plan=proceed_plan)
+
+    def record_file_change(self, abs_path, rel_path, diff_text):
+        """Record an edit diff so the file is listed in the end-of-turn artifact."""
+        extra_env = self.agent_thread.anthropic_config.get("env") if self.agent_thread else None
+        self.artifact.record(abs_path, rel_path, diff_text, extra_env=extra_env)
+
+    def show_file_changes_artifact(self):
+        """Append the collapsed file changes artifact for the finished turn."""
+        self.artifact.show()
+
+    def open_artifact_diff_at(self, point):
+        """If point is on an artifact file name, open its diff view. Returns True if handled."""
+        return self.artifact.open_diff_at(point)
 
     def add_prompt_highlight(self, region):
         """Add a gutter highlight and an end-of-line rewind button for a submitted prompt."""
@@ -1398,6 +1536,8 @@ class ChatSession:
         self.prompt_button_phantoms = self.prompt_button_phantoms[:phantom_index]
         self._redraw_prompt_highlights()
 
+        self.artifact.truncate(cut_point)
+
         rewind_text = self.chat_view.substr(region)
 
         self.session_allow_all = False
@@ -1424,6 +1564,7 @@ class ChatSession:
         # Stop any ongoing loading animation
         self.stop_loading()
         self.clear_prompt_highlights()
+        self.artifact.clear()
         self.session_allow_all = False
         self.has_sent_message = False
         self.chat_view.settings().set(CHAT_SESSION_ID, None)
@@ -1448,6 +1589,7 @@ class ChatSession:
         self.available_models = []
         self.chat_view.settings().set(CHAT_SESSION_ID, None)
         self.clear_prompt_buttons()
+        self.artifact.clear()
 
         if self.agent_thread:
             self.agent_thread.stop()
@@ -1555,9 +1697,9 @@ class ChatSession:
     def _replay_prompt(self, prompt_text):
         """Append a previously-submitted prompt with gutter highlight, as if the user had just sent it."""
         text = f"{PROMPT_PREFIX}{prompt_text}\n"
-        pos_before = self.chat_view.settings().get(CHAT_INPUT_START, 0) - 1
+        pos_before = get_input_start(self.chat_view, 0) - 1
         self.chat_view.run_command("term_chat_output_append", {"text": text})
-        pos_after = self.chat_view.settings().get(CHAT_INPUT_START, 0) - 1
+        pos_after = get_input_start(self.chat_view, 0) - 1
         region_start = pos_before + len(PROMPT_PREFIX)
         region_end = pos_after - 1  # exclude trailing \n
         if region_end > region_start:
@@ -1651,10 +1793,14 @@ class TermChatCliCommand(sublime_plugin.WindowCommand):
         chat_view.settings().set("draw_minimap", False)
         chat_view.settings().set("line_numbers", False)
         chat_view.settings().set("word_wrap", True)
+        # Needed so the file-changes artifact can be expanded via the gutter
+        chat_view.settings().set("fold_buttons", True)
+        # Don't draw the NBSP fold terminator appended after the artifact list
+        chat_view.settings().set("draw_unicode_white_space", "none")
         chat_view.settings().set(CHAT_VIEW_FLAG, True)
 
         shortcut = "Command+Enter" if sublime.platform() == "osx" else "Ctrl+Enter"
-        welcome_text = "\nType your message and press %s to send.\n\n" % shortcut
+        welcome_text = "\nType your message and press %s to send.\n" % shortcut
 
         chat_view.run_command("append", {"characters": f"Starting {PACKAGE_NAME} agent\n"})
 
@@ -1670,7 +1816,7 @@ class TermChatCliCommand(sublime_plugin.WindowCommand):
         chat_view.run_command("append", {"characters": welcome_text})
 
         # Set input start position
-        chat_view.settings().set(CHAT_INPUT_START, chat_view.size())
+        set_input_start(chat_view, chat_view.size())
 
         # Create and start the ChatSession
         session = ChatSession(self.window, chat_view, cwd, add_dirs=add_dirs)
@@ -1931,7 +2077,6 @@ class ChatViewListener(sublime_plugin.EventListener):
             view.sel().clear()
             view.sel().add_all(new_sel)
 
-
     def _redirect_cursor(self, view):
         """Helper to move cursor to the end of the view."""
         end_pos = view.size()
@@ -1941,11 +2086,28 @@ class ChatViewListener(sublime_plugin.EventListener):
 
     def on_text_command(self, view, command_name, args):
         """Intercept text commands to protect content before prompt area."""
+        # Double-click in a diff view → open the actual file
+        abs_path = view.settings().get(DIFF_VIEW_PATH_KEY)
+        if (abs_path and command_name == "drag_select" and args
+                and args.get("by") == "words"
+                and not args.get("extend", False)
+                and not args.get("additive", False)):
+            point = args.get("event", {}).get("x"), args.get("event", {}).get("y")
+            click_point = (
+                view.window_to_text((point[0], point[1]))
+                if point[0] is not None and point[1] is not None
+                else None
+            )
+            if click_point is not None:
+                if diff_view_click(view, abs_path, click_point):
+                    return ("noop", {})
+
         # Only monitor ChatView chat views
         if not view.settings().get(CHAT_VIEW_FLAG, False) and view.name() != CHAT_VIEW_NAME:
             return None
 
         # Double-click on a tool call file line → open the file instead of selecting the word
+        # Also handles artifact file name lines → open the recorded diff view
         if (command_name == "drag_select" and args
                 and args.get("by") == "words"
                 and not args.get("extend", False)
@@ -1962,6 +2124,11 @@ class ChatViewListener(sublime_plugin.EventListener):
                 if click_point is not None:
                     line_text = view.substr(view.line(click_point))
                     if session.message_processor.open_tool_file(line_text, window, view=view, point=click_point):
+                        return ("noop", {})
+                    if session.message_processor.open_local_file_link(
+                            line_text, window, view, click_point):
+                        return ("noop", {})
+                    if session.open_artifact_diff_at(click_point):
                         return ("noop", {})
 
         editable_start = input_editable_start(view)
@@ -2187,16 +2354,15 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
         if cut_point < self.view.size():
             self.view.erase(edit, sublime.Region(cut_point, self.view.size()))
 
-        self.view.insert(edit, self.view.size(), "\n\n\n")
-        self.view.settings().set(CHAT_INPUT_START, self.view.size())
+        # Two newlines: input start points at the second one, which precedes
+        # the input line. It must exist before set_input_start anchors on it.
+        self.view.insert(edit, self.view.size(), "\n\n")
+        set_input_start(self.view, self.view.size() - 1)
 
         window = self.view.window()
         if window and window.id() in chatview_clients:
-            chatview_clients[window.id()].model_phantom.update(
-                plan_mode=chatview_clients[window.id()].plan_mode
-            )
+            chatview_clients[window.id()].model_phantom.update()
 
-        self.view.insert(edit, self.view.size(), "\n")
         if rewind_text:
             self.view.insert(edit, self.view.size(), rewind_text)
         end = self.view.size()
@@ -2211,27 +2377,29 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
 class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
 
     def run(self, edit, text):
-        input_start = self.view.settings().get(CHAT_INPUT_START, 0) - 1
-        inserted = self.view.insert(edit, input_start, text)
-        new_pos = input_start + inserted
-        self.view.settings().set(CHAT_INPUT_START, new_pos+1)
+        insert_at = get_input_start(self.view, 0) - 1
+        inserted = self.view.insert(edit, insert_at, text)
+        # The anchor region shifts with the insert; re-set to keep the
+        # settings value in sync (and re-anchor if the anchor was missing).
+        set_input_start(self.view, insert_at + inserted + 1)
         self.view.show(self.view.size())
 
 
 class TermChatInputPromptCommand(sublime_plugin.TextCommand):
 
     def run(self, edit, text):
-        self.view.insert(edit, self.view.size(), "\n\n\n")
-        self.view.settings().set(CHAT_INPUT_START, self.view.size())
+        # The last newline precedes the input line; it must exist before
+        # set_input_start anchors on it.
+        self.view.insert(edit, self.view.size(), "\n\n\n\n\n")
+        set_input_start(self.view, self.view.size() - 1)
 
         # Update model phantom at new position
         window = self.view.window()
         if window and window.id() in chatview_clients:
             session = chatview_clients[window.id()]
-            session.model_phantom.update(plan_mode=session.plan_mode)
+            session.model_phantom.update()
 
         # Next input prompt (the ❯ itself is the InputPromptMarker phantom)
-        self.view.insert(edit, self.view.size(), "\n")
         if text:
             self.view.insert(edit, self.view.size(), text + " ")
         end = self.view.size()
@@ -2248,27 +2416,50 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
     Command to add file context to the ChatView chat prompt.
     Called from the context menu (current view + selection) or sidebar (files/dirs args).
     Sidebar callers pass files=[...] with no line numbers; context menu uses active view + selection.
+    In the chat view itself, the selected history text is quoted into the next prompt.
     """
     def run(self, files=[], dirs=[]):
         paths = files + dirs
+        view = self.window.active_view()
         if paths:
             # Sidebar: insert @path for each selected file/dir, no line numbers
             tags = " ".join(f"@{p}" for p in paths)
+            insert_text = tags + " "
+        elif view and view.settings().get(CHAT_VIEW_FLAG, False):
+            # Chat view: quote the selected history text as context for the
+            # next prompt (there is no file to @-tag). Capture before the
+            # selection gets snapped to the input line below.
+            editable_start = input_editable_start(view)
+            selected = "\n".join(
+                view.substr(s) for s in view.sel()
+                if not s.empty() and s.begin() < editable_start
+            )
+            if not selected.strip():
+                return
+            tags = "\n".join("> " + line for line in selected.splitlines())
+            input_text = view.substr(sublime.Region(editable_start, view.size()))
+            # A blank line always precedes and follows the quote block,
+            insert_text = tags + "\n\n"
+            trailing = len(input_text) - len(input_text.rstrip("\n"))
+            needed = 2 if input_text else 1
+            insert_text = "\n" * max(0, needed - trailing) + insert_text
         else:
             # Context menu: use active view + selection
-            view = self.window.active_view()
-            if not view:
-                return
-            file_path = view.file_name()
-            if not file_path:
-                return
-            sel = view.sel()[0]
-            row_start, _ = view.rowcol(sel.begin())
-            row_end, _ = view.rowcol(sel.end())
-            if row_start == row_end:
-                tags = f"@{file_path}#L{row_start + 1}"
+            file_path = view.file_name() if view else None
+            if file_path:
+                sel = view.sel()[0]
+                row_start, _ = view.rowcol(sel.begin())
+                row_end, _ = view.rowcol(sel.end())
+                if row_start == row_end:
+                    tags = f"@{file_path}#L{row_start + 1}"
+                else:
+                    tags = f"@{file_path}#L{row_start + 1}-{row_end + 1}"
+                insert_text = tags + " "
             else:
-                tags = f"@{file_path}#L{row_start + 1}-{row_end + 1}"
+                # No active view, or a non-file view such as Terminus:
+                # continue through the command without adding file context.
+                tags = ""
+                insert_text = ""
 
         chat_view = None
         for v in self.window.views():
@@ -2280,10 +2471,23 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
             self.window.run_command("term_chat_cli", {"initial_msg": tags})
         else:
             self.window.focus_view(chat_view)
-            chat_view.run_command("insert", {"characters": tags + " "})
-            chat_view.sel().clear()
-            chat_view.sel().add(sublime.Region(chat_view.size()))
-            chat_view.show(chat_view.size())
+            if not insert_text:
+                return
+            # Preserve the current cursor/selection when it is in the input
+            # area. A history selection is allowed for copying/quoting, but a
+            # programmatic insert there would bypass on_text_command and
+            # modify history, so fall back to the end of the input instead.
+            editable_start = input_editable_start(chat_view)
+            selections = list(chat_view.sel())
+            # Multiple selections would insert the same context more than once.
+            if not (
+                len(selections) == 1
+                and selections[0].begin() >= editable_start
+            ):
+                chat_view.sel().clear()
+                chat_view.sel().add(sublime.Region(chat_view.size()))
+            chat_view.run_command("insert", {"characters": insert_text})
+            chat_view.show(chat_view.sel()[0].end())
 
 
 class TermChatPromptHandler(sublime_plugin.TextInputHandler):
@@ -2311,6 +2515,10 @@ class TermChatPromptCommand(sublime_plugin.WindowCommand):
 
         if chat_view:
             self.window.focus_view(chat_view)
+            # Snap the selection out of the history area before inserting
+            # (a copy-selection there would drop the text into history).
+            chat_view.sel().clear()
+            chat_view.sel().add(sublime.Region(chat_view.size()))
             chat_view.run_command("insert", {"characters": prompt})
             chat_view.run_command("term_chat_send_input")
         else:
@@ -2510,7 +2718,7 @@ class TermChatInterruptCommand(sublime_plugin.WindowCommand):
     """
     Interrupts the current chat session.
     """
-    def run(self):
+    def run(self, confirm=False):
         window_id = self.window.id()
         if window_id not in chatview_clients:
             sublime.status_message("No active ChatView session found")
@@ -2519,6 +2727,9 @@ class TermChatInterruptCommand(sublime_plugin.WindowCommand):
         session = chatview_clients[window_id]
         if not session.loading_animation.is_loading:
             sublime.status_message("No active conversation to interrupt")
+            return
+
+        if confirm and not sublime.ok_cancel_dialog("Stop the running conversation?", "Stop"):
             return
 
         if session.agent_thread and session.agent_thread.agent:
@@ -2530,6 +2741,7 @@ class TermChatInterruptCommand(sublime_plugin.WindowCommand):
                     session.agent_thread.agent.interrupt(),
                     session.agent_thread.loop
                 )
+                session.model_phantom.set_stopping(True)
                 sublime.set_timeout(
                     lambda: session.chat_view.run_command(
                         "term_chat_output_append",
@@ -2540,6 +2752,7 @@ class TermChatInterruptCommand(sublime_plugin.WindowCommand):
                 sublime.status_message("Interrupting agent")
                 LOG.info(f"Interrupt conversation for window {window_id}")
             except Exception as e:
+                session.model_phantom.set_stopping(False)
                 LOG.error(f"Failed to interrupt agent: {e}")
 
     def is_enabled(self):
@@ -2679,7 +2892,7 @@ class TermChatSetAgentCommand(sublime_plugin.WindowCommand):
                 session = chatview_clients[window_id]
                 if agent != current_agent:
                     session.switch_agent(agent)
-                session.model_phantom.update(plan_mode=session.plan_mode)
+                session.model_phantom.update()
 
     def input(self, args):
         current_agent = self.window.settings().get(CHAT_AGENT, "claude")
@@ -2718,7 +2931,7 @@ class TermChatSetModelCommand(sublime_plugin.WindowCommand):
             window_id = self.window.id()
             if window_id in chatview_clients:
                 session = chatview_clients[window_id]
-                session.model_phantom.update(plan_mode=session.plan_mode)
+                session.model_phantom.update()
                 # Update the running agent directly
                 if session.agent_thread:
                     session.agent_thread.update_config(model=model.strip())
@@ -2831,7 +3044,7 @@ class TermChatTogglePlanModeCommand(sublime_plugin.WindowCommand):
         window_id = self.window.id()
         if window_id in chatview_clients:
             session = chatview_clients[window_id]
-            session.model_phantom.update(plan_mode=plan_mode_enum)
+            session.model_phantom.update()
             # Update plan mode (reconnects for Claude, dynamic update for Codex)
             session.update_plan_mode(plan_mode=plan_mode_enum)
 
@@ -2867,7 +3080,7 @@ class TermChatImplementPlanCommand(sublime_plugin.WindowCommand):
             sublime.status_message("Implementing plan...")
 
             # Get position before appending
-            input_start = session.chat_view.settings().get(CHAT_INPUT_START, 0)
+            input_start = get_input_start(session.chat_view, 0)
             # Display implementation message in chat history
             session.chat_view.run_command("term_chat_output_append", {"text": "\nimplement the plan\n\n"})
 

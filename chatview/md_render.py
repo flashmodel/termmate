@@ -1,93 +1,7 @@
-import logging
-import difflib
 import re
 import unicodedata
+
 import sublime
-
-LOG = logging.getLogger("TermMate")
-
-def get_log_level(level_name):
-    """Maps log level names to logging constants."""
-    return getattr(logging, level_name.upper(), logging.ERROR)
-
-
-def update_log_level(settings):
-    """
-    Reads the log_level from settings and reconfigures the logger.
-    """
-    level_name = settings.get("log_level", "ERROR")
-    level = get_log_level(level_name)
-    LOG.setLevel(level)
-    LOG.propagate = False
-    if not LOG.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter('%(message)s')
-        handler.setFormatter(formatter)
-        LOG.addHandler(handler)
-
-
-def show_diff(window, old_text, new_text, name):
-    """
-    Generate and show a git-style unified diff between old and new text.
-
-    Args:
-        window: Sublime Text window to create the view in
-        old_text: Original text content
-        new_text: Modified text content
-        name: Name for the diff view tab
-    """
-    a = old_text.splitlines(keepends=True)
-    b = new_text.splitlines(keepends=True)
-
-    # Generate unified diff with context
-    diff_lines = list(difflib.unified_diff(
-        a, b,
-        fromfile="a/" + name,
-        tofile="b/" + name,
-        lineterm='',
-        n=5  # lines of context
-    ))
-
-    if not diff_lines:
-        sublime.status_message("No changes")
-        return
-
-    # Build git-style diff output
-    output_parts = []
-
-    # Add git diff header
-    output_parts.append(f"diff a/{name} b/{name}\n")
-    output_parts.append(f"--- a/{name}\n")
-    output_parts.append(f"+++ b/{name}\n")
-
-    # Add the actual diff content (skip the default --- +++ lines from unified_diff)
-    for line in diff_lines[2:]:
-        if not line.endswith('\n'):
-            line += '\n'
-        output_parts.append(line)
-
-    difftxt = "".join(output_parts)
-
-    # Create and configure the diff view
-    v = window.new_file()
-    v.set_name(name)
-    v.set_scratch(True)
-    v.settings().set("line_numbers", False)
-    v.assign_syntax('Packages/TermMate/chatview/ChatDiff.sublime-syntax')
-    v.run_command('append', {'characters': difftxt, 'disable_tab_translation': True})
-    v.set_read_only(True)
-
-
-def show_diff_text(window, diff_text, name):
-    """Show pre-built unified diff text in a new read-only scratch view."""
-    v = window.new_file()
-    v.set_name(name)
-    v.set_scratch(True)
-    v.settings().set("line_numbers", False)
-    v.assign_syntax('Packages/TermMate/chatview/ChatDiff.sublime-syntax')
-    v.run_command('append', {'characters': diff_text, 'disable_tab_translation': True})
-    v.set_read_only(True)
-    return v
 
 
 class MarkdownFormatter:
@@ -108,28 +22,6 @@ class MarkdownFormatter:
 
     def str_width(self, text):
         return sum(self.char_width(c) for c in text)
-
-    # Cap on a single table column's display width. Without this, a cell
-    # containing one long unbroken run of text (a full path, a stack trace
-    # fragment, ...) makes the separator row's "-" * width fill balloon to
-    # match -- rendered as one very long horizontal-rule-looking line.
-    MAX_COL_WIDTH = 60
-
-    def _truncate_to_width(self, text, max_width):
-        """Truncate text to at most max_width display columns, adding an
-        ellipsis if truncated. Assumes max_width >= 1."""
-        if self.str_width(text) <= max_width:
-            return text
-        budget = max_width - 1  # leave room for the ellipsis char (width 1)
-        out = []
-        used = 0
-        for ch in text:
-            w = self.char_width(ch)
-            if used + w > budget:
-                break
-            out.append(ch)
-            used += w
-        return "".join(out) + "…"
 
     def format_table(self, lines):
         if not lines:
@@ -185,11 +77,14 @@ class MarkdownFormatter:
             if i == separator_idx:
                 continue
             for j, cell in enumerate(row):
-                w = min(self.str_width(cell), self.MAX_COL_WIDTH)
+                w = self.str_width(cell)
                 if w > col_widths[j]:
                     col_widths[j] = w
 
         col_widths = [max(w, 3) for w in col_widths]
+
+        if self._get_table_style() == "bordered":
+            return self._render_bordered_table(rows, separator_idx, col_widths)
 
         formatted_lines = []
         for i, row in enumerate(rows):
@@ -208,10 +103,43 @@ class MarkdownFormatter:
                         fill = "-" * max(3, width)
                     new_row += f" {fill} |"
                 else:
-                    cell = self._truncate_to_width(cell, width)
                     padding = width - self.str_width(cell)
                     new_row += f" {cell}{' ' * padding} |"
             formatted_lines.append(new_row)
+
+        return formatted_lines
+
+    def _get_table_style(self):
+        """Return the configured table style: "bordered" or "markdown"."""
+        try:
+            settings = sublime.load_settings("TermMate.sublime-settings")
+            return settings.get("table_style", "bordered")
+        except Exception:
+            return "bordered"
+
+    def _render_bordered_table(self, rows, separator_idx, col_widths):
+        """
+        Render the table with plain horizontal border lines between rows
+        (no corner or junction characters), and no vertical lines at all.
+        Columns are aligned by padding.
+        """
+        inner_width = sum(w + 2 for w in col_widths)
+        border = "─" * inner_width
+
+        formatted_lines = [border]
+        first_row = True
+        for i, row in enumerate(rows):
+            if i == separator_idx:
+                continue
+            if not first_row:
+                formatted_lines.append(border)
+            first_row = False
+            new_row = ""
+            for j, cell in enumerate(row):
+                padding = col_widths[j] - self.str_width(cell)
+                new_row += f" {cell}{' ' * padding} "
+            formatted_lines.append(new_row.rstrip())
+        formatted_lines.append(border)
 
         return formatted_lines
 

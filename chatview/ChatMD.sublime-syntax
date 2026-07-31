@@ -15,6 +15,21 @@ contexts:
     - match: '^(⏺\s*\S+)(.*)$'
       captures:
         1: entity.name.function.chatview
+    - match: '^▣ .*$'
+      scope: variable.parameter.chatview
+      push: artifact_file_list
     - match: '^■ .*$'
       scope: variable.parameter.chatview
     - include: scope:text.html.markdown#markdown
+
+  artifact_file_list:
+    - match: '^    (\S.*?)(\s{2,})(\+\d+)(\s+)(-\d+)\s*$'
+      captures:
+        1: variable.function.chatview
+        3: markup.inserted.diff
+        5: markup.deleted.diff
+    - match: '^    \S.*$'
+      captures:
+        0: variable.function.chatview
+    - match: '^(?!    )'
+      pop: true
