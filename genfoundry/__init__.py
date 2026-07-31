@@ -16,6 +16,7 @@ from .spawn_per_turn_agent import SpawnPerTurnAgent
 from .grok_agent import GrokAgent, find_grok_cli
 from .kimi_agent import KimiAgent, find_kimi_cli
 from .qwen_agent import QwenAgent, find_qwen_cli
+from .gemini_agent import GeminiAgent, find_gemini_cli
 
 __all__ = [
     "BaseAgent",
@@ -45,4 +46,6 @@ __all__ = [
     "find_kimi_cli",
     "QwenAgent",
     "find_qwen_cli",
+    "GeminiAgent",
+    "find_gemini_cli",
 ]

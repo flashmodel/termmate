@@ -12,11 +12,12 @@ from ..genfoundry.pi_agent import find_pi_cli
 from ..genfoundry.grok_agent import find_grok_cli
 from ..genfoundry.kimi_agent import find_kimi_cli
 from ..genfoundry.qwen_agent import find_qwen_cli
+from ..genfoundry.gemini_agent import find_gemini_cli
 from .chatpanel import LoadingAnimation
 
-AGENT_CLI_NAME = {"claude": "claude", "codex": "codex", "pi": "pi", "grok": "grok", "kimi": "kimi", "qwen": "qwen"}
-AGENT_FIND_FN  = {"claude": find_claude_cli, "codex": find_codex_cli, "pi": find_pi_cli, "grok": find_grok_cli, "kimi": find_kimi_cli, "qwen": find_qwen_cli}
-AGENT_LABEL    = {"claude": "Claude Code",   "codex": "Codex",        "pi": "Pi Agent",  "grok": "Grok Build", "kimi": "Kimi CLI", "qwen": "Qwen Code"}
+AGENT_CLI_NAME = {"claude": "claude", "codex": "codex", "pi": "pi", "grok": "grok", "kimi": "kimi", "qwen": "qwen", "gemini": "gemini"}
+AGENT_FIND_FN  = {"claude": find_claude_cli, "codex": find_codex_cli, "pi": find_pi_cli, "grok": find_grok_cli, "kimi": find_kimi_cli, "qwen": find_qwen_cli, "gemini": find_gemini_cli}
+AGENT_LABEL    = {"claude": "Claude Code",   "codex": "Codex",        "pi": "Pi Agent",  "grok": "Grok Build", "kimi": "Kimi CLI", "qwen": "Qwen Code", "gemini": "Gemini CLI"}
 AGENT_DOCS_URL = {
     "claude": "https://code.claude.com/docs/en/setup",
     "codex":  "https://developers.openai.com/codex/cli",
@@ -24,6 +25,7 @@ AGENT_DOCS_URL = {
     "grok":   "https://github.com/xai-org/grok-build",
     "kimi":   "https://github.com/moonshotai/kimi-cli",
     "qwen":   "https://github.com/QwenLM/qwen-code",
+    "gemini": "https://github.com/google-gemini/gemini-cli",
 }
 
 

@@ -9,7 +9,7 @@ import sublime_plugin
 
 from . import utils as plugin
 from ..genfoundry import (
-    ClaudeCodeAgent, CodexAgent, PiAgent, GrokAgent, KimiAgent, QwenAgent, AgentOptions, AssistantMessage, TextBlock,
+    ClaudeCodeAgent, CodexAgent, PiAgent, GrokAgent, KimiAgent, QwenAgent, GeminiAgent, AgentOptions, AssistantMessage, TextBlock,
     PermissionResultAllow, PermissionResultDeny, list_sessions_for_cwd, list_codex_sessions, list_pi_sessions)
 from ..genfoundry.claude_agent import get_claude_session_tail
 from ..genfoundry.codex_agent import get_codex_session_info
@@ -216,6 +216,8 @@ class AgentThread(threading.Thread):
             AgentClass = KimiAgent
         elif agent_provider == "qwen":
             AgentClass = QwenAgent
+        elif agent_provider == "gemini":
+            AgentClass = GeminiAgent
         else:
             AgentClass = ClaudeCodeAgent
 
@@ -2600,10 +2602,11 @@ class TermChatAgentProviderInputHandler(sublime_plugin.ListInputHandler):
             "grok":   "grok: (Grok Build CLI by xAI)",
             "kimi":   "kimi: (Kimi CLI by Moonshot AI)",
             "qwen":   "qwen: (Qwen Code CLI by Alibaba)",
+            "gemini": "gemini: (Gemini CLI by Google)",
         }
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
         items = []
-        for agent in ("claude", "codex", "pi", "grok", "kimi", "qwen"):
+        for agent in ("claude", "codex", "pi", "grok", "kimi", "qwen", "gemini"):
             if agent not in self.available_agents:
                 continue
             path = find_existing_cli(agent, settings) or ""

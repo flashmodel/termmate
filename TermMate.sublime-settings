@@ -28,6 +28,7 @@
     "grok_command": "",
     "kimi_command": "",
     "qwen_command": "",
+    "gemini_command": "",
 
     // Extra environment variables to inject into Claude and Codex subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.
@@ -49,6 +50,10 @@
     // "--allowed-tools Read,Grep" or "--approval-mode yolo". Not set by
     // default: guessing Qwen's exact tool names wrong could silently
     // disable tool use.
+    // GEMINI_EXTRA_ARGS is the same for the Gemini agent -- e.g. "-y" for
+    // full auto-approve (--skip-trust is already passed by default; that
+    // one only bypasses an interactive workspace-trust prompt headless
+    // runs could never answer anyway, it isn't a permission loosener).
     "env": {},
 
     // Enable file-based conversation checkpoint.
