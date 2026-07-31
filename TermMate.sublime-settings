@@ -25,6 +25,7 @@
     "claude_command": "",
     "codex_command": "",
     "pi_command": "",
+    "grok_command": "",
 
     // Extra environment variables to inject into Claude and Codex subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.
@@ -33,6 +34,11 @@
     //   "ANTHROPIC_API_KEY": "sk-ant-...",
     //   "CODEX_API_KEY": "sk-..."
     // }
+    // GROK_EXTRA_ARGS is read by the Grok agent and appended verbatim to its
+    // argv (space-split) -- e.g. "GROK_EXTRA_ARGS": "--yolo" or
+    // "--allow bash:*". No tool-allowlist flags are passed by default;
+    // headless Grok turns run with whatever Grok's own default permission
+    // behavior is until you set this.
     "env": {},
 
     // Enable file-based conversation checkpoint.

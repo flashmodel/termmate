@@ -9,7 +9,7 @@ import sublime_plugin
 
 from . import utils as plugin
 from ..genfoundry import (
-    ClaudeCodeAgent, CodexAgent, PiAgent, AgentOptions, AssistantMessage, TextBlock,
+    ClaudeCodeAgent, CodexAgent, PiAgent, GrokAgent, AgentOptions, AssistantMessage, TextBlock,
     PermissionResultAllow, PermissionResultDeny, list_sessions_for_cwd, list_codex_sessions, list_pi_sessions)
 from ..genfoundry.claude_agent import get_claude_session_tail
 from ..genfoundry.codex_agent import get_codex_session_info
@@ -210,6 +210,8 @@ class AgentThread(threading.Thread):
             AgentClass = CodexAgent
         elif agent_provider == "pi":
             AgentClass = PiAgent
+        elif agent_provider == "grok":
+            AgentClass = GrokAgent
         else:
             AgentClass = ClaudeCodeAgent
 
@@ -322,45 +324,10 @@ class AgentThread(threading.Thread):
 
     async def _send_permission_response(self, request_id, response_data, is_extension_ui=False):
         """Internal async method to send a permission response."""
-        if isinstance(self.agent, CodexAgent):
-            # Codex agent: route through its approval response handler
-            await self.agent.send_approval_response(request_id, response_data)
-        elif isinstance(self.agent, PiAgent) or is_extension_ui:
-            # Pi agent only supports extension_ui_request/response protocol
-            # (no control_request/response). Also used for explicit extension UI responses.
-            if is_extension_ui:
-                # Already in extension_ui_response shape (confirmed/cancelled/value)
-                pi_response_data = response_data
-            else:
-                # Convert allow/deny behavior to extension_ui_response shape
-                behavior = response_data.get("behavior", "deny")
-                if behavior == "allow":
-                    pi_response_data = {"confirmed": True}
-                else:
-                    pi_response_data = {"cancelled": True}
-            response = {
-                "type": "extension_ui_response",
-                "id": request_id,
-                **pi_response_data
-            }
-            try:
-                await self.agent._write_json(response)
-            except Exception as e:
-                LOG.error(f"Failed to send extension ui response: {e}")
-        else:
-            # Claude agent: send control_response JSON
-            response = {
-                "type": "control_response",
-                "response": {
-                    "subtype": "success",
-                    "request_id": request_id,
-                    "response": response_data
-                }
-            }
-            try:
-                await self.agent._write_json(response)
-            except Exception as e:
-                LOG.error(f"Failed to send permission response: {e}")
+        try:
+            await self.agent.send_permission_response(request_id, response_data, is_extension_ui=is_extension_ui)
+        except Exception as e:
+            LOG.error(f"Failed to send permission response: {e}")
 
     def send_permission_response(self, request_id, response_data, is_extension_ui=False):
         """Schedule a permission response to be sent."""
@@ -394,43 +361,19 @@ class AgentThread(threading.Thread):
 
         if "plan_mode" in kwargs:
             plan_mode = kwargs["plan_mode"]
-            if isinstance(self.agent, CodexAgent):
-                self.agent.plan_mode = plan_mode
-                LOG.info(f"Updated Codex plan_mode to: {plan_mode}")
-            elif isinstance(self.agent, PiAgent):
-                asyncio.run_coroutine_threadsafe(
-                    self.agent.set_plan_mode(plan_mode),
-                    self.loop
-                )
-                LOG.info(f"Updated Pi plan_mode to: {plan_mode}")
-            elif isinstance(self.agent, ClaudeCodeAgent):
-                # Map boolean plan_mode to CLI permission mode
-                # If plan_mode is True, use 'plan'
-                # If plan_mode is False, use 'default'
-                mode = "plan" if plan_mode else "default"
-                asyncio.run_coroutine_threadsafe(
-                    self.agent.set_permission_mode(mode),
-                    self.loop
-                )
-                LOG.info(f"Updated Claude plan_mode to: {plan_mode} (perm: {mode})")
+            asyncio.run_coroutine_threadsafe(
+                self.agent.apply_plan_mode_update(plan_mode),
+                self.loop
+            )
+            LOG.info(f"Updated {type(self.agent).__name__} plan_mode to: {plan_mode}")
 
         if "model" in kwargs:
             model = kwargs["model"]
-            if isinstance(self.agent, CodexAgent):
-                self.agent.set_model(model)
-                LOG.info(f"Updated Codex model to: {model}")
-            elif isinstance(self.agent, ClaudeCodeAgent):
-                asyncio.run_coroutine_threadsafe(
-                    self.agent.set_model(model),
-                    self.loop
-                )
-                LOG.info(f"Updated Claude model to: {model}")
-            elif isinstance(self.agent, PiAgent):
-                asyncio.run_coroutine_threadsafe(
-                    self.agent.set_model(model),
-                    self.loop
-                )
-                LOG.info(f"Updated Pi model to: {model}")
+            asyncio.run_coroutine_threadsafe(
+                self.agent.apply_model_update(model),
+                self.loop
+            )
+            LOG.info(f"Updated {type(self.agent).__name__} model to: {model}")
 
 
 class InputPromptMarker:
@@ -2650,10 +2593,11 @@ class TermChatAgentProviderInputHandler(sublime_plugin.ListInputHandler):
             "claude": "claude: (Claude Code CLI by Anthropic)",
             "codex":  "codex: (Codex CLI by OpenAI)",
             "pi":     "pi: (Pi Coding Agent by Earendil)",
+            "grok":   "grok: (Grok Build CLI by xAI)",
         }
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
         items = []
-        for agent in ("claude", "codex", "pi"):
+        for agent in ("claude", "codex", "pi", "grok"):
             if agent not in self.available_agents:
                 continue
             path = find_existing_cli(agent, settings) or ""
