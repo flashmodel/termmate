@@ -29,6 +29,7 @@
     "kimi_command": "",
     "qwen_command": "",
     "gemini_command": "",
+    "opencode_command": "",
 
     // Extra environment variables to inject into Claude and Codex subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.
@@ -54,6 +55,13 @@
     // full auto-approve (--skip-trust is already passed by default; that
     // one only bypasses an interactive workspace-trust prompt headless
     // runs could never answer anyway, it isn't a permission loosener).
+    // OPENCODE_EXTRA_ARGS is the same for the OpenCode agent -- e.g.
+    // "--auto" to auto-approve permissions not explicitly denied.
+    // OpenCode's real permission control is opencode.json's "permission"
+    // key (tool names: read, edit, glob, grep, bash, task, skill, lsp,
+    // question, webfetch, websearch, external_directory, doom_loop), not
+    // a CLI flag -- configure that file directly for anything more than
+    // all-or-nothing --auto.
     "env": {},
 
     // Enable file-based conversation checkpoint.
