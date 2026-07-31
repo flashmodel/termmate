@@ -27,6 +27,7 @@
     "pi_command": "",
     "grok_command": "",
     "kimi_command": "",
+    "qwen_command": "",
 
     // Extra environment variables to inject into Claude and Codex subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.
@@ -44,6 +45,10 @@
     // "--model k2" or "--yolo") -- only --work-dir is passed by default,
     // since --model/--yolo were only confirmed for a separately-documented
     // "kimi-agent" binary that may not share plain "kimi"'s flag surface.
+    // QWEN_EXTRA_ARGS is the same for the Qwen agent -- e.g.
+    // "--allowed-tools Read,Grep" or "--approval-mode yolo". Not set by
+    // default: guessing Qwen's exact tool names wrong could silently
+    // disable tool use.
     "env": {},
 
     // Enable file-based conversation checkpoint.

@@ -15,6 +15,7 @@ from .pi_agent import PiAgent, query as pi_query, list_pi_sessions
 from .spawn_per_turn_agent import SpawnPerTurnAgent
 from .grok_agent import GrokAgent, find_grok_cli
 from .kimi_agent import KimiAgent, find_kimi_cli
+from .qwen_agent import QwenAgent, find_qwen_cli
 
 __all__ = [
     "BaseAgent",
@@ -42,4 +43,6 @@ __all__ = [
     "find_grok_cli",
     "KimiAgent",
     "find_kimi_cli",
+    "QwenAgent",
+    "find_qwen_cli",
 ]
