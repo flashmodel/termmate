@@ -1646,7 +1646,7 @@ class TermChatCliCommand(sublime_plugin.WindowCommand):
         chat_view = self.window.new_file()
         chat_view.set_name(CHAT_VIEW_NAME)
         chat_view.set_scratch(True)
-        chat_view.set_syntax_file(f"Packages/{PACKAGE_NAME}/ChatMD.sublime-syntax")
+        chat_view.set_syntax_file(f"Packages/{PACKAGE_NAME}/chatview/ChatMD.sublime-syntax")
 
         chat_view.settings().set("draw_minimap", False)
         chat_view.settings().set("line_numbers", False)
