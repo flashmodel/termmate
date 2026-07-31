@@ -250,6 +250,23 @@ class ClaudeCodeAgent(BaseAgent):
         }
         await self._send_control_request(request)
 
+    async def apply_model_update(self, model: Optional[str]) -> None:
+        await self.set_model(model)
+
+    async def apply_plan_mode_update(self, enabled: bool) -> None:
+        await self.set_permission_mode("plan" if enabled else "default")
+
+    async def send_permission_response(
+        self,
+        request_id: str,
+        response_data: Dict[str, Any],
+        is_extension_ui: bool = False,
+    ) -> None:
+        if is_extension_ui:
+            await self._write_extension_ui_response(request_id, response_data)
+            return
+        await self._send_control_response(request_id, response_data)
+
     async def rewind_files(self, user_message_id: str) -> None:
         """Restore all files modified after the given user message back to their
         pre-message state.  Requires enable_file_checkpoint=True on connect."""

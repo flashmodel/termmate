@@ -277,6 +277,27 @@ class PiAgent(BaseAgent):
             message["session_id"] = self._session_id
         await self._write_json(message)
 
+    async def apply_model_update(self, model: Optional[str]) -> None:
+        await self.set_model(model)
+
+    async def apply_plan_mode_update(self, enabled: bool) -> None:
+        await self.set_plan_mode(enabled)
+
+    async def send_permission_response(
+        self,
+        request_id: str,
+        response_data: Dict[str, Any],
+        is_extension_ui: bool = False,
+    ) -> None:
+        # Pi has no control_request/response protocol of its own -- every
+        # permission response goes out as extension_ui_response.
+        if is_extension_ui:
+            pi_response_data = response_data
+        else:
+            behavior = response_data.get("behavior", "deny")
+            pi_response_data = {"confirmed": True} if behavior == "allow" else {"cancelled": True}
+        await self._write_extension_ui_response(request_id, pi_response_data)
+
     async def steer(self, text: str, proceed_plan: bool = False) -> None:
         if not self.is_connected:
             raise RuntimeError("Client is not connected. Call connect() first.")

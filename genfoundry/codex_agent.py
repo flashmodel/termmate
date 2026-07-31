@@ -251,6 +251,24 @@ class CodexAgent(BaseAgent):
         self.options.model = model
         LOG.info(f"Codex model switched to: {model}")
 
+    async def apply_model_update(self, model: Optional[str]) -> None:
+        self.set_model(model)
+
+    async def apply_plan_mode_update(self, enabled: bool) -> None:
+        self.plan_mode = enabled
+        LOG.info(f"Codex plan_mode updated to: {enabled}")
+
+    async def send_permission_response(
+        self,
+        request_id: str,
+        response_data: Dict[str, Any],
+        is_extension_ui: bool = False,
+    ) -> None:
+        if is_extension_ui:
+            await self._write_extension_ui_response(request_id, response_data)
+            return
+        await self.send_approval_response(request_id, response_data)
+
     def _extract_turn_id(self, data: dict) -> Optional[str]:
         """Extract turnId from a message params or result dict."""
         if not data:

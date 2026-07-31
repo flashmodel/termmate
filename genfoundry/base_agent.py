@@ -150,6 +150,59 @@ class BaseAgent(abc.ABC):
         """Disconnect and clean up resources"""
         pass
 
+    async def apply_model_update(self, model: Optional[str]) -> None:
+        """Live-switch the model mid-conversation. Default: unsupported, no-op.
+
+        Override in subclasses whose CLI protocol supports changing the model
+        without reconnecting. Callers (chatview) call this instead of
+        branching on agent type.
+        """
+        pass
+
+    async def apply_plan_mode_update(self, enabled: bool) -> None:
+        """Live-switch plan mode mid-conversation. Default: unsupported, no-op.
+
+        Each provider has a different underlying mechanism (permission mode
+        string, a plain attribute, a dedicated control message) — subclasses
+        translate `enabled` into their own wire format here.
+        """
+        pass
+
+    async def send_permission_response(
+        self,
+        request_id: str,
+        response_data: Dict[str, Any],
+        is_extension_ui: bool = False,
+    ) -> None:
+        """Send a permission/approval decision back to the agent process.
+
+        Providers disagree on wire shape (control_response vs approval
+        response vs extension_ui_response) — subclasses implement their own,
+        but should route through `_write_extension_ui_response` when
+        `is_extension_ui` is True (the termchat extension's own UI protocol,
+        shared across all providers regardless of native protocol).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support permission responses"
+        )
+
+    async def _write_extension_ui_response(
+        self, request_id: str, response_data: Dict[str, Any]
+    ) -> None:
+        """Shared wire format for the termchat extension's own UI protocol.
+
+        Used whenever is_extension_ui=True, and natively by providers with
+        no control_request/response protocol of their own (e.g. Pi).
+        Relies on the subclass's `_write_json` (all current subclasses
+        implement it).
+        """
+        response = {
+            "type": "extension_ui_response",
+            "id": request_id,
+            **response_data,
+        }
+        await self._write_json(response)
+
     async def __aenter__(self):
         await self.connect()
         return self
