@@ -30,6 +30,7 @@
     "qwen_command": "",
     "gemini_command": "",
     "opencode_command": "",
+    "mimo_command": "",
 
     // Extra environment variables to inject into Claude and Codex subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.
@@ -62,6 +63,10 @@
     // question, webfetch, websearch, external_directory, doom_loop), not
     // a CLI flag -- configure that file directly for anything more than
     // all-or-nothing --auto.
+    // MIMO_EXTRA_ARGS is the same escape hatch for the MiMo agent (a
+    // confirmed OpenCode fork sharing its CLI surface) -- kept as its own
+    // key rather than reusing OPENCODE_EXTRA_ARGS since they're separate
+    // processes.
     "env": {},
 
     // Enable file-based conversation checkpoint.
