@@ -31,6 +31,7 @@
     "gemini_command": "",
     "opencode_command": "",
     "mimo_command": "",
+    "jcode_command": "",
 
     // Extra environment variables to inject into Claude and Codex subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.
@@ -67,6 +68,9 @@
     // confirmed OpenCode fork sharing its CLI surface) -- kept as its own
     // key rather than reusing OPENCODE_EXTRA_ARGS since they're separate
     // processes.
+    // JCODE_EXTRA_ARGS is the same escape hatch for the jcode agent. No
+    // tool-allowlist/yolo-equivalent flag was found documented anywhere
+    // for jcode; add flags here once you know your build supports them.
     "env": {},
 
     // Enable file-based conversation checkpoint.

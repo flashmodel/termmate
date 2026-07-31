@@ -9,7 +9,7 @@ import sublime_plugin
 
 from . import utils as plugin
 from ..genfoundry import (
-    ClaudeCodeAgent, CodexAgent, PiAgent, GrokAgent, KimiAgent, QwenAgent, GeminiAgent, OpenCodeAgent, MimoAgent, AgentOptions, AssistantMessage, TextBlock,
+    ClaudeCodeAgent, CodexAgent, PiAgent, GrokAgent, KimiAgent, QwenAgent, GeminiAgent, OpenCodeAgent, MimoAgent, JCodeAgent, AgentOptions, AssistantMessage, TextBlock,
     PermissionResultAllow, PermissionResultDeny, list_sessions_for_cwd, list_codex_sessions, list_pi_sessions)
 from ..genfoundry.claude_agent import get_claude_session_tail
 from ..genfoundry.codex_agent import get_codex_session_info
@@ -222,6 +222,8 @@ class AgentThread(threading.Thread):
             AgentClass = OpenCodeAgent
         elif agent_provider == "mimo":
             AgentClass = MimoAgent
+        elif agent_provider == "jcode":
+            AgentClass = JCodeAgent
         else:
             AgentClass = ClaudeCodeAgent
 
@@ -2609,10 +2611,11 @@ class TermChatAgentProviderInputHandler(sublime_plugin.ListInputHandler):
             "gemini": "gemini: (Gemini CLI by Google)",
             "opencode": "opencode: (OpenCode)",
             "mimo": "mimo: (MiMo Code by Xiaomi)",
+            "jcode": "jcode: (jcode CLI)",
         }
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
         items = []
-        for agent in ("claude", "codex", "pi", "grok", "kimi", "qwen", "gemini", "opencode", "mimo"):
+        for agent in ("claude", "codex", "pi", "grok", "kimi", "qwen", "gemini", "opencode", "mimo", "jcode"):
             if agent not in self.available_agents:
                 continue
             path = find_existing_cli(agent, settings) or ""

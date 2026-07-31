@@ -15,11 +15,12 @@ from ..genfoundry.qwen_agent import find_qwen_cli
 from ..genfoundry.gemini_agent import find_gemini_cli
 from ..genfoundry.opencode_agent import find_opencode_cli
 from ..genfoundry.mimo_agent import find_mimo_cli
+from ..genfoundry.jcode_agent import find_jcode_cli
 from .chatpanel import LoadingAnimation
 
-AGENT_CLI_NAME = {"claude": "claude", "codex": "codex", "pi": "pi", "grok": "grok", "kimi": "kimi", "qwen": "qwen", "gemini": "gemini", "opencode": "opencode", "mimo": "mimo"}
-AGENT_FIND_FN  = {"claude": find_claude_cli, "codex": find_codex_cli, "pi": find_pi_cli, "grok": find_grok_cli, "kimi": find_kimi_cli, "qwen": find_qwen_cli, "gemini": find_gemini_cli, "opencode": find_opencode_cli, "mimo": find_mimo_cli}
-AGENT_LABEL    = {"claude": "Claude Code",   "codex": "Codex",        "pi": "Pi Agent",  "grok": "Grok Build", "kimi": "Kimi CLI", "qwen": "Qwen Code", "gemini": "Gemini CLI", "opencode": "OpenCode", "mimo": "MiMo Code"}
+AGENT_CLI_NAME = {"claude": "claude", "codex": "codex", "pi": "pi", "grok": "grok", "kimi": "kimi", "qwen": "qwen", "gemini": "gemini", "opencode": "opencode", "mimo": "mimo", "jcode": "jcode"}
+AGENT_FIND_FN  = {"claude": find_claude_cli, "codex": find_codex_cli, "pi": find_pi_cli, "grok": find_grok_cli, "kimi": find_kimi_cli, "qwen": find_qwen_cli, "gemini": find_gemini_cli, "opencode": find_opencode_cli, "mimo": find_mimo_cli, "jcode": find_jcode_cli}
+AGENT_LABEL    = {"claude": "Claude Code",   "codex": "Codex",        "pi": "Pi Agent",  "grok": "Grok Build", "kimi": "Kimi CLI", "qwen": "Qwen Code", "gemini": "Gemini CLI", "opencode": "OpenCode", "mimo": "MiMo Code", "jcode": "jcode"}
 AGENT_DOCS_URL = {
     "claude": "https://code.claude.com/docs/en/setup",
     "codex":  "https://developers.openai.com/codex/cli",
@@ -30,6 +31,7 @@ AGENT_DOCS_URL = {
     "gemini": "https://github.com/google-gemini/gemini-cli",
     "opencode": "https://opencode.ai/docs",
     "mimo":   "https://mimo.xiaomi.com/mimocode/start",
+    "jcode":  "https://github.com/1jehuang/jcode",
 }
 
 
