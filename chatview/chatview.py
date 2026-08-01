@@ -217,6 +217,8 @@ def _reconnect_chat_view(view):
     # Restore the input phantoms at the existing CHAT_INPUT_START position
     session.notice_phantom.show("conversation restored after restart")
     session.model_phantom.update()
+    # Scroll after phantom layout so the restored view reaches the end.
+    sublime.set_timeout(lambda: view.show(view.size()), 0)
     LOG.info(f"Reconnected ChatView agent for window {window_id}, cwd={cwd}, add_dirs={add_dirs}, session_id={session_id}")
 
 
@@ -2448,10 +2450,12 @@ class TermChatInputPromptCommand(sublime_plugin.TextCommand):
         end = self.view.size()
         self.view.sel().clear()
         self.view.sel().add(sublime.Region(end))
-        self.view.show(end)
 
         if window and window.id() in chatview_clients:
             chatview_clients[window.id()].input_marker.update()
+
+        # Scroll after the input marker have been laid out.
+        sublime.set_timeout(lambda: self.view.show(self.view.size()), 0)
 
 
 class TermChatAddContextCommand(sublime_plugin.WindowCommand):
