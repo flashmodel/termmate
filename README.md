@@ -4,7 +4,7 @@
 
 ![TermMate Screenshot](screenshot.png)
 
-TermMate is a professional AI coding agent for Sublime Text that supports multi-agent providers, including **Claude Code**, **Codex**, and **[Pi Agent](https://pi.dev)**. It builds a seamless native agentic interface directly within your editor for autonomous task execution, codebase exploration, and smart refactoring. Instead of using conventional webview, TermMate assistant provide a REPL-style chat interface with modern editor feature such as goto-navigation, auto-complete, folding, file links.
+TermMate is a professional AI coding agent for Sublime Text that supports multi-agent providers, including **Claude Code**, **Codex**, and **[Pi Agent](https://pi.dev)**. It builds a seamless native agentic interface directly within your editor for autonomous task execution, codebase exploration, and smart refactoring. Instead of using conventional webview, TermMate provides editor-native, REPL-inspired chat interface with modern editor features such as goto-navigation, auto-complete, folding, file links.
 
 See TermMate agentic coding features — **[live demo here →](https://termmate.app/sublime/)**
 
@@ -50,16 +50,19 @@ curl -fsSL https://pi.dev/install.sh | sh
 Authenticate the agents via your terminal, or skip the CLI login by setting API keys directly in TermMate's settings — see [Custom Environment Variables](#custom-environment-variables).
 
 **Claude Code:**
+
 ```bash
 /login
 ```
 
 **Codex:**
+
 ```bash
 codex login
 ```
 
 **Pi Agent:**
+
 ```bash
 /login
 ```
