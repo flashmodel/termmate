@@ -43,6 +43,7 @@ CHAT_PLAN_MODE = "chatview_plan_mode"
 CHAT_AGENT = "chatview_agent_provider"
 CHAT_SESSION_ID = "chatview_session_id"
 CHAT_VIEW_NAME = "Chat View"
+CHAT_STATUS_KEY = "termmate.agent_model"
 PACKAGE_NAME = "TermMate"
 PROMPT_PREFIX = "\n❯ "  # transcript prefix for submitted prompts; the live input line uses InputPromptMarker instead
 PREFERENCES_CHANGE_KEY = "termmate_chatview_preferences"
@@ -89,6 +90,26 @@ def get_input_start(view, default=None):
     # Re-anchor lazily (view restored from a session, or anchor lost)
     set_input_start(view, pos)
     return pos
+
+
+def update_agent_model_status(window, view=None):
+    """Refresh the agent/model status in one view or the whole window."""
+    if not window:
+        return
+
+    status = None
+    if window.id() in chatview_clients:
+        agent_provider = window.settings().get(CHAT_AGENT, "claude") or "claude"
+        model = window.settings().get(f"chatview_model_{agent_provider}") or "default"
+        status = f"▣ {agent_provider.upper()}({model})"
+
+    for target in [view] if view else window.views():
+        # Clear the status key used by earlier versions of this feature.
+        target.erase_status(CHAT_VIEW_NAME)
+        if status is None or target.settings().get("is_widget"):
+            target.erase_status(CHAT_STATUS_KEY)
+        else:
+            target.set_status(CHAT_STATUS_KEY, status)
 
 
 def input_editable_start(view):
@@ -138,6 +159,8 @@ def plugin_unloaded():
             LOG.error(f"Failed to stop ChatView session on plugin unload: {e}")
 
     chatview_clients.clear()
+    for window in sublime.windows():
+        update_agent_model_status(window)
 
 
 def _watch_preferences():
@@ -214,6 +237,7 @@ def _reconnect_chat_view(view):
 
     session = ChatSession(window, view, cwd, add_dirs=add_dirs, session_id=session_id)
     chatview_clients[window_id] = session
+    update_agent_model_status(window)
     # Restore the input phantoms at the existing CHAT_INPUT_START position
     session.notice_phantom.show("conversation restored after restart")
     session.model_phantom.update()
@@ -1867,6 +1891,7 @@ class TermChatCliCommand(sublime_plugin.WindowCommand):
         session = ChatSession(self.window, chat_view, cwd, add_dirs=add_dirs)
         window_id = self.window.id()
         chatview_clients[window_id] = session
+        update_agent_model_status(self.window)
 
         # Show initial prompt (this will also update the model phantom)
         chat_view.run_command("term_chat_input_prompt", {"text": initial_msg})
@@ -2076,13 +2101,7 @@ class ChatViewListener(sublime_plugin.EventListener):
                 break
 
     def on_activated(self, view):
-        window = view.window()
-        if not window:
-            return
-        agent_provider = window.settings().get(CHAT_AGENT, "claude") or ""
-        model = window.settings().get(f"chatview_model_{agent_provider}") or ""
-        if model:
-            view.set_status(CHAT_VIEW_NAME, f"{agent_provider}/{model}")
+        update_agent_model_status(view.window(), view)
 
     def on_close(self, view):
         """
@@ -2101,6 +2120,7 @@ class ChatViewListener(sublime_plugin.EventListener):
                     except Exception:
                         pass
                     del chatview_clients[window_id]
+                    update_agent_model_status(window)
                     LOG.info(f"Exit ChatView CLI for window {window_id}")
             LOG.info("ChatView closed")
 
@@ -2925,6 +2945,8 @@ class TermChatSetAgentCommand(sublime_plugin.WindowCommand):
                     session.switch_agent(agent)
                 session.model_phantom.update()
 
+            update_agent_model_status(self.window)
+
     def input(self, args):
         current_agent = self.window.settings().get(CHAT_AGENT, "claude")
         window_id = self.window.id()
@@ -2966,6 +2988,8 @@ class TermChatSetModelCommand(sublime_plugin.WindowCommand):
                 # Update the running agent directly
                 if session.agent_thread:
                     session.agent_thread.update_config(model=model.strip())
+
+            update_agent_model_status(self.window)
 
     def input(self, args):
         # Check if ChatSession has available models

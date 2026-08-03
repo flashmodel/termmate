@@ -7,49 +7,20 @@
         "caption": "TermMate",
         "children": [
             {
-                "caption": "TermMate: Start Chat",
-                "command": "term_chat_add_context"
-            },
-            {
-                "caption": "TermMate: Prompt",
-                "command": "term_chat_prompt"
-            },
-            {
-                "caption": "TermMate: Set Working Directory",
-                "command": "term_chat_set_workspace_input"
-            },
-            {
-                "caption": "TermMate: Stop Conversation",
-                "command": "term_chat_interrupt"
-            },
-            {
-                "caption": "TermMate: Clear Session",
-                "command": "term_chat_clear_session"
-            },
-            {
-                "caption": "TermMate: Resume Session",
+                "caption": "Resume Session…",
                 "command": "term_chat_resume_session"
             },
             {
-                "caption": "TermMate: Split Chat Window",
-                "command": "term_chat_split_chat"
+                "caption": "Clear Session",
+                "command": "term_chat_clear_session"
             },
             {
-                "caption": "TermMate: Model",
-                "command": "term_chat_set_model"
+                "caption": "-"
             },
             {
-                "caption": "TermMate: Agent",
-                "command": "term_chat_set_agent"
-            },
-            {
-                "caption": "TermMate: Approve Mode",
+                "caption": "Approve Mode…",
                 "command": "term_chat_set_approve_mode"
-            },
-            {
-                "caption": "TermMate: Plan Mode",
-                "command": "term_chat_toggle_plan_mode"
-            },
+            }
         ]
     }
 ]
