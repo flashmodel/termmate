@@ -2,5 +2,25 @@
     {
         "caption": "TermMate: Chat with Agent",
         "command": "term_chat_add_context"
+    },
+    {
+        "caption": "TermMate",
+        "children": [
+            {
+                "caption": "Resume Session…",
+                "command": "term_chat_resume_session"
+            },
+            {
+                "caption": "Clear Session",
+                "command": "term_chat_clear_session"
+            },
+            {
+                "caption": "-"
+            },
+            {
+                "caption": "Approve Mode…",
+                "command": "term_chat_set_approve_mode"
+            }
+        ]
     }
 ]
