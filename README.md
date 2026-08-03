@@ -4,7 +4,7 @@
 
 ![TermMate Screenshot](screenshot.png)
 
-TermMate is a professional AI coding agent for Sublime Text that supports multi-agent providers, including **Claude Code**, **Codex**, and **[Pi Agent](https://pi.dev)**. It builds a seamless native agentic interface directly within your editor for autonomous task execution, codebase exploration, and smart refactoring. **TermMate Agent, native to your editor.**
+TermMate is a professional AI coding agent for Sublime Text that supports multi-agent providers, including **Claude Code**, **Codex**, and **[Pi Agent](https://pi.dev)**. It builds a seamless native agentic interface directly within your editor for autonomous task execution, codebase exploration, and smart refactoring. Instead of using conventional webview, TermMate provides editor-native, REPL-inspired chat interface with modern editor features such as goto-navigation, auto-complete, folding, file links.
 
 See TermMate agentic coding features — **[live demo here →](https://termmate.app/sublime/)**
 
@@ -22,7 +22,7 @@ Install TermMate via [Package Control](https://packagecontrol.io/packages/TermMa
 
 ### 2. Install Agent CLI
 
-TermMate relies on external agent CLIs. If you already have Claude Code, Codex, or Pi Agent installed, TermMate will detect them automatically — no extra setup needed.
+If Claude Code, Codex, or Pi Agent is already installed and authenticated,**skip this step**. TermMate automatically detects existing CLI installations and uses their current authentication — no extra setup needed.
 
 Otherwise, the easiest way is to install directly from within Sublime Text: open the Command Palette, type `TermMate: Install Agent`, and select the agent you want. TermMate will run the installation in dedicated panel and notify you when it's complete. CLIs are installed to `~/.local/bin` on macOS/Linux and `%APPDATA%\npm` on Windows.
 
@@ -50,16 +50,19 @@ curl -fsSL https://pi.dev/install.sh | sh
 Authenticate the agents via your terminal, or skip the CLI login by setting API keys directly in TermMate's settings — see [Custom Environment Variables](#custom-environment-variables).
 
 **Claude Code:**
+
 ```bash
 /login
 ```
 
 **Codex:**
+
 ```bash
 codex login
 ```
 
 **Pi Agent:**
+
 ```bash
 /login
 ```

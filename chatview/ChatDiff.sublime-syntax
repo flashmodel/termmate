@@ -37,10 +37,3 @@ contexts:
     - match: '[ab]/(\S+)'
       captures:
         1: variable.function.chatview
-
-  line-range-span:
-    - match: '\d+'
-      scope: variable.function.chatview
-    - match: '(,)\d+'
-      captures:
-        1: punctuation.separator.sequence.diff

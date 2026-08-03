@@ -104,5 +104,114 @@ class TestCodexFileChangeFormatting(unittest.TestCase):
         self.assertEqual(output, expected)
 
 
+class TestCodexToolCallFormatting(unittest.TestCase):
+
+    def setUp(self):
+        session = SimpleNamespace(
+            agent_thread=SimpleNamespace(
+                cwd="/Users/sino/workbench/codeform",
+            ),
+            cwd="/Users/sino/workbench/codeform",
+        )
+        self.processor = CodexMessageProcessor(session)
+
+    def test_formats_mcp_tool_call(self):
+        output = self.processor._format_tool_block({
+            "name": "mcpToolCall",
+            "server": "github",
+            "tool": "search_repositories",
+            "arguments": {"query": "codex", "limit": 10},
+        })
+
+        self.assertEqual(
+            output,
+            "⏺ github·search_repositories (query: codex, limit: 10)",
+        )
+
+    def test_formats_dynamic_tool_call_without_namespace(self):
+        output = self.processor._format_tool_block({
+            "name": "dynamicToolCall",
+            "tool": "choose_design",
+            "arguments": {"theme": "editorial"},
+        })
+
+        self.assertEqual(
+            output,
+            "⏺ choose_design (theme: editorial)",
+        )
+
+    def test_formats_dynamic_tool_namespace(self):
+        output = self.processor._format_tool_block({
+            "name": "dynamicToolCall",
+            "namespace": "design",
+            "tool": "choose",
+            "arguments": {"theme": "editorial"},
+        })
+
+        self.assertEqual(
+            output,
+            "⏺ design·choose (theme: editorial)",
+        )
+
+    def test_formats_collab_agent_tool_call(self):
+        output = self.processor._format_tool_block({
+            "name": "collabAgentToolCall",
+            "tool": "spawnAgent",
+            "receiverThreadIds": ["thread-2"],
+            "prompt": "Inspect tests",
+            "model": "gpt-5",
+            "reasoningEffort": "high",
+        })
+
+        self.assertEqual(
+            output,
+            "⏺ spawnAgent (agents: thread-2, prompt: Inspect tests, "
+            "model: gpt-5, reasoning: high)",
+        )
+
+    def test_formats_web_search(self):
+        output = self.processor._format_tool_block({
+            "name": "webSearch",
+            "query": "Codex app-server protocol",
+        })
+
+        self.assertEqual(
+            output,
+            "⏺ webSearch (Codex app-server protocol)",
+        )
+
+    def test_formats_web_search_action_detail(self):
+        output = self.processor._format_tool_block({
+            "name": "webSearch",
+            "query": "",
+            "action": {
+                "type": "findInPage",
+                "url": "https://example.com/docs",
+                "pattern": "tool call",
+            },
+        })
+
+        self.assertEqual(
+            output,
+            "⏺ webSearch ('tool call' in https://example.com/docs)",
+        )
+
+    def test_formats_image_view_with_relative_path(self):
+        output = self.processor._format_tool_block({
+            "name": "imageView",
+            "path": "/Users/sino/workbench/codeform/assets/preview.png",
+        })
+
+        self.assertEqual(output, "⏺ imageView assets/preview.png")
+
+    def test_formats_image_generation(self):
+        output = self.processor._format_tool_block({
+            "name": "imageGeneration",
+            "status": "completed",
+        })
+
+        self.assertEqual(output, "⏺ imageGeneration")
+
+
 if __name__ == "__main__":
     unittest.main()

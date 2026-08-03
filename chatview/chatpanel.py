@@ -1,7 +1,64 @@
 import logging
+import html
 import sublime
 
 LOG = logging.getLogger("TermMate")
+
+
+class NoticePhantom:
+    """Displays a notice without writing it to the buffer."""
+
+    def __init__(self, view, input_start_provider):
+        self.view = view
+        self.input_start_provider = input_start_provider
+        self.phantom_set = sublime.PhantomSet(view, "chatview_notice")
+        self.message = None
+
+    def show(self, message):
+        self.message = message
+        self.update()
+
+    def update(self):
+        """Render the current notice immediately above the input controls."""
+        if not self.message:
+            self.phantom_set.update([])
+            return
+
+        input_start = self.input_start_provider()
+        region_start = max(0, input_start - 1)
+        region = sublime.Region(region_start, input_start)
+        message = html.escape(self.message)
+
+        notice_html = f"""
+        <body id="chatview-notice" style="margin:0;padding:0">
+            <style>
+                .notice {{
+                    margin: 6px 0;
+                    padding: 5px 8px;
+                    border-left: 2px solid color(var(--accent) alpha(0.55));
+                    background-color: color(var(--accent) alpha(0.06));
+                    font-family: var(--font-mono);
+                    font-size: 0.85em;
+                }}
+                .notice-message {{
+                    color: var(--foreground);
+                    font-weight: bold;
+                }}
+            </style>
+            <div class="notice">
+                <span class="notice-message">ℹ️ {message}</span>
+            </div>
+        </body>
+        """
+        self.phantom_set.update([sublime.Phantom(
+            region,
+            notice_html,
+            sublime.LAYOUT_BLOCK,
+        )])
+
+    def clear(self):
+        self.message = None
+        self.phantom_set.update([])
 
 
 class StatusHint:

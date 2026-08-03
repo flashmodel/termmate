@@ -15,7 +15,7 @@ from ..genfoundry.claude_agent import get_claude_session_tail
 from ..genfoundry.codex_agent import get_codex_session_info
 from ..genfoundry.pi_agent import get_pi_session_tail
 from .chatprocessor import ClaudeMessageProcessor, CodexMessageProcessor, PiMessageProcessor
-from .chatpanel import LoadingAnimation, RewindConfirmPanel, StatusHint
+from .chatpanel import LoadingAnimation, NoticePhantom, RewindConfirmPanel, StatusHint
 from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
 from .install import run_install, find_existing_cli, get_agent_list_items
 
@@ -214,9 +214,11 @@ def _reconnect_chat_view(view):
 
     session = ChatSession(window, view, cwd, add_dirs=add_dirs, session_id=session_id)
     chatview_clients[window_id] = session
-    # Restore the model phantom at the existing CHAT_INPUT_START position
+    # Restore the input phantoms at the existing CHAT_INPUT_START position
+    session.notice_phantom.show("conversation restored after restart")
     session.model_phantom.update()
-    view.run_command("term_chat_output_append", {"text": "\n\n[Reconnected after restart]\n"})
+    # Scroll after phantom layout so the restored view reaches the end.
+    sublime.set_timeout(lambda: view.show(view.size()), 0)
     LOG.info(f"Reconnected ChatView agent for window {window_id}, cwd={cwd}, add_dirs={add_dirs}, session_id={session_id}")
 
 
@@ -1105,6 +1107,10 @@ class ChatSession:
         self.add_dirs = add_dirs or []
         self.loading_animation = LoadingAnimation(self.chat_view)
 
+        self.notice_phantom = NoticePhantom(
+            self.chat_view,
+            lambda: get_input_start(self.chat_view),
+        )
         self.model_phantom = ModelPanel(self.chat_view, self.window)
         self.input_marker = InputPromptMarker(self.chat_view)
         if self.chat_view.settings().has(CHAT_INPUT_START):
@@ -1378,6 +1384,7 @@ class ChatSession:
 
     def stop(self):
         self.loading_animation.stop()
+        self.notice_phantom.clear()
         self.model_phantom.set_running(False)
         self.model_phantom.clear()
         self.input_marker.clear()
@@ -2452,10 +2459,12 @@ class TermChatInputPromptCommand(sublime_plugin.TextCommand):
         end = self.view.size()
         self.view.sel().clear()
         self.view.sel().add(sublime.Region(end))
-        self.view.show(end)
 
         if window and window.id() in chatview_clients:
             chatview_clients[window.id()].input_marker.update()
+
+        # Scroll after the input marker have been laid out.
+        sublime.set_timeout(lambda: self.view.show(self.view.size()), 0)
 
 
 class TermChatAddContextCommand(sublime_plugin.WindowCommand):

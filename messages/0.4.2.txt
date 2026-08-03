@@ -1,0 +1,11 @@
+TermMate 0.4.2
+==============
+
+- Improved Codex Tool Calls
+  Codex tool calls are now displayed with clean name and useful detail
+  for MCP tools, web searches, subagents, images, and multi-file edits.
+
+- Clickable Markdown File Links
+  Double-click local file links in Markdown responses to open them directly
+  in Sublime Text. Links with line and column positions jump to the exact
+  location.
