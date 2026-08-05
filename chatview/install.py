@@ -9,20 +9,26 @@ import sublime
 from ..genfoundry.claude_agent import find_claude_cli
 from ..genfoundry.codex_agent import find_codex_cli
 from ..genfoundry.pi_agent import find_pi_cli
+from ..genfoundry.opencode_agent import find_opencode_cli
 from .chatpanel import LoadingAnimation
 
-AGENT_CLI_NAME = {"claude": "claude", "codex": "codex", "pi": "pi"}
-AGENT_FIND_FN  = {"claude": find_claude_cli, "codex": find_codex_cli, "pi": find_pi_cli}
-AGENT_LABEL    = {"claude": "Claude Code",   "codex": "Codex",        "pi": "Pi Agent"}
+AGENT_CLI_NAME = {"claude": "claude", "codex": "codex", "pi": "pi", "opencode": "opencode"}
+AGENT_FIND_FN  = {"claude": find_claude_cli, "codex": find_codex_cli, "pi": find_pi_cli,
+                  "opencode": find_opencode_cli}
+AGENT_LABEL    = {"claude": "Claude Code", "codex": "Codex", "pi": "Pi Agent",
+                  "opencode": "OpenCode"}
 AGENT_DOCS_URL = {
     "claude": "https://code.claude.com/docs/en/setup",
     "codex":  "https://developers.openai.com/codex/cli",
     "pi":     "https://pi.dev/",
+    "opencode": "https://opencode.ai/docs/",
 }
 
 
 def find_existing_cli(agent, settings=None):
     if settings is not None:
+        if agent == "opencode" and settings.get("opencode_server_url"):
+            return settings.get("opencode_server_url")
         custom = settings.get(f"{agent}_command")
         if custom and shutil.which(custom):
             return shutil.which(custom)
@@ -86,6 +92,17 @@ def get_agent_install_info(agent):
                 "PI_NON_INTERACTIVE": "1",
                 "CI": "1",
             },
+        )
+
+    if agent == "opencode":
+        if is_win:
+            return display, "npm install -g opencode-ai", True, {}
+        local_bin = os.path.join(home, ".local", "bin")
+        return (
+            display,
+            "curl -fsSL https://opencode.ai/install | bash",
+            True,
+            {"PATH": local_bin + os.pathsep + os.environ.get("PATH", "")},
         )
 
     return display, None, False, {}

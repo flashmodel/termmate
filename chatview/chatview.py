@@ -9,12 +9,16 @@ import sublime_plugin
 
 from . import utils as plugin
 from ..genfoundry import (
-    ClaudeCodeAgent, CodexAgent, PiAgent, AgentOptions, AssistantMessage, TextBlock,
-    PermissionResultAllow, PermissionResultDeny, list_sessions_for_cwd, list_codex_sessions, list_pi_sessions)
+    ClaudeCodeAgent, CodexAgent, PiAgent, OpenCodeAgent, AgentOptions, AssistantMessage, TextBlock,
+    PermissionResultAllow, PermissionResultDeny, list_sessions_for_cwd, list_codex_sessions,
+    list_pi_sessions, list_opencode_sessions, get_opencode_session_info)
 from ..genfoundry.claude_agent import get_claude_session_tail
 from ..genfoundry.codex_agent import get_codex_session_info
 from ..genfoundry.pi_agent import get_pi_session_tail
-from .chatprocessor import ClaudeMessageProcessor, CodexMessageProcessor, PiMessageProcessor
+from .chatprocessor import (
+    ClaudeMessageProcessor, CodexMessageProcessor, PiMessageProcessor,
+    OpenCodeMessageProcessor,
+)
 from .chatpanel import LoadingAnimation, NoticePhantom, RewindConfirmPanel, StatusHint
 from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
 from .install import run_install, find_existing_cli, get_agent_list_items
@@ -328,6 +332,7 @@ class AgentThread(threading.Thread):
                 self.anthropic_config.get("agent_provider", "claude") == "claude"
                 and self.anthropic_config.get("enable_file_checkpoint", True)
             ),
+            server_url=self.anthropic_config.get("server_url"),
         )
 
         agent_provider = self.anthropic_config.get("agent_provider", "claude")
@@ -335,6 +340,8 @@ class AgentThread(threading.Thread):
             AgentClass = CodexAgent
         elif agent_provider == "pi":
             AgentClass = PiAgent
+        elif agent_provider == "opencode":
+            AgentClass = OpenCodeAgent
         else:
             AgentClass = ClaudeCodeAgent
 
@@ -447,8 +454,8 @@ class AgentThread(threading.Thread):
 
     async def _send_permission_response(self, request_id, response_data, is_extension_ui=False):
         """Internal async method to send a permission response."""
-        if isinstance(self.agent, CodexAgent):
-            # Codex agent: route through its approval response handler
+        if isinstance(self.agent, (CodexAgent, OpenCodeAgent)):
+            # Server-backed agents route through their approval handlers.
             await self.agent.send_approval_response(request_id, response_data)
         elif isinstance(self.agent, PiAgent) or is_extension_ui:
             # Pi agent only supports extension_ui_request/response protocol
@@ -527,6 +534,12 @@ class AgentThread(threading.Thread):
             if isinstance(self.agent, CodexAgent):
                 self.agent.plan_mode = plan_mode
                 LOG.info(f"Updated Codex plan_mode to: {plan_mode}")
+            elif isinstance(self.agent, OpenCodeAgent):
+                asyncio.run_coroutine_threadsafe(
+                    self.agent.set_plan_mode(plan_mode),
+                    self.loop
+                )
+                LOG.info(f"Updated OpenCode plan_mode to: {plan_mode}")
             elif isinstance(self.agent, PiAgent):
                 asyncio.run_coroutine_threadsafe(
                     self.agent.set_plan_mode(plan_mode),
@@ -549,6 +562,9 @@ class AgentThread(threading.Thread):
             if isinstance(self.agent, CodexAgent):
                 self.agent.set_model(model)
                 LOG.info(f"Updated Codex model to: {model}")
+            elif isinstance(self.agent, OpenCodeAgent):
+                self.agent.set_model(model)
+                LOG.info(f"Updated OpenCode model to: {model}")
             elif isinstance(self.agent, ClaudeCodeAgent):
                 asyncio.run_coroutine_threadsafe(
                     self.agent.set_model(model),
@@ -1181,7 +1197,7 @@ class ChatSession:
 
         if not self.available_agents:
             self.chat_view.run_command("term_chat_output_append", {
-                "text": f"\n\n⚠️ Error: No agent CLI found.\nPlease install Claude CLI (`npm install -g @anthropic-ai/claude-code`) or Codex CLI, or set their paths in {PACKAGE_NAME} settings.\n\n"
+                "text": f"\n\n⚠️ Error: No agent CLI found.\nPlease install Claude Code, Codex, Pi, or OpenCode; alternatively configure its command or OpenCode server URL in {PACKAGE_NAME} settings.\n\n"
             })
             self.window.run_command("term_chat_install_agent")
             return
@@ -1197,6 +1213,8 @@ class ChatSession:
             self.message_processor = CodexMessageProcessor(self)
         elif agent_provider == "pi":
             self.message_processor = PiMessageProcessor(self)
+        elif agent_provider == "opencode":
+            self.message_processor = OpenCodeMessageProcessor(self)
         else:
             self.message_processor = ClaudeMessageProcessor(self)
 
@@ -1219,7 +1237,11 @@ class ChatSession:
             "approve_mode": self.window.settings().get(CHAT_APPROVE_MODE, ApproveMode.ALLOW_EDIT.value),
             "session_id": session_id,
             "env": settings.get("env", {}),
-            "debug_agent_message": settings.get("debug_agent_message", False)
+            "debug_agent_message": settings.get("debug_agent_message", False),
+            "server_url": (
+                settings.get("opencode_server_url")
+                if agent_provider == "opencode" else None
+            ),
         }
 
         # Initialize background agent thread
@@ -1697,19 +1719,26 @@ class ChatSession:
             "agent_provider": new_agent_provider,
             "approve_mode": self.window.settings().get(CHAT_APPROVE_MODE, ApproveMode.ALLOW_EDIT.value),
             "env": settings.get("env", {}),
-            "debug_agent_message": settings.get("debug_agent_message", False)
+            "debug_agent_message": settings.get("debug_agent_message", False),
+            "server_url": (
+                settings.get("opencode_server_url")
+                if new_agent_provider == "opencode" else None
+            ),
         }
 
         if new_agent_provider == "codex":
             self.message_processor = CodexMessageProcessor(self)
         elif new_agent_provider == "pi":
             self.message_processor = PiMessageProcessor(self)
+        elif new_agent_provider == "opencode":
+            self.message_processor = OpenCodeMessageProcessor(self)
         else:
             self.message_processor = ClaudeMessageProcessor(self)
 
         cwd = get_best_dir(self.chat_view)
         self.agent_thread = AgentThread(
-            cwd, self._handle_agent_message, cli_path=cli_path, anthropic_config=anthropic_config
+            cwd, self._handle_agent_message, cli_path=cli_path,
+            anthropic_config=anthropic_config, add_dirs=self.add_dirs
         )
         self.agent_thread.start()
         LOG.info(f"Switched agent to: {new_agent_provider}")
@@ -1759,12 +1788,17 @@ class ChatSession:
             "approve_mode": self.window.settings().get(CHAT_APPROVE_MODE, ApproveMode.ALLOW_EDIT.value),
             "session_id": old_session_id,
             "env": settings.get("env", {}),
-            "debug_agent_message": settings.get("debug_agent_message", False)
+            "debug_agent_message": settings.get("debug_agent_message", False),
+            "server_url": (
+                settings.get("opencode_server_url")
+                if current_agent_provider == "opencode" else None
+            ),
         }
 
         cwd = get_best_dir(self.chat_view)
         self.agent_thread = AgentThread(
-            cwd, self._handle_agent_message, cli_path=cli_path, anthropic_config=anthropic_config
+            cwd, self._handle_agent_message, cli_path=cli_path,
+            anthropic_config=anthropic_config, add_dirs=self.add_dirs
         )
         self.agent_thread.start()
         LOG.info(f"Reconnected agent: {current_agent_provider} (resume: {bool(old_session_id)})")
@@ -1816,6 +1850,16 @@ class ChatSession:
                 return {"summary": (meta or {}).get("summary"), "mtime": (meta or {}).get("mtime", 0),
                         "prompt": (tail or {}).get("prompt"), "response": (tail or {}).get("response")}
             return None
+
+        if agent == "opencode":
+            settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+            return get_opencode_session_info(
+                session_id,
+                cwd,
+                server_url=settings.get("opencode_server_url"),
+                extra_env=settings.get("env", {}),
+                cli_path=settings.get("opencode_command") or None,
+            )
 
         return None
 
@@ -2840,6 +2884,15 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
         elif agent == "pi":
             sessions = list_pi_sessions(cwd)
             placeholder = "Resume previous Pi session"
+        elif agent == "opencode":
+            settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+            sessions = list_opencode_sessions(
+                cwd,
+                server_url=settings.get("opencode_server_url"),
+                extra_env=settings.get("env", {}),
+                cli_path=settings.get("opencode_command") or None,
+            )
+            placeholder = "Resume previous OpenCode session"
         else:
             sessions = list_sessions_for_cwd(cwd)
             placeholder = "Resume previous Claude session"
@@ -2895,7 +2948,7 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
     def is_enabled(self):
         session = chatview_clients.get(self.window.id())
         agent = self._get_agent(session)
-        return agent in ("claude", "codex", "pi")
+        return agent in ("claude", "codex", "pi", "opencode")
 
 
 class TermChatInterruptCommand(sublime_plugin.WindowCommand):
@@ -3009,10 +3062,11 @@ class TermChatAgentProviderInputHandler(sublime_plugin.ListInputHandler):
             "claude": "claude: (Claude Code CLI by Anthropic)",
             "codex":  "codex: (Codex CLI by OpenAI)",
             "pi":     "pi: (Pi Coding Agent by Earendil)",
+            "opencode": "opencode: (OpenCode by Anomaly)",
         }
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
         items = []
-        for agent in ("claude", "codex", "pi"):
+        for agent in ("claude", "codex", "pi", "opencode"):
             if agent not in self.available_agents:
                 continue
             path = find_existing_cli(agent, settings) or ""
@@ -3181,8 +3235,14 @@ class TermChatSetApproveModeCommand(sublime_plugin.WindowCommand):
         window_id = self.window.id()
         if window_id in chatview_clients:
             session = chatview_clients[window_id]
-            if self.window.settings().get(CHAT_AGENT) == "pi":
+            agent = self.window.settings().get(CHAT_AGENT)
+            if agent == "pi":
                 session.sync_pi_approve_mode(mode)
+            elif agent == "opencode":
+                # Permission defaults are supplied to `opencode serve` through
+                # its startup environment, so restart the managed connection
+                # while preserving the current session.
+                session.reload_agent(quiet=True)
 
     def input(self, args):
         if "mode" not in args:
