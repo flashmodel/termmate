@@ -7,6 +7,13 @@
         "caption": "TermMate",
         "children": [
             {
+                "caption": "Quick Message to Agent…",
+                "command": "term_chat_prompt"
+            },
+            {
+                "caption": "-"
+            },
+            {
                 "caption": "Resume Session…",
                 "command": "term_chat_resume_session"
             },

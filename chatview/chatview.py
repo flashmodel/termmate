@@ -281,6 +281,8 @@ class AgentThread(threading.Thread):
         self.loop = None
         self.agent = None
         self.input_queue = None
+        self._pending_inputs = []
+        self._input_lock = threading.Lock()
         self.running = True
         self.daemon = True
 
@@ -290,6 +292,12 @@ class AgentThread(threading.Thread):
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
             self.input_queue = asyncio.Queue()
+            # A prompt can be submitted immediately after the Chat View is
+            # created, before this background thread has finished starting.
+            with self._input_lock:
+                for text in self._pending_inputs:
+                    self.input_queue.put_nowait(text)
+                self._pending_inputs.clear()
             self.loop.run_until_complete(self._agent_loop())
         finally:
             if self.loop:
@@ -489,9 +497,14 @@ class AgentThread(threading.Thread):
 
     def send(self, text):
         """Queue input to be sent."""
-        if self.loop and self.input_queue:
-            LOG.debug(f"Send to agent msg: {text}")
-            self.loop.call_soon_threadsafe(self.input_queue.put_nowait, text)
+        LOG.debug(f"Send to agent msg: {text}")
+        with self._input_lock:
+            if not self.loop or not self.input_queue:
+                self._pending_inputs.append(text)
+                return
+            loop = self.loop
+            input_queue = self.input_queue
+        loop.call_soon_threadsafe(input_queue.put_nowait, text)
 
     def stop(self):
         """Signal thread to stop."""
@@ -1851,6 +1864,9 @@ class TermChatCliCommand(sublime_plugin.WindowCommand):
                     _reconnect_chat_view(view)
                 if initial_msg:
                     view.run_command("term_chat_input_prompt", {"text": initial_msg})
+                    if send_immediate:
+                        view.run_command("term_chat_send_input")
+                self.window.focus_view(view)
                 return
 
         # Create a new view
@@ -1895,6 +1911,9 @@ class TermChatCliCommand(sublime_plugin.WindowCommand):
 
         # Show initial prompt (this will also update the model phantom)
         chat_view.run_command("term_chat_input_prompt", {"text": initial_msg})
+        if initial_msg and send_immediate:
+            chat_view.run_command("term_chat_send_input")
+        self.window.focus_view(chat_view)
 
 
 class TermChatSplitChatCommand(sublime_plugin.WindowCommand):
@@ -2566,21 +2585,92 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
             chat_view.show(chat_view.sel()[0].end())
 
 
-class TermChatPromptHandler(sublime_plugin.TextInputHandler):
-    def name(self):
-        return "prompt"
-
-    def placeholder(self):
-        return "Enter your prompt for ChatView..."
-
-    def description(self, text):
-        return f"{PACKAGE_NAME}: " + text if text else f"{PACKAGE_NAME} Prompt"
-
-
 class TermChatPromptCommand(sublime_plugin.WindowCommand):
-    def run(self, prompt):
+    """Collect a quick prompt outside the command palette and submit it."""
+
+    def run(self, prompt=None):
+        # Capture editor context before the input panel takes focus.  A file
+        # is attached only when the user has made a non-empty selection.
+        source_view = self.window.active_view()
+        context_tags = self._selected_context_tags(source_view)
+
+        # Supplying prompt remains supported for callers that invoke the
+        # command programmatically.  The command palette path opens a
+        # separate input panel so confirming it can submit immediately.
+        if prompt is not None:
+            self._submit(prompt, context_tags, source_view)
+            return
+
+        context_text = " ".join(context_tags)
+        initial_text = f"{context_text}\n\n" if context_text else "\n\n"
+        panel = self.window.show_input_panel(
+            f"Message {PACKAGE_NAME}:",
+            initial_text,
+            lambda text: self._submit_from_panel(text, context_tags, source_view),
+            None,
+            None,
+        )
+        # Blank trailing lines give the panel a multi-line editing area from
+        # the moment it opens.  With context, start below its first-line tags;
+        # otherwise start on the first line as before.
+        panel.settings().set("word_wrap", True)
+        panel.settings().set("line_numbers", False)
+        panel.settings().set("gutter", False)
+        panel.settings().set("scroll_past_end", False)
+        caret = len(initial_text) if context_tags else 0
+        panel.sel().clear()
+        panel.sel().add(sublime.Region(caret))
+        panel.show(caret)
+
+    def _selected_context_tags(self, view):
+        if not view or view.settings().get(CHAT_VIEW_FLAG, False):
+            return []
+
+        file_path = view.file_name()
+        if not file_path:
+            return []
+
+        tags = []
+        for selection in view.sel():
+            if selection.empty():
+                continue
+
+            start_row, _ = view.rowcol(selection.begin())
+            # Use the final selected character rather than Region.end(), so a
+            # selection ending at the next line's first column does not attach
+            # an extra line.
+            end_row, _ = view.rowcol(selection.end() - 1)
+            if start_row == end_row:
+                tag = f"@{file_path}#L{start_row + 1}"
+            else:
+                tag = f"@{file_path}#L{start_row + 1}-{end_row + 1}"
+            if tag not in tags:
+                tags.append(tag)
+        return tags
+
+    def _submit_from_panel(self, prompt, context_tags, source_view):
+        # Context is visible and editable in the panel, so submit exactly what
+        # remains instead of restoring a tag the user deliberately removed.
+        content = prompt.strip()
+        if not content:
+            return
+
+        message = content
+        for tag in context_tags:
+            message = message.replace(tag, "", 1)
+        if not message.strip():
+            return
+
+        self._submit(content, source_view=source_view)
+
+    def _submit(self, prompt, context_tags=None, source_view=None):
+        prompt = prompt.strip()
         if not prompt:
             return
+
+        missing_tags = [tag for tag in (context_tags or []) if tag not in prompt]
+        if missing_tags:
+            prompt = " ".join(missing_tags + [prompt])
 
         # Try to find existing chat view
         chat_view = None
@@ -2590,7 +2680,6 @@ class TermChatPromptCommand(sublime_plugin.WindowCommand):
                 break
 
         if chat_view:
-            self.window.focus_view(chat_view)
             # Snap the selection out of the history area before inserting
             # (a copy-selection there would drop the text into history).
             chat_view.sel().clear()
@@ -2603,9 +2692,28 @@ class TermChatPromptCommand(sublime_plugin.WindowCommand):
                 "initial_msg": prompt,
                 "send_immediate": True
             })
+            for view in self.window.views():
+                if view.settings().get(CHAT_VIEW_FLAG, False):
+                    chat_view = view
+                    break
 
-    def input(self, args):
-        return TermChatPromptHandler()
+        self._apply_post_submit_focus(chat_view, source_view)
+
+    def _apply_post_submit_focus(self, chat_view, source_view):
+        settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+        focus_chatview = settings.get("quick_message_focus_chatview", True)
+        target_view = chat_view if focus_chatview else source_view
+        if not target_view:
+            return
+
+        # The callback can run while Sublime is still closing the input panel.
+        # Focus on the next UI tick so the panel cannot override the target.
+        def focus_target():
+            target_window = target_view.window()
+            if target_window and target_window.id() == self.window.id():
+                self.window.focus_view(target_view)
+
+        sublime.set_timeout(focus_target, 0)
 
 
 class TermChatSetWorkspaceInputHandler(sublime_plugin.TextInputHandler):
