@@ -45,19 +45,27 @@
     "claude_command": "",
     "codex_command": "",
     "pi_command": "",
+    "opencode_command": "",
 
-    // Extra environment variables to inject into Claude and Codex subprocesses.
+    // Optional URL of an already-running OpenCode server. When empty, TermMate
+    // starts `opencode serve` on an OS-assigned free port for each chat agent,
+    // avoiding port collisions when multiple agents run concurrently.
+    "opencode_server_url": "",
+
+    // Extra environment variables to inject into agent subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.
     // Example:
     // "env": {
     //   "ANTHROPIC_API_KEY": "sk-ant-...",
-    //   "CODEX_API_KEY": "sk-..."
+    //   "CODEX_API_KEY": "sk-...",
+    //   "OPENCODE_SERVER_PASSWORD": "secret"
     // }
     "env": {},
 
     // Enable file-based conversation checkpoint.
     // When true, the agent saves a checkpoint before each message so the
     // Rewind feature can restore prior states.  Only supported by the Claude
-    // agent; has no effect when using Codex or Pi.
+    // agent; OpenCode rewind uses its server-side session revert support.
+    // This file-checkpoint setting has no effect for Codex, Pi, or OpenCode.
     "enable_file_checkpoint": true
 }

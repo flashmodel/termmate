@@ -10,8 +10,10 @@ sys.modules.setdefault("sublime", MagicMock())
 
 from chatview.chatprocessor import (
     CodexMessageProcessor,
+    OpenCodeMessageProcessor,
     _parse_markdown_file_target,
 )
+from genfoundry.base_agent import Message
 
 
 class TestMarkdownFileTargetParsing(unittest.TestCase):
@@ -211,6 +213,52 @@ class TestCodexToolCallFormatting(unittest.TestCase):
         })
 
         self.assertEqual(output, "⏺ imageGeneration")
+
+
+class TestOpenCodeMessageProcessor(unittest.TestCase):
+
+    def setUp(self):
+        self.session = SimpleNamespace(
+            agent_thread=SimpleNamespace(
+                cwd="/Users/sino/workbench/codeform",
+                anthropic_config={"plan_mode": False},
+            ),
+            cwd="/Users/sino/workbench/codeform",
+            start_loading=MagicMock(),
+            stop_loading=MagicMock(),
+            show_file_changes_artifact=MagicMock(),
+        )
+        self.processor = OpenCodeMessageProcessor(self.session)
+
+    def test_renders_streaming_text_directly(self):
+        with patch.object(self.processor, "append_content") as append:
+            self.processor.handle_message(Message("text", "hello"))
+
+        self.session.start_loading.assert_called_once_with()
+        append.assert_called_once_with("hello")
+
+    def test_formats_completed_file_tool(self):
+        output = self.processor._format_tool_block({
+            "name": "read",
+            "input": {
+                "filePath": (
+                    "/Users/sino/workbench/codeform/"
+                    "genfoundry/opencode_agent.py"
+                ),
+            },
+            "status": "completed",
+        })
+
+        self.assertEqual(output, "⏺ read genfoundry/opencode_agent.py")
+
+    def test_formats_completed_shell_tool(self):
+        output = self.processor._format_tool_block({
+            "name": "command_execution",
+            "command": "python3 -m unittest",
+            "status": "completed",
+        })
+
+        self.assertEqual(output, "⏺ command (python3 -m unittest)")
 
 
 if __name__ == "__main__":

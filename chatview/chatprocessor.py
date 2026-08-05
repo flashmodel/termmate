@@ -772,6 +772,57 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
             self.session.record_file_change(abs_path, rel_path, diff_text or None)
 
 
+class OpenCodeMessageProcessor(CodexMessageProcessor):
+    """Render normalized OpenCode server events in the native chat view."""
+
+    _TOOL_FILE_NAMES = ("fileChange", "read", "write", "edit", "apply_patch")
+
+    def _handle_typed_message(self, message):
+        # Unlike Codex, OpenCode's adapter emits only streaming text and does
+        # not repeat the completed assistant message.  Render deltas directly.
+        if message.type == "text":
+            self.session.start_loading()
+            if self.last_is_tool_call:
+                self.append_content("\n")
+                self.last_is_tool_call = False
+            content = message.content if isinstance(message.content, str) else ""
+            if content:
+                self.append_content(content)
+            return
+        super()._handle_typed_message(message)
+
+    def _format_tool_block(self, block):
+        name = block.get("name")
+        if name in ("command_execution", "fileChange"):
+            return super()._format_tool_block(block)
+
+        input_data = block.get("input") or {}
+        if not isinstance(input_data, dict):
+            input_data = {"value": input_data}
+        lower_name = (name or "tool").lower()
+        display_name = {
+            "apply_patch": "edit",
+            "webfetch": "webFetch",
+            "websearch": "webSearch",
+        }.get(lower_name, name or "tool")
+
+        path = (
+            input_data.get("filePath")
+            or input_data.get("file_path")
+            or input_data.get("path")
+        )
+        if path and lower_name in ("read", "write", "edit", "apply_patch", "patch"):
+            cwd = (self.session.agent_thread.cwd
+                   if self.session.agent_thread else self.session.cwd) or ""
+            _, rel_path = _resolve_rel_path(path, cwd)
+            return f"⏺ {display_name} {rel_path}"
+
+        detail = block.get("title") or _format_tool_arguments(input_data)
+        if block.get("status") == "error" and block.get("error"):
+            detail = detail or str(block["error"])
+        return f"⏺ {display_name} ({detail})" if detail else f"⏺ {display_name}"
+
+
 class PiMessageProcessor(BaseChatMessageProcessor):
     _TOOL_FILE_NAMES = ("read", "edit", "write")
 
