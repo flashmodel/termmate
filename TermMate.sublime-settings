@@ -37,6 +37,10 @@
     // When true, files you open will not appear in the chat's pane.
     "dedicated_chat_pane": true,
 
+    // Focus the Chat View after sending a Quick Message.
+    // When false, return focus to the view where Quick Message was opened.
+    "quick_message_focus_chatview": true,
+
     // Path or command name for the coding CLI executable.
     "claude_command": "",
     "codex_command": "",
