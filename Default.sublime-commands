@@ -4,7 +4,7 @@
         "command": "term_chat_cli"
     },
     {
-        "caption": "TermMate: Quick Message\tinput and send immediately",
+        "caption": "TermMate: Quick Message\tsend message directly",
         "command": "term_chat_prompt"
     },
     {

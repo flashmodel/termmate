@@ -114,9 +114,9 @@ Right-click on any folder in the sidebar and select **Set Working Directory** to
 
 For sublime projects with multi-folder open in the same workspace, TermMate keeps the selected folder as the `cwd` and gives the agent access to the other folders as additional directories. This is equivalent to agent's `add-dir` option.
 
-**4. Quick Prompt**
+**4. Quick Message**
 
-Use the command palette (`TermMate: Prompt`) to send a quick instruction to the agent without opening the chat view manually.
+Run `TermMate: Quick Message` from the command palette to compose and send a message directly from the current tab. If text is selected, TermMate automatically includes its file and line range as context. The message is sent to the existing chat, or a new chat is started if needed.
 
 **5. Split Chat Window**
 
@@ -187,6 +187,7 @@ When confirmed, TermMate forks the session at the selected prompt, removes all s
 | :--- | :--- | :--- | :--- |
 | **Install Agent** | - | - | `TermMate: Install Agent` |
 | **Start New Chat** | - | - | `TermMate: Start Chat` |
+| **Quick Message** | - | - | `TermMate: Quick Message` |
 | **Split Chat Window** | - | - | `TermMate: Split Chat Window` |
 | **Send Message** | `Cmd+Enter` | `Ctrl+Enter` | - |
 | **Stop Conversation** | `Cmd+Escape` | `Shift+Escape` | `TermMate: Stop Conversation` |
