@@ -1,0 +1,8 @@
+TermMate 0.4.4
+==============
+
+- Quick Message
+  Send a message to the agent directly from the current editor using the
+  command palette or context menu. Selected text automatically includes its
+  file and line range as context.
+
