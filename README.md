@@ -1,6 +1,6 @@
 # TermMate — Agentic Coding Assistant for Sublime Text
 
-**Agentic Coding Mate from Mind to Code**
+**Claude Code, OpenAI Codex and Pi coding agents for Sublime Text**
 
 ![TermMate Screenshot](screenshot.png)
 
