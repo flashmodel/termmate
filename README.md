@@ -8,8 +8,6 @@ TermMate is a professional AI coding agent for Sublime Text that supports multi-
 
 See TermMate agentic coding features — **[live demo here →](https://termmate.app/sublime/)**
 
-For detailed usage, please refer to the [Setup TermMate Documentation](https://termmate.app/docs/setup).
-
 ## Getting Started
 
 ### 1. TermMate Installation
@@ -87,6 +85,8 @@ The example above sets `GEMINI_API_KEY` for Pi Agent authentication.
 - Type your message and press `Cmd+Enter` (macOS) or `Ctrl+Enter` (Windows/Linux) to send. You can even edit prompts in Vim mode.
 
 You can stop a running conversation at any time. Use the shortcut `Cmd+Escape` (Mac) / `Shift+Escape` (Windows/Linux) in the chat window, or run `TermMate: Stop Conversation` from the command palette.
+
+For a detailed guide, see the [TermMate Documentation](https://termmate.app/docs/setup).
 
 ## Usage & Key Features
 
