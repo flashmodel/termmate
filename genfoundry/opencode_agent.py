@@ -254,21 +254,22 @@ class OpenCodeAgent(BaseAgent):
             await self.disconnect()
             raise RuntimeError("Timed out connecting to the OpenCode event stream")
 
+        # Do not create an empty server-side session merely because the chat
+        # view connected.  A fresh session is created lazily when the first
+        # prompt is sent.  Existing sessions still need to be validated here
+        # so resume failures are reported during connection.
         if self._session_id:
             session = await self._http(
                 "GET", f"/session/{quote(self._session_id, safe='')}"
             )
-        else:
-            session = await self._http("POST", "/session", body={})
+            session = self._unwrap(session)
+            if not isinstance(session, dict) or not session.get("id"):
+                raise RuntimeError("OpenCode did not return a valid session")
 
-        session = self._unwrap(session)
-        if not isinstance(session, dict) or not session.get("id"):
-            raise RuntimeError("OpenCode did not return a valid session")
-
-        self._session_id = session["id"]
-        await self._message_queue.put(Message(
-            "thread_started", content={"session_id": self._session_id}
-        ))
+            self._session_id = session["id"]
+            await self._message_queue.put(Message(
+                "thread_started", content={"session_id": self._session_id}
+            ))
 
         asyncio.create_task(self._fetch_models())
 
@@ -752,9 +753,12 @@ class OpenCodeAgent(BaseAgent):
         ))
 
     async def _handle_permission(self, properties: Dict[str, Any]) -> None:
-        permission = properties.get("permission", properties)
-        if not isinstance(permission, dict):
-            return
+        # Older servers may wrap the request in a ``permission`` object.
+        # Current servers use ``permission`` as the string permission kind
+        # (for example "bash") on the request itself.  Treat it as a wrapper
+        # only when the value is actually a mapping.
+        nested = properties.get("permission")
+        permission = nested if isinstance(nested, dict) else properties
         permission_id = str(
             permission.get("id")
             or permission.get("requestID")
@@ -772,12 +776,15 @@ class OpenCodeAgent(BaseAgent):
             or ""
         )
         self._permission_sessions[permission_id] = session_id
-        permission_type = str(permission.get("type") or "tool")
+        permission_type = str(
+            permission.get("type") or permission.get("permission") or "tool"
+        )
         tool_name = _TOOL_NAMES.get(permission_type.lower(), permission_type)
         input_data = dict(permission.get("metadata") or {})
+        patterns = permission.get("patterns") or permission.get("pattern")
         input_data.update({
             "title": permission.get("title", ""),
-            "pattern": permission.get("pattern"),
+            "pattern": patterns,
             "permission_type": permission_type,
         })
 
@@ -801,13 +808,26 @@ class OpenCodeAgent(BaseAgent):
         )
         behavior = response_data.get("behavior", "deny")
         response = "once" if behavior == "allow" else "reject"
-        await self._http(
-            "POST",
-            "/session/{}/permissions/{}".format(
-                quote(session_id, safe=""), quote(str(permission_id), safe="")
-            ),
-            body={"response": response},
-        )
+        body = {"reply": response}
+        if response == "reject" and response_data.get("message"):
+            body["message"] = response_data["message"]
+        try:
+            await self._http(
+                "POST",
+                f"/permission/{quote(str(permission_id), safe='')}/reply",
+                body=body,
+            )
+        except OpenCodeHTTPError as error:
+            if error.status not in (404, 405):
+                raise
+            # Compatibility with pre-v1 permission routes.
+            await self._http(
+                "POST",
+                "/session/{}/permissions/{}".format(
+                    quote(session_id, safe=""), quote(str(permission_id), safe="")
+                ),
+                body={"response": response},
+            )
 
     async def _handle_session_diff(self, diffs: Any) -> None:
         if not isinstance(diffs, list):
@@ -905,13 +925,29 @@ class OpenCodeAgent(BaseAgent):
             return None
         return {"providerID": provider_id, "modelID": model_id}
 
+    async def _ensure_session(self) -> str:
+        """Create the server-side session on demand for the first prompt."""
+        if self._session_id:
+            return self._session_id
+
+        session = await self._http("POST", "/session", body={})
+        session = self._unwrap(session)
+        if not isinstance(session, dict) or not session.get("id"):
+            raise RuntimeError("OpenCode did not return a valid session")
+
+        self._session_id = session["id"]
+        await self._message_queue.put(Message(
+            "thread_started", content={"session_id": self._session_id}
+        ))
+        return self._session_id
+
     async def send_message(
         self,
         content: str,
         parent_tool_use_id: Optional[str] = None,
         proceed_plan: bool = False,
     ) -> None:
-        if not self._is_connected or not self._session_id:
+        if not self._is_connected:
             raise RuntimeError("Client is not connected. Call connect() first.")
 
         # prompt_async returns as soon as OpenCode accepts the prompt, while
@@ -920,8 +956,10 @@ class OpenCodeAgent(BaseAgent):
         # starting a new generation, so serialize turns at the adapter edge.
         while self._turn_active:
             await self._turn_done.wait()
-        if not self._is_connected or not self._session_id:
+        if not self._is_connected:
             raise RuntimeError("Client disconnected while waiting for the previous turn.")
+
+        session_id = await self._ensure_session()
 
         agent_name = "build" if proceed_plan or not self.plan_mode else "plan"
         body: Dict[str, Any] = {
@@ -954,7 +992,7 @@ class OpenCodeAgent(BaseAgent):
         try:
             await self._http(
                 "POST",
-                f"/session/{quote(self._session_id, safe='')}/prompt_async",
+                f"/session/{quote(session_id, safe='')}/prompt_async",
                 body=body,
             )
         except Exception as error:
@@ -979,6 +1017,44 @@ class OpenCodeAgent(BaseAgent):
             self._turn_plan_mode = False
             self._awaiting_user_message_id = False
             self._turn_done.set()
+
+    async def new_session(self) -> str:
+        """Create and switch to a fresh session without reconnecting the client."""
+        if not self._is_connected:
+            raise RuntimeError("Client is not connected. Call connect() first.")
+
+        if self._turn_active:
+            await self.interrupt()
+
+        session = await self._http("POST", "/session", body={})
+        session = self._unwrap(session)
+        if not isinstance(session, dict) or not session.get("id"):
+            raise RuntimeError("OpenCode did not return a valid session")
+
+        # Switch the event filter before clearing the old session's caches so
+        # any late SSE events from it are ignored by _belongs_to_session().
+        self._session_id = session["id"]
+        self.options.session_id = None
+
+        self._turn_active = False
+        self._turn_plan_mode = False
+        self._turn_done.set()
+        self._uses_session_status = False
+        self._awaiting_user_message_id = False
+        self._text_cache.clear()
+        self._part_types.clear()
+        self._message_roles.clear()
+        self._user_message_ids.clear()
+        self._terminal_tools.clear()
+        self._permission_sessions.clear()
+        self._seen_permissions.clear()
+        self._diff_cache.clear()
+        self._plan_text = ""
+
+        await self._message_queue.put(Message(
+            "thread_started", content={"session_id": self._session_id}
+        ))
+        return self._session_id
 
     async def rewind(self, message_id: str) -> Optional[str]:
         if not self._is_connected or not self._session_id:
