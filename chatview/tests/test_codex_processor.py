@@ -227,6 +227,7 @@ class TestOpenCodeMessageProcessor(unittest.TestCase):
             start_loading=MagicMock(),
             stop_loading=MagicMock(),
             show_file_changes_artifact=MagicMock(),
+            update_last_prompt_uuid=MagicMock(),
         )
         self.processor = OpenCodeMessageProcessor(self.session)
 
@@ -236,6 +237,17 @@ class TestOpenCodeMessageProcessor(unittest.TestCase):
 
         self.session.start_loading.assert_called_once_with()
         append.assert_called_once_with("hello")
+
+    def test_attaches_server_generated_user_message_id_to_prompt(self):
+        self.processor.handle_message(Message(
+            "user_message_id",
+            {"message_id": "msg_server_generated"},
+        ))
+
+        self.session.update_last_prompt_uuid.assert_called_once_with(
+            "msg_server_generated"
+        )
+        self.assertEqual(self.processor._active_turn_id, "msg_server_generated")
 
     def test_formats_completed_file_tool(self):
         output = self.processor._format_tool_block({
@@ -250,6 +262,45 @@ class TestOpenCodeMessageProcessor(unittest.TestCase):
         })
 
         self.assertEqual(output, "⏺ read genfoundry/opencode_agent.py")
+
+    def test_formats_read_offset_as_line_number(self):
+        output = self.processor._format_tool_block({
+            "name": "read",
+            "input": {
+                "filePath": (
+                    "/Users/sino/workbench/codeform/"
+                    "genfoundry/opencode_agent.py"
+                ),
+                "offset": 205,
+                "limit": 50,
+            },
+            "status": "completed",
+        })
+
+        self.assertEqual(output, "⏺ read genfoundry/opencode_agent.py#L205")
+
+    def test_formats_edit_diff_start_as_line_number(self):
+        output = self.processor._format_tool_block({
+            "name": "edit",
+            "input": {
+                "filePath": (
+                    "/Users/sino/workbench/codeform/"
+                    "chatview/chatprocessor.py"
+                ),
+                "oldString": "old",
+                "newString": "new",
+            },
+            "metadata": {
+                "diff": (
+                    "Index: chatview/chatprocessor.py\n"
+                    "@@ -807,2 +812,3 @@\n"
+                    "-old\n+new\n"
+                ),
+            },
+            "status": "completed",
+        })
+
+        self.assertEqual(output, "⏺ edit chatview/chatprocessor.py#L812")
 
     def test_formats_completed_shell_tool(self):
         output = self.processor._format_tool_block({

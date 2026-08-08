@@ -68,6 +68,47 @@ class TestOpenCodeAgentEvents(unittest.IsolatedAsyncioTestCase):
             ["hello", " world"],
         )
 
+    async def test_user_text_part_is_not_emitted(self):
+        await self.agent._dispatch_event({
+            "type": "message.updated",
+            "properties": {
+                "info": {
+                    "id": "msg_user",
+                    "sessionID": "ses_test",
+                    "role": "user",
+                },
+            },
+        })
+        await self.agent._dispatch_event({
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "part_user",
+                    "sessionID": "ses_test",
+                    "messageID": "msg_user",
+                    "type": "text",
+                    "text": "about you",
+                },
+            },
+        })
+
+        self.assertEqual(await self._messages(), [])
+
+    async def test_submitted_user_delta_is_ignored_before_role_event(self):
+        self.agent._user_message_ids.add("msg_user")
+        await self.agent._dispatch_event({
+            "type": "message.part.delta",
+            "properties": {
+                "sessionID": "ses_test",
+                "messageID": "msg_user",
+                "partID": "part_user",
+                "field": "text",
+                "delta": "about you",
+            },
+        })
+
+        self.assertEqual(await self._messages(), [])
+
     async def test_tool_is_emitted_only_once_at_terminal_state(self):
         base_part = {
             "id": "tool_1",
@@ -160,6 +201,100 @@ class TestOpenCodeManagedServer(unittest.IsolatedAsyncioTestCase):
             args[:5],
             ("opencode", "serve", "--hostname=127.0.0.1", "--port=0"),
         )
+
+
+class TestOpenCodeTurns(unittest.IsolatedAsyncioTestCase):
+    async def test_prompt_uses_server_generated_message_id(self):
+        agent = OpenCodeAgent(AgentOptions(cwd="."))
+        agent._is_connected = True
+        agent._session_id = "ses_test"
+        agent._http = AsyncMock(return_value=None)
+
+        await agent.send_message("hello")
+
+        body = agent._http.await_args.kwargs["body"]
+        self.assertNotIn("messageID", body)
+        self.assertEqual(body["parts"], [{"type": "text", "text": "hello"}])
+
+        await agent._dispatch_event({
+            "type": "message.updated",
+            "properties": {
+                "info": {
+                    "id": "msg_server_generated",
+                    "sessionID": "ses_test",
+                    "role": "user",
+                },
+            },
+        })
+
+        messages = []
+        while not agent._message_queue.empty():
+            messages.append(await agent._message_queue.get())
+        assigned = [m for m in messages if m.type == "user_message_id"]
+        self.assertEqual(len(assigned), 1)
+        self.assertEqual(
+            assigned[0].content["message_id"], "msg_server_generated"
+        )
+        self.assertIn("msg_server_generated", agent._user_message_ids)
+
+    async def test_status_idle_releases_next_prompt_and_legacy_idle_is_ignored(self):
+        agent = OpenCodeAgent(AgentOptions(cwd="."))
+        agent._is_connected = True
+        agent._session_id = "ses_test"
+        agent._http = AsyncMock(return_value=None)
+
+        await agent.send_message("first")
+        second = asyncio.create_task(agent.send_message("second"))
+        await asyncio.sleep(0)
+
+        self.assertEqual(agent._http.await_count, 1)
+        self.assertFalse(second.done())
+
+        await agent._dispatch_event({
+            "type": "session.status",
+            "properties": {
+                "sessionID": "ses_test",
+                "status": {"type": "idle"},
+            },
+        })
+        await second
+        self.assertEqual(agent._http.await_count, 2)
+        self.assertTrue(agent._turn_active)
+
+        # The compatibility event for the first turn may arrive after the
+        # second prompt starts.  It must not finish that new turn.
+        await agent._dispatch_event({
+            "type": "session.idle",
+            "properties": {"sessionID": "ses_test"},
+        })
+        self.assertTrue(agent._turn_active)
+
+        await agent._dispatch_event({
+            "type": "session.status",
+            "properties": {
+                "sessionID": "ses_test",
+                "status": {"type": "idle"},
+            },
+        })
+        self.assertFalse(agent._turn_active)
+
+    async def test_legacy_idle_releases_prompt_without_status_protocol(self):
+        agent = OpenCodeAgent(AgentOptions(cwd="."))
+        agent._is_connected = True
+        agent._session_id = "ses_test"
+        agent._http = AsyncMock(return_value=None)
+
+        await agent.send_message("first")
+        second = asyncio.create_task(agent.send_message("second"))
+        await asyncio.sleep(0)
+
+        await agent._dispatch_event({
+            "type": "session.idle",
+            "properties": {"sessionID": "ses_test"},
+        })
+        await second
+
+        self.assertEqual(agent._http.await_count, 2)
 
 
 class TestOpenCodeRuntimeConfig(unittest.TestCase):

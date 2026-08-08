@@ -1,5 +1,5 @@
 """
-OpenCode Agent SDK Client - Server API Implementation.
+OpenCode Agent - Server API Implementation.
 
 This adapter starts ``opencode serve`` on an operating-system-assigned port
 and talks to it through the HTTP/SSE server API.  It deliberately uses only
@@ -20,7 +20,6 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -123,6 +122,9 @@ class OpenCodeAgent(BaseAgent):
         self._is_connected = False
         self._turn_active = False
         self._turn_plan_mode = False
+        self._turn_done = asyncio.Event()
+        self._turn_done.set()
+        self._uses_session_status = False
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._event_queue: asyncio.Queue = asyncio.Queue()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -139,6 +141,9 @@ class OpenCodeAgent(BaseAgent):
 
         self._text_cache: Dict[str, str] = {}
         self._part_types: Dict[str, str] = {}
+        self._message_roles: Dict[str, str] = {}
+        self._user_message_ids = set()
+        self._awaiting_user_message_id = False
         self._terminal_tools = set()
         self._permission_sessions: Dict[str, str] = {}
         self._seen_permissions = set()
@@ -531,14 +536,41 @@ class OpenCodeAgent(BaseAgent):
                 session_id = session_id or nested.get("sessionID") or nested.get("sessionId")
         return not session_id or session_id == self._session_id
 
+    @staticmethod
+    def _message_id(properties: Dict[str, Any]) -> str:
+        part = properties.get("part")
+        if isinstance(part, dict):
+            return str(part.get("messageID") or part.get("messageId") or "")
+        return str(properties.get("messageID") or properties.get("messageId") or "")
+
+    def _is_user_part(self, properties: Dict[str, Any]) -> bool:
+        message_id = self._message_id(properties)
+        return bool(
+            message_id
+            and (
+                message_id in self._user_message_ids
+                or self._message_roles.get(message_id) == "user"
+            )
+        )
+
     async def _dispatch_event(self, event: Dict[str, Any]) -> None:
         payload = self._event_payload(event)
         event_type = payload.get("type", "")
         properties = payload.get("properties", {})
-        if not isinstance(properties, dict) or not self._belongs_to_session(properties):
+        if not isinstance(properties, dict):
+            LOG.warning(
+                "OpenCode event has invalid properties: type=%s payload=%r",
+                event_type,
+                payload,
+            )
+            return
+
+        if not self._belongs_to_session(properties):
             return
 
         if event_type == "message.part.delta":
+            if self._is_user_part(properties):
+                return
             if properties.get("field") in (None, "text"):
                 part_id = str(properties.get("partID") or "")
                 delta = properties.get("delta", "")
@@ -555,16 +587,32 @@ class OpenCodeAgent(BaseAgent):
             return
 
         if event_type == "message.part.updated":
+            if self._is_user_part(properties):
+                return
             await self._handle_part_updated(properties)
             return
 
         if event_type == "message.updated":
             info = properties.get("info", {})
-            if isinstance(info, dict) and info.get("error"):
-                await self._message_queue.put(Message(
-                    MessageType.ERROR.value,
-                    content=self._error_text(info["error"]),
-                ))
+            if isinstance(info, dict):
+                message_id = str(info.get("id") or "")
+                role = info.get("role")
+                if message_id and role:
+                    self._message_roles[message_id] = str(role)
+                if message_id and role == "user":
+                    self._user_message_ids.add(message_id)
+                    if self._awaiting_user_message_id:
+                        self._awaiting_user_message_id = False
+                        await self._message_queue.put(Message(
+                            "user_message_id",
+                            content={"message_id": message_id},
+                            msg_id=message_id,
+                        ))
+                if info.get("error"):
+                    await self._message_queue.put(Message(
+                        MessageType.ERROR.value,
+                        content=self._error_text(info["error"]),
+                    ))
             return
 
         if event_type in ("permission.asked", "permission.updated"):
@@ -582,21 +630,39 @@ class OpenCodeAgent(BaseAgent):
             ))
             self._turn_active = False
             self._turn_plan_mode = False
+            self._awaiting_user_message_id = False
+            self._turn_done.set()
             return
 
-        is_idle = event_type == "session.idle"
+        # Newer OpenCode servers publish session.status(idle) followed by a
+        # compatibility session.idle event.  Once the status protocol has
+        # been observed, use it exclusively: waiting only for the legacy
+        # event can deadlock a queued prompt if that event is missed, while
+        # accepting both can let the trailing legacy event finish a new turn.
         if event_type == "session.status":
+            self._uses_session_status = True
             status = properties.get("status", {})
-            is_idle = isinstance(status, dict) and status.get("type") == "idle"
-        if is_idle and self._turn_active:
-            self._turn_active = False
-            if self._turn_plan_mode and self._plan_text:
-                await self._message_queue.put(Message(
-                    MessageType.PLAN_DELTA.value, content=self._plan_text
-                ))
-                self._plan_text = ""
-            self._turn_plan_mode = False
-            await self._message_queue.put(Message(MessageType.STOP.value))
+            if isinstance(status, dict) and status.get("type") == "idle":
+                await self._finish_turn()
+            return
+
+        if event_type == "session.idle" and not self._uses_session_status:
+            await self._finish_turn()
+
+    async def _finish_turn(self) -> None:
+        if not self._turn_active:
+            return
+        if self._awaiting_user_message_id:
+            self._awaiting_user_message_id = False
+        self._turn_active = False
+        if self._turn_plan_mode and self._plan_text:
+            await self._message_queue.put(Message(
+                MessageType.PLAN_DELTA.value, content=self._plan_text
+            ))
+            self._plan_text = ""
+        self._turn_plan_mode = False
+        self._turn_done.set()
+        await self._message_queue.put(Message(MessageType.STOP.value))
 
     async def _handle_part_updated(self, properties: Dict[str, Any]) -> None:
         part = properties.get("part", {})
@@ -848,10 +914,17 @@ class OpenCodeAgent(BaseAgent):
         if not self._is_connected or not self._session_id:
             raise RuntimeError("Client is not connected. Call connect() first.")
 
-        message_id = "msg_" + uuid.uuid4().hex
+        # prompt_async returns as soon as OpenCode accepts the prompt, while
+        # the session's generation loop keeps running.  Submitting another
+        # prompt before session.idle can persist the user message without
+        # starting a new generation, so serialize turns at the adapter edge.
+        while self._turn_active:
+            await self._turn_done.wait()
+        if not self._is_connected or not self._session_id:
+            raise RuntimeError("Client disconnected while waiting for the previous turn.")
+
         agent_name = "build" if proceed_plan or not self.plan_mode else "plan"
         body: Dict[str, Any] = {
-            "messageID": message_id,
             "agent": agent_name,
             "parts": [{"type": "text", "text": content}],
         }
@@ -872,9 +945,11 @@ class OpenCodeAgent(BaseAgent):
         self._plan_text = ""
         self._turn_plan_mode = agent_name == "plan"
         self._turn_active = True
+        self._turn_done.clear()
+        self._awaiting_user_message_id = True
         await self._message_queue.put(Message(
             "turn_started",
-            content={"turnId": message_id, "turnIndex": message_id},
+            content={},
         ))
         try:
             await self._http(
@@ -885,6 +960,8 @@ class OpenCodeAgent(BaseAgent):
         except Exception as error:
             self._turn_active = False
             self._turn_plan_mode = False
+            self._awaiting_user_message_id = False
+            self._turn_done.set()
             await self._message_queue.put(
                 Message(MessageType.ERROR.value, content=str(error))
             )
@@ -900,6 +977,8 @@ class OpenCodeAgent(BaseAgent):
             )
             self._turn_active = False
             self._turn_plan_mode = False
+            self._awaiting_user_message_id = False
+            self._turn_done.set()
 
     async def rewind(self, message_id: str) -> Optional[str]:
         if not self._is_connected or not self._session_id:
@@ -911,8 +990,12 @@ class OpenCodeAgent(BaseAgent):
         )
         self._turn_active = False
         self._turn_plan_mode = False
+        self._awaiting_user_message_id = False
+        self._turn_done.set()
         self._text_cache.clear()
         self._part_types.clear()
+        self._message_roles.clear()
+        self._user_message_ids.clear()
         self._terminal_tools.clear()
         self._diff_cache.clear()
         return self._session_id
@@ -944,6 +1027,8 @@ class OpenCodeAgent(BaseAgent):
         self._is_connected = False
         self._turn_active = False
         self._turn_plan_mode = False
+        self._awaiting_user_message_id = False
+        self._turn_done.set()
 
         self._sse_stop.set()
         with self._sse_response_lock:

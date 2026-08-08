@@ -376,7 +376,20 @@ class AgentThread(threading.Thread):
         while self.running:
             text = await self.input_queue.get()
             if text:
-                await self.agent.send_message(text)
+                try:
+                    await self.agent.send_message(text)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # A failed prompt must not terminate the only consumer of
+                    # input_queue, otherwise every later prompt is enqueued
+                    # successfully but is never delivered to the agent.
+                    LOG.error(
+                        "Agent input failed: provider=%s error=%s",
+                        self.anthropic_config.get("agent_provider", "claude"),
+                        error,
+                        exc_info=True,
+                    )
 
     async def _steer(self, text, proceed_plan=False):
         """Send steering message to agent."""
