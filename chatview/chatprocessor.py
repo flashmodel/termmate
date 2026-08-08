@@ -606,7 +606,7 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
             if hasattr(message, "content") and isinstance(message.content, dict):
                 session_id = message.content.get("session_id")
                 if session_id:
-                    LOG.info(f"Codex thread session_id: {session_id}")
+                    LOG.info(f"Agent thread session_id: {session_id}")
                     # Store session_id in view settings for persistence across restarts
                     self.session.set_view_session_id(self.session.chat_view, session_id)
 
@@ -636,6 +636,15 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
             if turn_index is not None:
                 self.session.update_last_prompt_uuid(str(turn_index))
             self.session.start_loading()
+
+        elif message.type == "user_message_id":
+            # OpenCode creates sortable message IDs server-side.  Attach the
+            # ID from its user message event to the prompt for rewind support.
+            content = message.content if isinstance(message.content, dict) else {}
+            message_id = content.get("message_id")
+            if message_id:
+                self._active_turn_id = message_id
+                self.session.update_last_prompt_uuid(str(message_id))
 
         elif message.type in ("thinking", "text"):
             self.session.start_loading()
@@ -780,6 +789,10 @@ class OpenCodeMessageProcessor(CodexMessageProcessor):
     def _handle_typed_message(self, message):
         # Unlike Codex, OpenCode's adapter emits only streaming text and does
         # not repeat the completed assistant message.  Render deltas directly.
+        if message.type == "thinking":
+            self.session.start_loading(text="thinking")
+            return
+
         if message.type == "text":
             self.session.start_loading()
             if self.last_is_tool_call:
@@ -815,6 +828,30 @@ class OpenCodeMessageProcessor(CodexMessageProcessor):
             cwd = (self.session.agent_thread.cwd
                    if self.session.agent_thread else self.session.cwd) or ""
             _, rel_path = _resolve_rel_path(path, cwd)
+            line_no = None
+            if lower_name == "read":
+                line_no = input_data.get("offset") or input_data.get("line")
+            elif lower_name in ("edit", "apply_patch", "patch"):
+                line_no = (
+                    input_data.get("line")
+                    or input_data.get("lineNumber")
+                    or input_data.get("line_number")
+                )
+                if not line_no:
+                    metadata = block.get("metadata") or {}
+                    if isinstance(metadata, dict):
+                        diff_text = metadata.get("diff") or ""
+                        filediff = metadata.get("filediff") or {}
+                        if not diff_text and isinstance(filediff, dict):
+                            diff_text = filediff.get("patch") or ""
+                        line_no = _diff_start_line(diff_text)
+
+            try:
+                line_no = int(line_no) if line_no is not None else None
+            except (TypeError, ValueError):
+                line_no = None
+            if line_no is not None and line_no > 0:
+                rel_path = f"{rel_path}#L{line_no}"
             return f"⏺ {display_name} {rel_path}"
 
         detail = block.get("title") or _format_tool_arguments(input_data)
