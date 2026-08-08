@@ -13,8 +13,8 @@ from ..genfoundry.opencode_agent import find_opencode_cli
 from .chatpanel import LoadingAnimation
 
 AGENT_CLI_NAME = {"claude": "claude", "codex": "codex", "pi": "pi", "opencode": "opencode"}
-AGENT_FIND_FN  = {"claude": find_claude_cli, "codex": find_codex_cli, "pi": find_pi_cli,
-                  "opencode": find_opencode_cli}
+AGENT_FIND_FN  = {"claude": find_claude_cli, "codex": find_codex_cli,
+                  "opencode": find_opencode_cli, "pi": find_pi_cli}
 AGENT_LABEL    = {"claude": "Claude Code", "codex": "Codex", "pi": "Pi Agent",
                   "opencode": "OpenCode"}
 AGENT_DOCS_URL = {
@@ -25,6 +25,21 @@ AGENT_DOCS_URL = {
 }
 
 
+def _opencode_install_dir():
+    """Return the install directory used by OpenCode's official installer."""
+    return os.path.join(os.path.expanduser("~"), ".opencode", "bin")
+
+
+def _opencode_installed_cli():
+    """Return the official OpenCode installation when it is executable."""
+    if sys.platform == "win32":
+        return None
+    path = os.path.join(_opencode_install_dir(), "opencode")
+    if os.path.isfile(path) and os.access(path, os.X_OK):
+        return path
+    return None
+
+
 def find_existing_cli(agent, settings=None):
     if settings is not None:
         if agent == "opencode" and settings.get("opencode_server_url"):
@@ -32,6 +47,12 @@ def find_existing_cli(agent, settings=None):
         custom = settings.get(f"{agent}_command")
         if custom and shutil.which(custom):
             return shutil.which(custom)
+    # The official installer writes here. Prefer it over an older npm,
+    # Homebrew, or system installation that happens to appear first in PATH.
+    if agent == "opencode":
+        official = _opencode_installed_cli()
+        if official:
+            return official
     return shutil.which(AGENT_CLI_NAME[agent]) or AGENT_FIND_FN[agent]()
 
 
@@ -97,12 +118,12 @@ def get_agent_install_info(agent):
     if agent == "opencode":
         if is_win:
             return display, "npm install -g opencode-ai", True, {}
-        local_bin = os.path.join(home, ".local", "bin")
+        install_bin = _opencode_install_dir()
         return (
             display,
             "curl -fsSL https://opencode.ai/install | bash",
             True,
-            {"PATH": local_bin + os.pathsep + os.environ.get("PATH", "")},
+            {"PATH": install_bin + os.pathsep + os.environ.get("PATH", "")},
         )
 
     return display, None, False, {}
@@ -186,7 +207,13 @@ def run_install(window, agent, on_success):
         _add_docs_phantom(view, agent)
         return
 
-    existing = find_existing_cli(agent)
+    # On Unix, the OpenCode installer always manages ~/.opencode/bin/opencode.
+    # A Homebrew/npm binary elsewhere must not turn this into an update of a
+    # path that the official installer never writes.
+    if agent == "opencode" and sys.platform != "win32":
+        existing = _opencode_installed_cli()
+    else:
+        existing = find_existing_cli(agent)
 
     if existing and not os.access(existing, os.W_OK):
         cmd_display = cmd if sys.platform == "win32" else f"{cmd}"
@@ -236,16 +263,27 @@ def run_install(window, agent, on_success):
             for line in proc.stdout:
                 sublime.set_timeout(lambda l=line: sheet.append_log(l), 0)
             proc.wait()
-            if proc.returncode == 0:
+            installed = find_existing_cli(agent)
+            if agent == "opencode" and sys.platform != "win32":
+                installed = _opencode_installed_cli()
+            if proc.returncode == 0 and installed:
                 sublime.set_timeout(
                     lambda: sheet.set_status(f"Done — {display_name} installed successfully."), 0
                 )
                 sublime.set_timeout(
                     lambda: on_success(agent, display_name, lambda t: sheet.append_log(t)), 0
                 )
-            else:
+            elif proc.returncode != 0:
                 sublime.set_timeout(
                     lambda: sheet.set_status(f"Install failed (exit code {proc.returncode}).", show_docs=True), 0
+                )
+            else:
+                sublime.set_timeout(
+                    lambda: sheet.set_status(
+                        f"Install command completed, but the {display_name} executable was not found.",
+                        show_docs=True,
+                    ),
+                    0,
                 )
         except Exception as exc:
             sublime.set_timeout(
@@ -263,6 +301,8 @@ def get_agent_list_items(settings):
         existing = find_existing_cli(agent, settings)
         if is_win:
             location = "%APPDATA%\\npm"
+        elif agent == "opencode":
+            location = "~/.opencode/bin"
         else:
             location = "~/.local/bin"
         status = f"installed: {existing}" if existing else location

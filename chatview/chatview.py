@@ -445,15 +445,19 @@ class AgentThread(threading.Thread):
             sublime.set_timeout(lambda m=message: self.on_message(m), 0)
 
     async def _reset_agent(self):
-        """Disconnect and reconnect the agent to clear conversation context."""
+        """Clear conversation context while keeping the agent thread running."""
         try:
-            # Disconnect current session
-            await self.agent.disconnect()
-            LOG.info("Agent disconnected for reset")
-
-            # Reconnect to start fresh session
-            await self.agent.connect()
-            LOG.info("Agent reconnected with fresh session")
+            if isinstance(self.agent, OpenCodeAgent):
+                # OpenCode can create a new server-side session while keeping
+                # the HTTP/SSE connection and message receiver alive.
+                await self.agent.new_session()
+                LOG.info("OpenCode agent switched to a fresh session")
+            else:
+                # Other providers reset by replacing their live connection.
+                await self.agent.disconnect()
+                LOG.info("Agent disconnected for reset")
+                await self.agent.connect()
+                LOG.info("Agent reconnected with fresh session")
 
             # Notify UI that reset is complete
             sublime.set_timeout(
@@ -675,8 +679,11 @@ class ModelPanel:
         self.window.settings().set(CHAT_MODEL, model)
 
         display_model = model
-        if agent_provider == "pi" and display_model and "/" in display_model:
+        if agent_provider in ("pi", "opencode") and display_model and "/" in display_model:
             display_model = display_model.split("/", 1)[-1]
+        max_model_length = 20
+        if len(display_model) > max_model_length:
+            display_model = f"{display_model[:max_model_length - 1]}…"
 
         plan_tag_html = ""
         if plan_mode == PlanMode.PLANNING:
@@ -3079,7 +3086,7 @@ class TermChatAgentProviderInputHandler(sublime_plugin.ListInputHandler):
         }
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
         items = []
-        for agent in ("claude", "codex", "pi", "opencode"):
+        for agent in ("claude", "codex", "opencode", "pi"):
             if agent not in self.available_agents:
                 continue
             path = find_existing_cli(agent, settings) or ""
