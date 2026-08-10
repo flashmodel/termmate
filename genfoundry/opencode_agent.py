@@ -173,29 +173,20 @@ class OpenCodeAgent(BaseAgent):
                 except (TypeError, ValueError):
                     LOG.warning("Ignoring invalid OPENCODE_CONFIG_CONTENT")
 
-            approve_mode = self.options.approve_mode or "allow-edit"
-            if approve_mode == "accept-all":
-                if "AskUserQuestion" in self.options.disallowed_tools:
-                    permission: Any = {"*": "allow", "question": "deny"}
-                else:
-                    permission = "allow"
-            else:
-                permission = {"*": "ask"}
-                for tool in self.options.allowed_tools:
-                    key = self._permission_key(tool)
-                    if key:
-                        permission[key] = "allow"
-                if approve_mode == "allow-edit":
-                    permission["edit"] = "allow"
+            permission: Dict[str, Any] = {"*": "ask"}
+            for tool in self.options.allowed_tools:
+                key = self._permission_key(tool)
+                if key:
+                    permission[key] = "allow"
 
-                if self.options.add_dirs:
-                    permission["external_directory"] = {
-                        os.path.join(os.path.abspath(path), "**"): "allow"
-                        for path in self.options.add_dirs
-                    }
+            if self.options.add_dirs:
+                permission["external_directory"] = {
+                    os.path.join(os.path.abspath(path), "**"): "allow"
+                    for path in self.options.add_dirs
+                }
 
-                if "AskUserQuestion" in self.options.disallowed_tools:
-                    permission["question"] = "deny"
+            if "AskUserQuestion" in self.options.disallowed_tools:
+                permission["question"] = "deny"
 
             inline["permission"] = permission
             env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline)
@@ -610,9 +601,10 @@ class OpenCodeAgent(BaseAgent):
                             msg_id=message_id,
                         ))
                 if info.get("error"):
+                    error_text = self._error_text(info["error"])
                     await self._message_queue.put(Message(
                         MessageType.ERROR.value,
-                        content=self._error_text(info["error"]),
+                        content=error_text,
                     ))
             return
 
@@ -626,8 +618,15 @@ class OpenCodeAgent(BaseAgent):
 
         if event_type == "session.error":
             error = properties.get("error") or properties
+            error_text = self._error_text(error)
+            if self._turn_active:
+                LOG.error(
+                    "OpenCode conversation failed [session_id=%s, error=%r]",
+                    self._session_id,
+                    error_text,
+                )
             await self._message_queue.put(Message(
-                MessageType.ERROR.value, content=self._error_text(error)
+                MessageType.ERROR.value, content=error_text
             ))
             self._turn_active = False
             self._turn_plan_mode = False
@@ -640,14 +639,20 @@ class OpenCodeAgent(BaseAgent):
         # been observed, use it exclusively: waiting only for the legacy
         # event can deadlock a queued prompt if that event is missed, while
         # accepting both can let the trailing legacy event finish a new turn.
+        turn_idle = False
         if event_type == "session.status":
             self._uses_session_status = True
             status = properties.get("status", {})
-            if isinstance(status, dict) and status.get("type") == "idle":
-                await self._finish_turn()
-            return
+            turn_idle = isinstance(status, dict) and status.get("type") == "idle"
+        elif event_type == "session.idle":
+            turn_idle = not self._uses_session_status
 
-        if event_type == "session.idle" and not self._uses_session_status:
+        if turn_idle:
+            if self._turn_active:
+                LOG.info(
+                    "OpenCode conversation succeeded [session_id=%s]",
+                    self._session_id,
+                )
             await self._finish_turn()
 
     async def _finish_turn(self) -> None:
