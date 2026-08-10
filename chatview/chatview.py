@@ -913,7 +913,7 @@ class PermissionPanel:
         """Build the HTML for the permission phantom."""
         allow_chat_btn = ""
         if approve_mode in (ApproveMode.DEFAULT.value, ApproveMode.ALLOW_EDIT.value):
-            allow_chat_btn = '<a href="allow_chat" class="btn btn-chat">Allow for this chat</a>'
+            allow_chat_btn = '<a href="allow_chat" class="btn btn-chat">Allow this chat</a>'
 
         allow_btn_text = "Implement the Plan" if tool_name in ("ExitPlanMode", "CodexImplementPlan", "ImplementPlan") else "Allow"
 
@@ -955,7 +955,7 @@ class PermissionPanel:
                 .btn {{
                     display: inline-block;
                     text-decoration: none;
-                    padding: 4px 8px;
+                    padding: 4px 6px;
                     border-radius: 3px;
                     font-weight: bold;
                 }}
@@ -966,18 +966,26 @@ class PermissionPanel:
                 .btn-deny {{
                     background-color: var(--redish);
                     color: var(--background);
-                    margin-left: 10px;
+                    margin-left: 4px;
                 }}
                 .btn-chat {{
                     background-color: color(var(--background) blend(var(--foreground) 75%));
                     color: var(--foreground);
-                    margin-left: 30px;
+                    margin-left: 10px;
                     border: 1px solid color(var(--foreground) alpha(0.2));
                 }}
                 .btn-diff {{
                     background-color: var(--accent);
                     color: var(--background);
-                    margin-left: 10px;
+                    margin-left: 4px;
+                }}
+                .btn-settings {{
+                    display: inline-block;
+                    color: var(--foreground);
+                    font-size: 1.2em;
+                    margin-left: 18px;
+                    text-decoration: none;
+                    padding: 4px 0px 4px 6px;
                 }}
             </style>
             <div class="permission-box">
@@ -987,6 +995,7 @@ class PermissionPanel:
                     <a href="allow" class="btn btn-allow">{allow_btn_text}</a>
                     <a href="deny" class="btn btn-deny">Deny</a>
                     {allow_chat_btn}
+                    <a href="set_approve_mode" class="btn-settings" title="Configure approval behavior">⚙</a>
                 </div>
             </div>
         </body>
@@ -1004,6 +1013,9 @@ class PermissionPanel:
                 _, plan, name = self.diff_data[request_id]
                 if not self._focus_plan_if_exists(request_id):
                     self._open_plan(request_id, plan, name)
+            return
+        elif action == "set_approve_mode":
+            self.window.run_command("term_chat_set_approve_mode")
             return
 
         # For allow/deny actions, delegate to the callback
@@ -3259,10 +3271,10 @@ class TermChatSetApproveModeCommand(sublime_plugin.WindowCommand):
             if agent == "pi":
                 session.sync_pi_approve_mode(mode)
             elif agent == "opencode":
-                # Permission defaults are supplied to `opencode serve` through
-                # its startup environment, so restart the managed connection
-                # while preserving the current session.
-                session.reload_agent(quiet=True)
+                # Managed OpenCode servers use an "ask" baseline. Permission
+                # requests are evaluated against the latest mode in
+                # show_permission_phantom(), so no reconnect is needed.
+                LOG.info("Updated OpenCode approve mode without reconnecting")
 
     def input(self, args):
         if "mode" not in args:

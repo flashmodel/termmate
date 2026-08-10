@@ -293,6 +293,9 @@ class TestOpenCodeMessageProcessor(unittest.TestCase):
             "metadata": {
                 "diff": (
                     "Index: chatview/chatprocessor.py\n"
+                    "===============================================\n"
+                    "--- chatview/chatprocessor.py\n"
+                    "+++ chatview/chatprocessor.py\n"
                     "@@ -807,2 +812,3 @@\n"
                     "-old\n+new\n"
                 ),
@@ -300,7 +303,15 @@ class TestOpenCodeMessageProcessor(unittest.TestCase):
             "status": "completed",
         })
 
-        self.assertEqual(output, "⏺ edit chatview/chatprocessor.py#L812")
+        self.assertEqual(
+            output,
+            "⏺ edit chatview/chatprocessor.py#L812\n\n"
+            "````diff\n"
+            "@@ -807,2 +812,3 @@\n"
+            "-old\n"
+            "+new\n"
+            "````",
+        )
 
     def test_formats_completed_shell_tool(self):
         output = self.processor._format_tool_block({

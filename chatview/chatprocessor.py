@@ -156,6 +156,12 @@ def _diff_start_line(diff_text):
     return int(m.group(1)) if m else None
 
 
+def _diff_hunks_only(diff_text):
+    """Drop redundant file headers while preserving the complete diff hunks."""
+    match = re.search(r'^@@ ', diff_text or "", re.MULTILINE)
+    return diff_text[match.start():] if match else diff_text
+
+
 _HUNK_LINE_RE = re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@')
 _MARKDOWN_LINK_RE = re.compile(
     r'(?<!!)\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)\n]+))'
@@ -829,6 +835,7 @@ class OpenCodeMessageProcessor(CodexMessageProcessor):
                    if self.session.agent_thread else self.session.cwd) or ""
             _, rel_path = _resolve_rel_path(path, cwd)
             line_no = None
+            diff_text = ""
             if lower_name == "read":
                 line_no = input_data.get("offset") or input_data.get("line")
             elif lower_name in ("edit", "apply_patch", "patch"):
@@ -837,14 +844,34 @@ class OpenCodeMessageProcessor(CodexMessageProcessor):
                     or input_data.get("lineNumber")
                     or input_data.get("line_number")
                 )
-                if not line_no:
-                    metadata = block.get("metadata") or {}
-                    if isinstance(metadata, dict):
-                        diff_text = metadata.get("diff") or ""
-                        filediff = metadata.get("filediff") or {}
-                        if not diff_text and isinstance(filediff, dict):
-                            diff_text = filediff.get("patch") or ""
+                metadata = block.get("metadata") or {}
+                if isinstance(metadata, dict):
+                    diff_text = metadata.get("diff") or ""
+                    filediff = metadata.get("filediff") or {}
+                    if not diff_text and isinstance(filediff, dict):
+                        diff_text = filediff.get("patch") or ""
+                    if not line_no:
                         line_no = _diff_start_line(diff_text)
+                    diff_text = _diff_hunks_only(diff_text)
+
+                if not diff_text:
+                    old_str = (input_data.get("oldString")
+                               if "oldString" in input_data
+                               else input_data.get("old_string"))
+                    new_str = (input_data.get("newString")
+                               if "newString" in input_data
+                               else input_data.get("new_string"))
+                    if old_str is not None:
+                        try:
+                            start_line = int(line_no) if line_no else None
+                        except (TypeError, ValueError):
+                            start_line = None
+                        diff_text = _make_edit_diff(
+                            old_str,
+                            new_str or "",
+                            rel_path,
+                            start_line=start_line,
+                        ) or ""
 
             try:
                 line_no = int(line_no) if line_no is not None else None
@@ -852,7 +879,9 @@ class OpenCodeMessageProcessor(CodexMessageProcessor):
                 line_no = None
             if line_no is not None and line_no > 0:
                 rel_path = f"{rel_path}#L{line_no}"
-            return f"⏺ {display_name} {rel_path}"
+            header = f"⏺ {display_name} {rel_path}"
+            rendered_diff = self._render_diff_block(diff_text)
+            return f"{header}\n\n{rendered_diff}" if rendered_diff else header
 
         detail = block.get("title") or _format_tool_arguments(input_data)
         if block.get("status") == "error" and block.get("error"):

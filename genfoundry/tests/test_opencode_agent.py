@@ -467,7 +467,7 @@ class TestOpenCodeTurns(unittest.IsolatedAsyncioTestCase):
 
 
 class TestOpenCodeRuntimeConfig(unittest.TestCase):
-    def test_allow_edit_keeps_bash_ask_and_disables_questions(self):
+    def test_uses_ask_baseline_for_runtime_approve_mode_switching(self):
         options = AgentOptions(
             cwd=".",
             approve_mode="allow-edit",
@@ -477,10 +477,16 @@ class TestOpenCodeRuntimeConfig(unittest.TestCase):
         agent = OpenCodeAgent(options)
         config = json.loads(agent._runtime_env()["OPENCODE_CONFIG_CONTENT"])
 
-        self.assertEqual(config["permission"]["edit"], "allow")
+        self.assertNotIn("edit", config["permission"])
         self.assertEqual(config["permission"]["read"], "allow")
         self.assertEqual(config["permission"]["*"], "ask")
         self.assertEqual(config["permission"]["question"], "deny")
+
+    def test_accept_all_still_uses_ask_baseline(self):
+        agent = OpenCodeAgent(AgentOptions(cwd=".", approve_mode="accept-all"))
+        config = json.loads(agent._runtime_env()["OPENCODE_CONFIG_CONTENT"])
+
+        self.assertEqual(config["permission"], {"*": "ask"})
 
 
 if __name__ == "__main__":
