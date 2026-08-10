@@ -1,5 +1,7 @@
 import asyncio
 import json
+import signal
+import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -241,6 +243,23 @@ class TestOpenCodeAgentEvents(unittest.IsolatedAsyncioTestCase):
 
 
 class TestOpenCodeManagedServer(unittest.IsolatedAsyncioTestCase):
+    async def test_terminates_the_managed_process_group(self):
+        process = SimpleNamespace(
+            pid=43210,
+            returncode=None,
+            wait=AsyncMock(return_value=0),
+        )
+        agent = OpenCodeAgent(AgentOptions(cwd="/workspace"))
+        agent._server_process = process
+
+        with patch("genfoundry.opencode_agent.sys.platform", "darwin"), patch(
+            "genfoundry.opencode_agent.os.killpg"
+        ) as killpg:
+            await agent._terminate_server()
+
+        killpg.assert_called_once_with(43210, signal.SIGTERM)
+        self.assertIsNone(agent._server_process)
+
     async def test_requests_an_os_assigned_port(self):
         output = asyncio.StreamReader()
         output.feed_data(
@@ -264,6 +283,8 @@ class TestOpenCodeManagedServer(unittest.IsolatedAsyncioTestCase):
             args[:5],
             ("opencode", "serve", "--hostname=127.0.0.1", "--port=0"),
         )
+        if sys.platform != "win32":
+            self.assertTrue(create_process.await_args.kwargs["start_new_session"])
 
 
 class TestOpenCodeTurns(unittest.IsolatedAsyncioTestCase):
@@ -294,7 +315,7 @@ class TestOpenCodeTurns(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0].content, {"session_id": "ses_new"})
 
     async def test_connect_without_prompt_does_not_create_session(self):
-        agent = OpenCodeAgent(AgentOptions(cwd=".", server_url="http://localhost"))
+        agent = OpenCodeAgent(AgentOptions(cwd="."))
         agent._loop = asyncio.get_running_loop()
         agent._http = AsyncMock(return_value={"healthy": True})
         agent._start_sse_thread = lambda env: agent._sse_ready.set()
@@ -467,26 +488,42 @@ class TestOpenCodeTurns(unittest.IsolatedAsyncioTestCase):
 
 
 class TestOpenCodeRuntimeConfig(unittest.TestCase):
-    def test_uses_ask_baseline_for_runtime_approve_mode_switching(self):
+    def test_allow_edit_allows_edit_tools(self):
         options = AgentOptions(
             cwd=".",
             approve_mode="allow-edit",
-            allowed_tools=["Read", "Glob", "Grep"],
+            allowed_tools=["Read", "Glob", "Grep", "TodoWrite"],
             disallowed_tools=["AskUserQuestion"],
         )
         agent = OpenCodeAgent(options)
         config = json.loads(agent._runtime_env()["OPENCODE_CONFIG_CONTENT"])
 
-        self.assertNotIn("edit", config["permission"])
+        self.assertEqual(config["permission"]["edit"], "allow")
         self.assertEqual(config["permission"]["read"], "allow")
+        self.assertEqual(config["permission"]["todowrite"], "allow")
         self.assertEqual(config["permission"]["*"], "ask")
         self.assertEqual(config["permission"]["question"], "deny")
 
-    def test_accept_all_still_uses_ask_baseline(self):
-        agent = OpenCodeAgent(AgentOptions(cwd=".", approve_mode="accept-all"))
+    def test_defaults_to_allow_edit(self):
+        agent = OpenCodeAgent(AgentOptions(cwd="."))
+        config = json.loads(agent._runtime_env()["OPENCODE_CONFIG_CONTENT"])
+
+        self.assertEqual(config["permission"], {"*": "ask", "edit": "allow"})
+
+    def test_default_mode_asks_for_edit(self):
+        agent = OpenCodeAgent(AgentOptions(cwd=".", approve_mode="default"))
         config = json.loads(agent._runtime_env()["OPENCODE_CONFIG_CONTENT"])
 
         self.assertEqual(config["permission"], {"*": "ask"})
+
+    def test_accept_all_allows_edit_and_asks_for_other_tools(self):
+        agent = OpenCodeAgent(AgentOptions(cwd=".", approve_mode="accept-all"))
+        config = json.loads(agent._runtime_env()["OPENCODE_CONFIG_CONTENT"])
+
+        self.assertEqual(
+            config["permission"],
+            {"*": "ask", "edit": "allow"},
+        )
 
 
 if __name__ == "__main__":

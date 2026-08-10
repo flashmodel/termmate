@@ -42,8 +42,6 @@ def _opencode_installed_cli():
 
 def find_existing_cli(agent, settings=None):
     if settings is not None:
-        if agent == "opencode" and settings.get("opencode_server_url"):
-            return settings.get("opencode_server_url")
         custom = settings.get(f"{agent}_command")
         if custom and shutil.which(custom):
             return shutil.which(custom)

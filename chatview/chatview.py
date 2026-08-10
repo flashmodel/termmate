@@ -332,7 +332,6 @@ class AgentThread(threading.Thread):
                 self.anthropic_config.get("agent_provider", "claude") == "claude"
                 and self.anthropic_config.get("enable_file_checkpoint", True)
             ),
-            server_url=self.anthropic_config.get("server_url"),
         )
 
         agent_provider = self.anthropic_config.get("agent_provider", "claude")
@@ -345,31 +344,37 @@ class AgentThread(threading.Thread):
         else:
             AgentClass = ClaudeCodeAgent
 
+        agent = AgentClass(options)
+        self.agent = agent
         try:
-            async with AgentClass(options) as agent:
-                self.agent = agent
+            await agent.connect()
 
-                # Create tasks for reading inputs and handling agent messages
-                input_task = asyncio.create_task(self._process_inputs())
-                receive_task = asyncio.create_task(self._receive_messages())
+            # Create tasks for reading inputs and handling agent messages
+            input_task = asyncio.create_task(self._process_inputs())
+            receive_task = asyncio.create_task(self._receive_messages())
 
-                # Wait until we are stopped
-                while self.running:
-                    await asyncio.sleep(0.1)
+            # Wait until we are stopped
+            while self.running:
+                await asyncio.sleep(0.1)
 
-                # Cleanup
-                input_task.cancel()
-                receive_task.cancel()
-                try:
-                    await input_task
-                    await receive_task
-                except asyncio.CancelledError:
-                    pass
+            # Cleanup
+            input_task.cancel()
+            receive_task.cancel()
+            try:
+                await input_task
+                await receive_task
+            except asyncio.CancelledError:
+                pass
 
         except Exception as e:
             LOG.error(f"Agent error: {e}")
             error_msg = str(e)
             sublime.set_timeout(lambda: self.on_message(("error", error_msg)), 0)
+        finally:
+            try:
+                await agent.disconnect()
+            except Exception as e:
+                LOG.error(f"Failed to disconnect agent: {e}")
 
     async def _process_inputs(self):
         """Read from input queue and send to agent."""
@@ -531,8 +536,13 @@ class AgentThread(threading.Thread):
         loop.call_soon_threadsafe(input_queue.put_nowait, text)
 
     def stop(self):
-        """Signal thread to stop."""
+        """Signal the agent thread to stop without blocking the caller."""
         self.running = False
+
+        # Wake the event loop immediately instead of waiting for its polling
+        # interval. The agent loop's finally block performs the actual cleanup.
+        if self.loop and not self.loop.is_closed():
+            self.loop.call_soon_threadsafe(lambda: None)
 
     def reset(self):
         """Reset the agent session by disconnecting and reconnecting."""
@@ -1270,10 +1280,6 @@ class ChatSession:
             "session_id": session_id,
             "env": settings.get("env", {}),
             "debug_agent_message": settings.get("debug_agent_message", False),
-            "server_url": (
-                settings.get("opencode_server_url")
-                if agent_provider == "opencode" else None
-            ),
         }
 
         # Initialize background agent thread
@@ -1752,10 +1758,6 @@ class ChatSession:
             "approve_mode": self.window.settings().get(CHAT_APPROVE_MODE, ApproveMode.ALLOW_EDIT.value),
             "env": settings.get("env", {}),
             "debug_agent_message": settings.get("debug_agent_message", False),
-            "server_url": (
-                settings.get("opencode_server_url")
-                if new_agent_provider == "opencode" else None
-            ),
         }
 
         if new_agent_provider == "codex":
@@ -1821,10 +1823,6 @@ class ChatSession:
             "session_id": old_session_id,
             "env": settings.get("env", {}),
             "debug_agent_message": settings.get("debug_agent_message", False),
-            "server_url": (
-                settings.get("opencode_server_url")
-                if current_agent_provider == "opencode" else None
-            ),
         }
 
         cwd = get_best_dir(self.chat_view)
@@ -1888,7 +1886,6 @@ class ChatSession:
             return get_opencode_session_info(
                 session_id,
                 cwd,
-                server_url=settings.get("opencode_server_url"),
                 extra_env=settings.get("env", {}),
                 cli_path=settings.get("opencode_command") or None,
             )
@@ -2920,7 +2917,6 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
             settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
             sessions = list_opencode_sessions(
                 cwd,
-                server_url=settings.get("opencode_server_url"),
                 extra_env=settings.get("env", {}),
                 cli_path=settings.get("opencode_command") or None,
             )

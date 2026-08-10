@@ -47,11 +47,6 @@
     "pi_command": "",
     "opencode_command": "",
 
-    // Optional URL of an already-running OpenCode server. When empty, TermMate
-    // starts `opencode serve` on an OS-assigned free port for each chat agent,
-    // avoiding port collisions when multiple agents run concurrently.
-    "opencode_server_url": "",
-
     // Extra environment variables to inject into agent subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.
     // Example:
