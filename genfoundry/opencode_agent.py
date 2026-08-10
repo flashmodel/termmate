@@ -16,6 +16,7 @@ import os
 import queue as thread_queue
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -105,15 +106,7 @@ class OpenCodeAgent(BaseAgent):
         cli_command = self.options.cli_path or "opencode"
         self.cli_path = shutil.which(cli_command) or find_opencode_cli() or cli_command
 
-        # A caller may attach to an existing server through AgentOptions or
-        # OPENCODE_SERVER_URL instead of starting a managed process.
-        configured_url = self.options.server_url
-        if not configured_url:
-            configured_url = self.options.extra_env.get("OPENCODE_SERVER_URL")
-        self.server_url: Optional[str] = (
-            configured_url.rstrip("/") if configured_url else None
-        )
-        self._owns_server = not bool(self.server_url)
+        self.server_url: Optional[str] = None
 
         self._session_id: Optional[str] = self.options.session_id
         self.plan_mode = self.options.plan_mode
@@ -159,37 +152,39 @@ class OpenCodeAgent(BaseAgent):
         env = os.environ.copy()
         env.update(self.options.extra_env)
 
-        # External servers own their configuration.  For a managed server use
-        # a uniform "ask" baseline; TermMate's UI auto-approves requests based
-        # on its selected approve mode.
-        if self._owns_server:
-            inline: Dict[str, Any] = {}
-            raw_inline = env.get("OPENCODE_CONFIG_CONTENT")
-            if raw_inline:
-                try:
-                    value = json.loads(raw_inline)
-                    if isinstance(value, dict):
-                        inline = value
-                except (TypeError, ValueError):
-                    LOG.warning("Ignoring invalid OPENCODE_CONFIG_CONTENT")
+        inline: Dict[str, Any] = {}
+        raw_inline = env.get("OPENCODE_CONFIG_CONTENT")
+        if raw_inline:
+            try:
+                value = json.loads(raw_inline)
+                if isinstance(value, dict):
+                    inline = value
+            except (TypeError, ValueError):
+                LOG.warning("Ignoring invalid OPENCODE_CONFIG_CONTENT")
 
-            permission: Dict[str, Any] = {"*": "ask"}
-            for tool in self.options.allowed_tools:
-                key = self._permission_key(tool)
-                if key:
-                    permission[key] = "allow"
+        permission: Dict[str, Any] = {"*": "ask"}
+        for tool in self.options.allowed_tools:
+            key = self._permission_key(tool)
+            if key:
+                permission[key] = "allow"
 
-            if self.options.add_dirs:
-                permission["external_directory"] = {
-                    os.path.join(os.path.abspath(path), "**"): "allow"
-                    for path in self.options.add_dirs
-                }
+        approve_mode = self.options.approve_mode or "allow-edit"
+        if approve_mode in ("allow-edit", "accept-all"):
+            # OpenCode groups Edit, Write, ApplyPatch, and Patch under the
+            # single `edit` permission key.
+            permission["edit"] = "allow"
 
-            if "AskUserQuestion" in self.options.disallowed_tools:
-                permission["question"] = "deny"
+        if self.options.add_dirs:
+            permission["external_directory"] = {
+                os.path.join(os.path.abspath(path), "**"): "allow"
+                for path in self.options.add_dirs
+            }
 
-            inline["permission"] = permission
-            env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline)
+        if "AskUserQuestion" in self.options.disallowed_tools:
+            permission["question"] = "deny"
+
+        inline["permission"] = permission
+        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline)
         return env
 
     @staticmethod
@@ -207,6 +202,8 @@ class OpenCodeAgent(BaseAgent):
             "websearch": "websearch",
             "task": "task",
             "skill": "skill",
+            "todowrite": "todowrite",
+            "todoread": "todowrite",
             "askuserquestion": "question",
         }
         return aliases.get(normalized)
@@ -218,10 +215,7 @@ class OpenCodeAgent(BaseAgent):
         self._loop = asyncio.get_running_loop()
         env = self._runtime_env()
 
-        if self._owns_server:
-            self.server_url = await self._start_server(env)
-        elif not self.server_url:
-            raise RuntimeError("OpenCode server URL is empty")
+        self.server_url = await self._start_server(env)
 
         try:
             await self._finish_connect(env, prompt)
@@ -279,7 +273,12 @@ class OpenCodeAgent(BaseAgent):
         kwargs: Dict[str, Any] = {}
         if sys.platform == "win32":
             import subprocess
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NO_WINDOW
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+            )
+        else:
+            kwargs["start_new_session"] = True
 
         self._server_process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -1096,12 +1095,51 @@ class OpenCodeAgent(BaseAgent):
         if not process:
             return
         if process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=3.0)
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
+            if sys.platform == "win32":
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill", "/PID", str(process.pid), "/T", "/F",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await killer.wait()
+                try:
+                    exit_code = await asyncio.wait_for(process.wait(), timeout=2.0)
+                    LOG.info(
+                        "OpenCode server process exited: pid=%s returncode=%s",
+                        process.pid,
+                        exit_code,
+                    )
+                except asyncio.TimeoutError:
+                    LOG.warning(
+                        "Timed out waiting for OpenCode server process to exit; "
+                        "killing: pid=%s",
+                        process.pid,
+                    )
+                    process.kill()
+                    await process.wait()
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    exit_code = await asyncio.wait_for(process.wait(), timeout=3.0)
+                    LOG.info(
+                        "OpenCode server process exited: pid=%s returncode=%s",
+                        process.pid,
+                        exit_code,
+                    )
+                except asyncio.TimeoutError:
+                    LOG.warning(
+                        "Timed out waiting for OpenCode server process to exit; "
+                        "killing: pid=%s",
+                        process.pid,
+                    )
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    await process.wait()
         self._server_process = None
 
     async def disconnect(self) -> None:
@@ -1135,8 +1173,7 @@ class OpenCodeAgent(BaseAgent):
         self._event_task = None
         self._server_log_task = None
 
-        if self._owns_server:
-            await self._terminate_server()
+        await self._terminate_server()
 
         self._permission_sessions.clear()
         self._seen_permissions.clear()
@@ -1164,21 +1201,17 @@ class _SyncOpenCodeServer:
     def __init__(
         self,
         cwd: Optional[str],
-        server_url: Optional[str],
         extra_env: Optional[Dict[str, str]],
         cli_path: Optional[str] = None,
     ):
         self.cwd = cwd or os.getcwd()
         self.extra_env = extra_env or {}
         self.cli_path = cli_path
-        self.url = (server_url or self.extra_env.get("OPENCODE_SERVER_URL") or "").rstrip("/")
+        self.url = ""
         self.process: Optional[subprocess.Popen] = None
         self._reader: Optional[threading.Thread] = None
 
     def __enter__(self):
-        if self.url:
-            return self
-
         cli_command = self.cli_path or "opencode"
         cli = shutil.which(cli_command)
         if not cli and not self.cli_path:
@@ -1190,7 +1223,12 @@ class _SyncOpenCodeServer:
         env.update(self.extra_env)
         kwargs: Dict[str, Any] = {}
         if sys.platform == "win32":
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NO_WINDOW
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+            )
+        else:
+            kwargs["start_new_session"] = True
 
         self.process = subprocess.Popen(
             [cli, "serve", "--hostname=127.0.0.1", "--port=0"],
@@ -1236,12 +1274,28 @@ class _SyncOpenCodeServer:
 
     def close(self):
         if self.process and self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=3.0)
-            except subprocess.TimeoutExpired:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/PID", str(self.process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            else:
+                try:
+                    os.killpg(self.process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    self.process.wait(timeout=3.0)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(self.process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            if self.process.poll() is None:
                 self.process.kill()
-                self.process.wait(timeout=2.0)
+            self.process.wait(timeout=2.0)
         self.process = None
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -1279,13 +1333,12 @@ def _sync_request(
 
 def list_opencode_sessions(
     cwd: Optional[str] = None,
-    server_url: Optional[str] = None,
     extra_env: Optional[Dict[str, str]] = None,
     cli_path: Optional[str] = None,
 ) -> list:
     """Return OpenCode sessions for a workspace, newest first."""
     try:
-        with _SyncOpenCodeServer(cwd, server_url, extra_env, cli_path) as server:
+        with _SyncOpenCodeServer(cwd, extra_env, cli_path) as server:
             sessions = _sync_request(server.url, "/session", cwd, extra_env)
             result = []
             for session in sessions if isinstance(sessions, list) else []:
@@ -1311,13 +1364,12 @@ def list_opencode_sessions(
 def get_opencode_session_info(
     session_id: str,
     cwd: Optional[str] = None,
-    server_url: Optional[str] = None,
     extra_env: Optional[Dict[str, str]] = None,
     cli_path: Optional[str] = None,
 ) -> Optional[dict]:
     """Return unified metadata and the last turn for an OpenCode session."""
     try:
-        with _SyncOpenCodeServer(cwd, server_url, extra_env, cli_path) as server:
+        with _SyncOpenCodeServer(cwd, extra_env, cli_path) as server:
             sid = quote(session_id, safe="")
             session = _sync_request(server.url, f"/session/{sid}", cwd, extra_env)
             messages = _sync_request(
