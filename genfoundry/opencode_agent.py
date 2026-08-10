@@ -1100,6 +1100,7 @@ class OpenCodeAgent(BaseAgent):
                     "taskkill", "/PID", str(process.pid), "/T", "/F",
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                 )
                 await killer.wait()
                 try:
@@ -1163,17 +1164,36 @@ class OpenCodeAgent(BaseAgent):
             await loop.run_in_executor(None, lambda: self._sse_thread.join(timeout=2.0))
         self._sse_thread = None
 
-        for task in (self._event_task, self._server_log_task):
-            if task and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+        if self._event_task and not self._event_task.done():
+            self._event_task.cancel()
+            try:
+                await self._event_task
+            except asyncio.CancelledError:
+                pass
         self._event_task = None
+
+        # Keep consuming stdout until the server exits.  In particular, the
+        # Windows Proactor loop needs to observe EOF and finish its pipe-close
+        # callbacks before the owning AgentThread closes the event loop.
+        # Cancelling this task first leaves the subprocess transport to be
+        # finalized after loop.close(), which produces "Event loop is closed"
+        # warnings from BaseSubprocessTransport.__del__.
+        server_log_task = self._server_log_task
+        await self._terminate_server()
+        if server_log_task:
+            try:
+                await asyncio.wait_for(server_log_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                LOG.warning("Timed out draining OpenCode server output")
+            except asyncio.CancelledError:
+                pass
+            except Exception as error:
+                LOG.debug("OpenCode server output drain failed: %s", error)
         self._server_log_task = None
 
-        await self._terminate_server()
+        # Let pipe connection_lost callbacks queued by EOF run while the event
+        # loop is still alive.
+        await asyncio.sleep(0)
 
         self._permission_sessions.clear()
         self._seen_permissions.clear()
@@ -1280,6 +1300,7 @@ class _SyncOpenCodeServer:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     check=False,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                 )
             else:
                 try:
