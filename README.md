@@ -1,10 +1,10 @@
 # TermMate — Agentic Coding Assistant for Sublime Text
 
-**Claude Code, OpenAI Codex and Pi coding agents for Sublime Text**
+**Claude Code, OpenAI Codex, OpenCode, and Pi coding agents for Sublime Text**
 
 ![TermMate Screenshot](screenshot.png)
 
-TermMate is a professional AI coding agent for Sublime Text that supports multi-agent providers, including **Claude Code**, **Codex**, and **[Pi Agent](https://pi.dev)**. It builds a seamless native agentic interface directly within your editor for autonomous task execution, codebase exploration, and smart refactoring. Instead of using conventional webview, TermMate provides editor-native, REPL-inspired chat interface with modern editor features such as goto-navigation, auto-complete, folding, file links.
+TermMate is a professional AI coding agent for Sublime Text that supports multi-agent providers, including **Claude Code**, **Codex**, **[OpenCode](https://opencode.ai)**, and **[Pi Agent](https://pi.dev)**. It builds a seamless native agentic interface directly within your editor for autonomous task execution, codebase exploration, and smart refactoring. Instead of using conventional webview, TermMate provides editor-native, REPL-inspired chat interface with modern editor features such as goto-navigation, auto-complete, folding, file links.
 
 See TermMate agentic coding features — **[live demo here →](https://termmate.app/sublime/)**
 
@@ -20,7 +20,7 @@ Install TermMate via [Package Control](https://packagecontrol.io/packages/TermMa
 
 ### 2. Install Agent CLI
 
-If Claude Code, Codex, or Pi Agent is already installed and authenticated,**skip this step**. TermMate automatically detects existing CLI installations and uses their current authentication — no extra setup needed.
+If Claude Code, Codex, OpenCode, or Pi Agent is already installed and authenticated, **skip this step**. TermMate automatically detects existing CLI installations and uses their current authentication — no extra setup needed.
 
 Otherwise, the easiest way is to install directly from within Sublime Text: open the Command Palette, type `TermMate: Install Agent`, and select the agent you want. TermMate will run the installation in dedicated panel and notify you when it's complete. CLIs are installed to `~/.local/bin` on macOS/Linux and `%APPDATA%\npm` on Windows.
 
@@ -32,9 +32,13 @@ curl -fsSL https://claude.ai/install.sh | bash
 
 # Codex (macOS/Linux)
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
-
 # Codex (Windows PowerShell)
 powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+
+# OpenCode (macOS/Linux)
+curl -fsSL https://opencode.ai/install | bash
+# OpenCode (Windows)
+npm install -g opencode-ai
 
 # Pi Agent
 curl -fsSL https://pi.dev/install.sh | sh
@@ -57,6 +61,12 @@ Authenticate the agents via your terminal, or skip the CLI login by setting API 
 
 ```bash
 codex login
+```
+
+**OpenCode:**
+
+```bash
+/connect
 ```
 
 **Pi Agent:**
@@ -145,7 +155,7 @@ Control how much the agent can do without asking you first: `TermMate: Approve M
 
 ### Switch Agent
 
-Use `TermMate: Switch Agent` to swap between Claude, Codex, and Pi Agent at any time.
+Use `TermMate: Switch Agent` to swap between Claude, Codex, OpenCode, and Pi Agent at any time.
 
 ### Select Model
 
@@ -213,6 +223,7 @@ While TermMate automatically detects most agent CLI installation paths, you may 
 {
     "claude_command": "/path/to/your/custom/claude",
     "codex_command": "/path/to/your/custom/codex",
+    "opencode_command": "/path/to/your/custom/opencode",
     "pi_command": "/path/to/your/custom/pi"
 }
 ```
@@ -235,14 +246,14 @@ Set a custom base URL and auth token so Claude routes through OpenRouter (`ANTHR
 }
 ```
 
-**Example: Gemini API key for Pi Agent**
+**Example: Gemini API key for OpenCode**
 
-Pi Agent uses the `GEMINI_API_KEY` environment variable. Set it here to authenticate without modifying your system environment:
+OpenCode uses the `GOOGLE_GENERATIVE_AI_API_KEY` environment variable. Set it here to authenticate without modifying your system environment:
 
 ```json
 {
     "env": {
-        "GEMINI_API_KEY": "your-gemini-api-key"
+        "GOOGLE_GENERATIVE_AI_API_KEY": "your-gemini-api-key"
     }
 }
 ```
@@ -290,7 +301,7 @@ To add the current file location or selected lines to **Chat with Agent**, confi
 
 **TermMate does not send your entire workspace or file contents to any external servers.**
 
-Your data will only be sent to the respective LLM services (Claude Code, Codex, or Pi) under the following specific conditions:
+Your data will only be sent to the respective LLM services used by Claude Code, Codex, OpenCode, or Pi under the following specific conditions:
 
 **What data is sent:**
 

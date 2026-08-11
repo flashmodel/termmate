@@ -1,0 +1,8 @@
+TermMate 0.5.0
+==============
+
+- OpenCode Agent Provider Support
+  TermMate now supports OpenCode as an agent provider alongside Claude Code,
+  Codex, and Pi Agent. Install the OpenCode CLI and authenticate once, then
+  switch to it from the command palette at any time.
+  Login:  opencode /connect (in your terminal)
