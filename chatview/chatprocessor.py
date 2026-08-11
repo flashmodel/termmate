@@ -643,15 +643,6 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
                 self.session.update_last_prompt_uuid(str(turn_index))
             self.session.start_loading()
 
-        elif message.type == "user_message_id":
-            # OpenCode creates sortable message IDs server-side.  Attach the
-            # ID from its user message event to the prompt for rewind support.
-            content = message.content if isinstance(message.content, dict) else {}
-            message_id = content.get("message_id")
-            if message_id:
-                self._active_turn_id = message_id
-                self.session.update_last_prompt_uuid(str(message_id))
-
         elif message.type in ("thinking", "text"):
             self.session.start_loading()
 
@@ -787,7 +778,7 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
             self.session.record_file_change(abs_path, rel_path, diff_text or None)
 
 
-class OpenCodeMessageProcessor(CodexMessageProcessor):
+class OpenCodeMessageProcessor(BaseChatMessageProcessor):
     """Render normalized OpenCode server events in the native chat view."""
 
     _TOOL_FILE_NAMES = ("fileChange", "read", "write", "edit", "apply_patch")
@@ -808,12 +799,106 @@ class OpenCodeMessageProcessor(CodexMessageProcessor):
             if content:
                 self.append_content(content)
             return
-        super()._handle_typed_message(message)
+        if message.type == "tool_use":
+            if not self.last_is_tool_call:
+                self.append_content("\n")
+            self.last_is_tool_call = True
+            self.append_content(self._format_tool_block(message.content) + "\n")
+            if message.content.get("name") == "fileChange":
+                self._record_file_changes(message.content)
+        elif message.type == "error":
+            self.append_error(message.content)
+            self.session.stop_loading()
+        elif message.type == "control_request":
+            request = message.content.get("request", {})
+            if request.get("subtype") == "can_use_tool":
+                tool_name = request.get("tool_name")
+                input_data = request.get("input", {})
+                request_id = message.content.get("request_id")
+                self.session.permission_requests[request_id] = (tool_name, input_data)
+                self.session.show_permission_phantom(request_id, tool_name, input_data)
+        elif message.type == "thread_started":
+            content = message.content if isinstance(message.content, dict) else {}
+            session_id = content.get("session_id")
+            if session_id:
+                LOG.info(f"Agent thread session_id: {session_id}")
+                self.session.set_view_session_id(self.session.chat_view, session_id)
+        elif message.type == "models_update":
+            content = message.content if isinstance(message.content, dict) else {}
+            models = content.get("models", [])
+            if models:
+                self.session.available_models = models
+        elif message.type == "plan_delta":
+            content = message.content if isinstance(message.content, str) else ""
+            if content:
+                self._plan_text += content
+        elif message.type == "turn_started":
+            self._active_turn_id = None
+            self.session.start_loading()
+        elif message.type == "user_message_id":
+            content = message.content if isinstance(message.content, dict) else {}
+            message_id = content.get("message_id")
+            if message_id:
+                self._active_turn_id = message_id
+                self.session.update_last_prompt_uuid(str(message_id))
+        elif message.type == "stop":
+            self.append_content("", flush=True)
+            self.session.stop_loading()
+            self.append_content("\n")
+            if self._plan_text:
+                plan_text = self._plan_text
+                self._plan_text = ""
+                self.append_content("\n")
+                self.append_content(plan_text)
+                self.append_content("\n", flush=True)
+                if (self.session.agent_thread
+                        and self.session.agent_thread.anthropic_config.get("plan_mode")):
+                    sublime.set_timeout(
+                        lambda pt=plan_text: self.session.show_implement_plan_button(pt),
+                        0,
+                    )
+            sublime.set_timeout(self.session.show_file_changes_artifact, 0)
 
     def _format_tool_block(self, block):
         name = block.get("name")
-        if name in ("command_execution", "fileChange"):
-            return super()._format_tool_block(block)
+        if name == "command_execution":
+            command = block.get("command", "")
+            if command:
+                lines = command.rstrip().splitlines()
+                if len(lines) > 1:
+                    first_line = lines[0]
+                    indented_rest = "\n".join("    " + line for line in lines[1:])
+                    return f"⏺ command ({first_line})\n\n{indented_rest}\n"
+                if len(lines) == 1:
+                    return f"⏺ command ({lines[0]})"
+            return "⏺ command"
+
+        if name == "fileChange":
+            changes = block.get("changes", [])
+            cwd = (self.session.agent_thread.cwd
+                   if self.session.agent_thread else self.session.cwd) or ""
+            rendered_parts = []
+            previous_path = None
+            for change in changes:
+                path = change.get("path", "")
+                diff_text = change.get("diff") or ""
+                if path:
+                    abs_path, rel_path = _resolve_rel_path(path, cwd)
+                    path_key = os.path.normcase(os.path.normpath(abs_path))
+                    if path_key != previous_path:
+                        line_no = _diff_start_line(diff_text) if diff_text else None
+                        file_part = f"{rel_path}#L{line_no}" if line_no else rel_path
+                        rendered_parts.append(f"⏺ fileChange {file_part}")
+                    previous_path = path_key
+                else:
+                    rendered_parts.append("⏺ fileChange")
+                    previous_path = None
+
+                rendered_diff = self._render_diff_block(diff_text)
+                if rendered_diff:
+                    rendered_parts.append(rendered_diff)
+            return ("\n\n".join(rendered_parts)
+                    if rendered_parts else "⏺ fileChange")
 
         input_data = block.get("input") or {}
         if not isinstance(input_data, dict):
@@ -887,6 +972,19 @@ class OpenCodeMessageProcessor(CodexMessageProcessor):
         if block.get("status") == "error" and block.get("error"):
             detail = detail or str(block["error"])
         return f"⏺ {display_name} ({detail})" if detail else f"⏺ {display_name}"
+
+    def _record_file_changes(self, block):
+        """Record fileChange diffs for the end-of-turn file changes artifact."""
+        changes = block.get("changes", [])
+        cwd = (self.session.agent_thread.cwd
+               if self.session.agent_thread else self.session.cwd) or ""
+        for change in changes:
+            path = change.get("path", "")
+            if not path:
+                continue
+            abs_path, rel_path = _resolve_rel_path(path, cwd)
+            diff_text = change.get("diff") or ""
+            self.session.record_file_change(abs_path, rel_path, diff_text or None)
 
 
 class PiMessageProcessor(BaseChatMessageProcessor):
