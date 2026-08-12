@@ -96,6 +96,16 @@ def get_input_start(view, default=None):
     return pos
 
 
+def format_model_display_name(agent_provider, model, max_length=20):
+    """Return a compact model name suitable for UI labels."""
+    display_model = model
+    if agent_provider in ("pi", "opencode") and "/" in display_model:
+        display_model = display_model.split("/", 1)[-1]
+    if len(display_model) > max_length:
+        display_model = f"{display_model[:max_length - 1]}…"
+    return display_model
+
+
 def update_agent_model_status(window, view=None):
     """Refresh the agent/model status in one view or the whole window."""
     if not window:
@@ -105,7 +115,8 @@ def update_agent_model_status(window, view=None):
     if window.id() in chatview_clients:
         agent_provider = window.settings().get(CHAT_AGENT, "claude") or "claude"
         model = window.settings().get(f"chatview_model_{agent_provider}") or "default"
-        status = f"▣ {agent_provider.upper()}({model})"
+        display_model = format_model_display_name(agent_provider, model)
+        status = f"▣ {agent_provider}({display_model})"
 
     for target in [view] if view else window.views():
         # Clear the status key used by earlier versions of this feature.
@@ -688,12 +699,7 @@ class ModelPanel:
         # Keep the display key in sync
         self.window.settings().set(CHAT_MODEL, model)
 
-        display_model = model
-        if agent_provider in ("pi", "opencode") and display_model and "/" in display_model:
-            display_model = display_model.split("/", 1)[-1]
-        max_model_length = 20
-        if len(display_model) > max_model_length:
-            display_model = f"{display_model[:max_model_length - 1]}…"
+        display_model = format_model_display_name(agent_provider, model)
 
         plan_tag_html = ""
         if plan_mode == PlanMode.PLANNING:
@@ -993,7 +999,7 @@ class PermissionPanel:
                     display: inline-block;
                     color: var(--foreground);
                     font-size: 1.2em;
-                    margin-left: 18px;
+                    margin-left: 15px;
                     text-decoration: none;
                     padding: 4px 0px 4px 6px;
                 }}
