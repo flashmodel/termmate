@@ -279,11 +279,21 @@ class TestOpenCodeManagedServer(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(url, "http://127.0.0.1:53127")
         args = create_process.await_args.args
-        self.assertEqual(
-            args[:5],
-            ("opencode", "serve", "--hostname=127.0.0.1", "--port=0"),
-        )
-        if sys.platform != "win32":
+        if sys.platform == "win32":
+            self.assertEqual(
+                args[:5],
+                ("opencode", "serve", "--hostname=127.0.0.1", "--port=0"),
+            )
+        else:
+            self.assertEqual(args[:2], ("/bin/sh", "-c"))
+            self.assertEqual(
+                args[-4:],
+                ("opencode", "serve", "--hostname=127.0.0.1", "--port=0"),
+            )
+            self.assertIn("kill -TERM -$$", args[2])
+            self.assertEqual(
+                create_process.await_args.kwargs["stdin"], asyncio.subprocess.PIPE
+            )
             self.assertTrue(create_process.await_args.kwargs["start_new_session"])
 
 

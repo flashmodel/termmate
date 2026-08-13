@@ -169,6 +169,10 @@ def plugin_unloaded():
     for window_id, session in list(chatview_clients.items()):
         try:
             LOG.info(f"Stopping ChatView session for window {window_id} on unload")
+            agent_thread = getattr(session, "agent_thread", None)
+            agent = agent_thread.agent if agent_thread else None
+            if isinstance(agent, OpenCodeAgent):
+                agent.terminate_server_now()
             session.stop()
         except Exception as e:
             LOG.error(f"Failed to stop ChatView session on plugin unload: {e}")

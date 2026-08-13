@@ -278,6 +278,23 @@ class OpenCodeAgent(BaseAgent):
                 | subprocess.CREATE_NEW_PROCESS_GROUP
             )
         else:
+            # Sublime may terminate plugin_host without completing
+            # plugin_unloaded(). Keep the server behind a pipe watchdog so
+            # losing the parent still sends SIGTERM to the managed group.
+            cmd = [
+                "/bin/sh",
+                "-c",
+                (
+                    'exec 3<&0; "$@" </dev/null & child=$!; '
+                    '(cat <&3 >/dev/null; kill -TERM -$$ 2>/dev/null) & watcher=$!; '
+                    'wait "$child"; status=$?; '
+                    'kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null; '
+                    'exit "$status"'
+                ),
+                "termmate-opencode-wrapper",
+                *cmd,
+            ]
+            kwargs["stdin"] = asyncio.subprocess.PIPE
             kwargs["start_new_session"] = True
 
         self._server_process = await asyncio.create_subprocess_exec(
@@ -1142,6 +1159,19 @@ class OpenCodeAgent(BaseAgent):
                         pass
                     await process.wait()
         self._server_process = None
+
+    def terminate_server_now(self) -> None:
+        """Synchronously signal the managed server during plugin unload."""
+        process = self._server_process
+        if not process or process.returncode is not None:
+            return
+        try:
+            if sys.platform == "win32":
+                os.kill(process.pid, signal.SIGTERM)
+                return
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
     async def disconnect(self) -> None:
         self._is_connected = False
