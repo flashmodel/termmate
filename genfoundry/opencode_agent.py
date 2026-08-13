@@ -617,11 +617,14 @@ class OpenCodeAgent(BaseAgent):
                             msg_id=message_id,
                         ))
                 if info.get("error"):
-                    error_text = self._error_text(info["error"])
-                    await self._message_queue.put(Message(
-                        MessageType.ERROR.value,
-                        content=error_text,
-                    ))
+                    # chat presents only the turn-level session.error notification
+                    LOG.debug(
+                        "OpenCode message error "
+                        "[session_id=%s, message_id=%s, error=%r]",
+                        self._session_id,
+                        message_id,
+                        self._error_text(info["error"]),
+                    )
             return
 
         if event_type in ("permission.asked", "permission.updated"):
