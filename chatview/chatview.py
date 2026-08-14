@@ -1862,58 +1862,61 @@ class ChatSession:
             self.add_prompt_highlight(sublime.Region(region_start, region_end))
 
     def _fetch_session_info(self, agent, session_id, cwd):
-        """Fetch session metadata and last turn for the given agent. Returns a unified dict or None.
+        """Fetch session metadata and recent turns. Returns a unified dict or None.
 
-        Keys: summary (str|None), mtime (float), prompt (str|None), response (str|None).
+        Keys: summary (str|None), mtime (float), turns (list).
         """
+        settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+        history_limit = settings.get("session_history_limit", 1)
+
         if agent == "codex":
-            info = get_codex_session_info(session_id, cwd)
+            info = get_codex_session_info(session_id, cwd, history_limit)
             if info:
                 return {"summary": info.get("summary"), "mtime": info.get("updated_at", 0),
-                        "prompt": info.get("prompt"), "response": info.get("response")}
+                        "turns": info.get("turns", [])}
             return None
 
         if agent == "claude":
             sessions = list_sessions_for_cwd(cwd)
             meta = next((s for s in sessions if s["session_id"] == session_id), None)
-            tail = get_claude_session_tail(session_id, cwd)
+            tail = get_claude_session_tail(session_id, cwd, history_limit)
             if meta or tail:
                 return {"summary": (meta or {}).get("summary"), "mtime": (meta or {}).get("mtime", 0),
-                        "prompt": (tail or {}).get("prompt"), "response": (tail or {}).get("response")}
+                        "turns": (tail or {}).get("turns", [])}
             return None
 
         if agent == "pi":
             sessions = list_pi_sessions(cwd)
             meta = next((s for s in sessions if s["session_id"] == session_id), None)
-            tail = get_pi_session_tail(session_id, cwd)
+            tail = get_pi_session_tail(session_id, cwd, history_limit)
             if meta or tail:
                 return {"summary": (meta or {}).get("summary"), "mtime": (meta or {}).get("mtime", 0),
-                        "prompt": (tail or {}).get("prompt"), "response": (tail or {}).get("response")}
+                        "turns": (tail or {}).get("turns", [])}
             return None
 
         if agent == "opencode":
-            settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
             return get_opencode_session_info(
                 session_id,
                 cwd,
                 extra_env=settings.get("env", {}),
                 cli_path=settings.get("opencode_command") or None,
+                history_limit=history_limit,
             )
 
         return None
 
     def _append_resume_banner(self, agent, session_id, session_info):
-        """Render resume banner and last turn to the chat view. Pure display — no I/O."""
+        """Render resume banner and recent turns to the chat view. Pure display — no I/O."""
         import datetime
         self.chat_view.run_command("term_chat_output_append",
             {"text": f"\n[Resuming session for {agent}]\n\n"})
 
-        if session_info and (session_info.get("prompt") or session_info.get("response")):
-            if session_info.get("prompt"):
-                self._replay_prompt(session_info["prompt"])
-                self.chat_view.run_command("term_chat_output_append", {"text": "\n"})
-            if session_info.get("response"):
-                self.chat_view.run_command("term_chat_output_append", {"text": session_info["response"] + "\n"})
+        for turn in (session_info or {}).get("turns", []):
+            if turn.get("prompt"):
+                self._replay_prompt(turn["prompt"])
+                self.chat_view.run_command("term_chat_output_append", {"text": "\n\n"})
+            if turn.get("response"):
+                self.chat_view.run_command("term_chat_output_append", {"text": turn["response"] + "\n\n"})
 
         if session_info and session_info.get("mtime"):
             dt = datetime.datetime.fromtimestamp(session_info["mtime"]).strftime("%Y-%m-%d %H:%M")
@@ -2914,6 +2917,7 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
         session = chatview_clients.get(window_id)
         agent = self._get_agent(session)
         cwd = self._get_cwd(session)
+        settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
 
         if agent == "codex":
             raw = list_codex_sessions(cwd)
@@ -2924,7 +2928,6 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
             sessions = list_pi_sessions(cwd)
             placeholder = "Resume previous Pi session"
         elif agent == "opencode":
-            settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
             sessions = list_opencode_sessions(
                 cwd,
                 extra_env=settings.get("env", {}),

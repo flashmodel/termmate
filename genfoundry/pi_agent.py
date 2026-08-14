@@ -660,12 +660,17 @@ def list_pi_sessions(cwd: Optional[str] = None) -> list:
     return results
 
 
-def get_pi_session_tail(session_id: str, cwd: Optional[str] = None) -> Optional[dict]:
-    """Return the last user prompt and assistant text response for a pi session.
+def get_pi_session_tail(
+    session_id: str,
+    cwd: Optional[str] = None,
+    history_limit: int = 0,
+) -> Optional[dict]:
+    """Return recent user/assistant conversation turns for a pi session.
 
     Returns a dict with keys:
-      "prompt"   — last user text (str or None)
-      "response" — last assistant text response (str or None)
+      "turns"    — recent turns in chronological order
+      "prompt"   — last user text (kept for API compatibility)
+      "response" — last assistant text response (kept for API compatibility)
     Returns None if the session file cannot be found.
     """
     import glob as _glob
@@ -693,7 +698,7 @@ def get_pi_session_tail(session_id: str, cwd: Optional[str] = None) -> Optional[
         for fpath in _glob.glob(os.path.join(session_dir, "*.jsonl")):
             try:
                 found_id = None
-                messages = []  # list of (role, text) tuples in order
+                entries = []
                 with open(fpath, "r", encoding="utf-8", errors="replace") as f:
                     for raw_line in f:
                         raw_line = raw_line.strip()
@@ -706,34 +711,90 @@ def get_pi_session_tail(session_id: str, cwd: Optional[str] = None) -> Optional[
                         etype = entry.get("type")
                         if etype == "session" and not found_id:
                             found_id = entry.get("id")
-                        elif etype == "message":
-                            msg = entry.get("message", {})
-                            role = msg.get("role")
-                            if role == "user":
-                                text = ""
-                                for block in msg.get("content", []):
-                                    if isinstance(block, dict) and block.get("type") == "text":
-                                        text += block.get("text", "")
-                                messages.append(("user", text.strip()))
-                            elif role == "assistant":
-                                text = ""
-                                for block in msg.get("content", []):
-                                    if isinstance(block, dict) and block.get("type") == "text":
-                                        text += block.get("text", "")
-                                messages.append(("assistant", text.strip()))
+                        elif etype != "session":
+                            entries.append(entry)
 
                 if found_id == session_id:
-                    # Find the last user message and the assistant response that follows it
-                    last_prompt = None
-                    last_response = None
-                    for i in range(len(messages) - 1, -1, -1):
-                        role, text = messages[i]
-                        if role == "assistant" and last_response is None and text:
-                            last_response = text
-                        elif role == "user" and last_prompt is None and text:
-                            last_prompt = text
+                    # Pi session files are append-only trees. The last entry is
+                    # normally the active leaf; newer formats may use an
+                    # explicit leaf entry whose targetId identifies it.
+                    by_id = {
+                        entry["id"]: entry
+                        for entry in entries
+                        if isinstance(entry.get("id"), str)
+                    }
+                    leaf_id = None
+                    has_explicit_leaf = False
+                    for entry in entries:
+                        if entry.get("type") == "leaf":
+                            has_explicit_leaf = True
+                            target_id = entry.get("targetId")
+                            leaf_id = target_id if isinstance(target_id, str) else None
+                        elif isinstance(entry.get("id"), str):
+                            leaf_id = entry["id"]
+
+                    active_entries = []
+                    current = by_id.get(leaf_id) if leaf_id else None
+                    seen = set()
+                    while current is not None:
+                        current_id = current.get("id")
+                        if not isinstance(current_id, str) or current_id in seen:
                             break
-                    return {"prompt": last_prompt, "response": last_response}
+                        seen.add(current_id)
+                        active_entries.append(current)
+                        parent_id = current.get("parentId")
+                        current = by_id.get(parent_id) if isinstance(parent_id, str) else None
+
+                    # Version-1 Pi transcripts did not have id/parentId fields.
+                    # Keep their original file-order behaviour. An explicit
+                    # leaf with targetId=null is a valid empty branch, not a
+                    # signal to use the legacy fallback.
+                    has_tree_structure = bool(by_id) or has_explicit_leaf
+                    if active_entries:
+                        branch_entries = list(reversed(active_entries))
+                    elif has_tree_structure:
+                        branch_entries = []
+                    else:
+                        branch_entries = entries
+                    messages = []  # list of (role, text) tuples on the active branch
+                    for entry in branch_entries:
+                        if entry.get("type") != "message":
+                            continue
+                        msg = entry.get("message", {})
+                        role = msg.get("role")
+                        if role == "user":
+                            text = ""
+                            for block in msg.get("content", []):
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    text += block.get("text", "")
+                            messages.append(("user", text.strip()))
+                        elif role == "assistant":
+                            text = ""
+                            for block in msg.get("content", []):
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    text += block.get("text", "")
+                            messages.append(("assistant", text.strip()))
+
+                    turns = []
+                    current = None
+                    for role, text in messages:
+                        if role == "user" and text:
+                            if current is not None:
+                                turns.append(current)
+                            current = {"prompt": text, "response": None}
+                        elif role == "assistant" and text and current is not None:
+                            response = current["response"]
+                            current["response"] = f"{response}\n\n{text}" if response else text
+                    if current is not None:
+                        turns.append(current)
+                    if history_limit > 0:
+                        turns = turns[-history_limit:]
+                    last_turn = turns[-1] if turns else {}
+                    return {
+                        "turns": turns,
+                        "prompt": last_turn.get("prompt"),
+                        "response": last_turn.get("response"),
+                    }
             except Exception as e:
                 LOG.warning(f"get_pi_session_tail: skipping {fpath}: {e}")
 

@@ -41,6 +41,10 @@
     // When false, return focus to the view where Quick Message was opened.
     "quick_message_focus_chatview": true,
 
+    // Maximum number of recent conversation turns loaded by Resume Session.
+    // Set to 0 to load the full conversation history.
+    "session_history_limit": 50,
+
     // Path or command name for the coding CLI executable.
     "claude_command": "",
     "codex_command": "",

@@ -1169,10 +1169,15 @@ def list_codex_sessions(cwd: Optional[str] = None) -> list:
         return []
 
 
-async def _get_codex_session_info_rpc(cli_path: str, session_id: str, cwd: Optional[str]) -> Optional[dict]:
+async def _get_codex_session_info_rpc(
+    cli_path: str,
+    session_id: str,
+    cwd: Optional[str],
+    history_limit: int,
+) -> Optional[dict]:
     """One app-server process: thread/read (turns + metadata) for resume display.
 
-    Returns dict with keys: summary, updated_at, prompt, response.
+    Returns dict with keys: summary, updated_at, turns, prompt, response.
     Falls back to thread/list for metadata when thread/read lacks it.
     """
     import asyncio as _asyncio
@@ -1240,7 +1245,7 @@ async def _get_codex_session_info_rpc(cli_path: str, session_id: str, cwd: Optio
         })
         await write_json({"method": "initialized"})
 
-        # thread/read with includeTurns gives us metadata + conversation tail in one call.
+        # thread/read with includeTurns gives us metadata + conversation history in one call.
         read_result = await rpc("thread/read", {"threadId": session_id, "includeTurns": True})
 
         thread = (read_result or {}).get("thread", {}) if isinstance(read_result, dict) else {}
@@ -1265,17 +1270,17 @@ async def _get_codex_session_info_rpc(cli_path: str, session_id: str, cwd: Optio
                         updated_at = float(t.get("updatedAt") or 0)
                         break
 
-        # Extract last prompt and response from turns.
-        last_prompt: Optional[str] = None
-        last_response: Optional[str] = None
-        for turn in reversed(thread.get("turns", [])):
-            for item in reversed(turn.get("items", [])):
+        turns = []
+        for turn in thread.get("turns", []):
+            prompt_parts = []
+            response_parts = []
+            for item in turn.get("items", []):
                 itype = item.get("type")
-                if itype == "agentMessage" and last_response is None:
+                if itype == "agentMessage":
                     text = item.get("text", "").strip()
                     if text:
-                        last_response = text
-                elif itype == "userMessage" and last_prompt is None:
+                        response_parts.append(text)
+                elif itype == "userMessage":
                     texts = [
                         inp.get("text", "")
                         for inp in item.get("content", [])
@@ -1283,11 +1288,26 @@ async def _get_codex_session_info_rpc(cli_path: str, session_id: str, cwd: Optio
                     ]
                     text = "".join(texts).strip()
                     if text:
-                        last_prompt = text
-            if last_prompt is not None:
-                break
+                        prompt_parts.append(text)
 
-        return {"summary": summary, "updated_at": updated_at, "prompt": last_prompt, "response": last_response}
+            prompt = "\n\n".join(prompt_parts) or None
+            if prompt:
+                turns.append({
+                    "prompt": prompt,
+                    "response": "\n\n".join(response_parts) or None,
+                })
+
+        if history_limit > 0:
+            turns = turns[-history_limit:]
+        last_turn = turns[-1] if turns else {}
+
+        return {
+            "summary": summary,
+            "updated_at": updated_at,
+            "turns": turns,
+            "prompt": last_turn.get("prompt"),
+            "response": last_turn.get("response"),
+        }
 
     finally:
         read_task.cancel()
@@ -1301,14 +1321,19 @@ async def _get_codex_session_info_rpc(cli_path: str, session_id: str, cwd: Optio
             pass
 
 
-def get_codex_session_info(session_id: str, cwd: Optional[str] = None) -> Optional[dict]:
-    """Return metadata and last turn for a Codex thread in a single app-server process.
+def get_codex_session_info(
+    session_id: str,
+    cwd: Optional[str] = None,
+    history_limit: int = 0,
+) -> Optional[dict]:
+    """Return metadata and recent turns for a Codex thread in one app-server process.
 
     Returns a dict with keys:
       "summary"    — thread name/preview (str or None)
       "updated_at" — unix timestamp (float)
-      "prompt"     — last user text (str or None)
-      "response"   — last agent text response (str or None)
+      "turns"      — recent turns in chronological order
+      "prompt"     — last user text (kept for API compatibility)
+      "response"   — last agent text response (kept for API compatibility)
     Returns None if the CLI is not found or the RPC fails.
     """
     cli = find_codex_cli()
@@ -1318,7 +1343,9 @@ def get_codex_session_info(session_id: str, cwd: Optional[str] = None) -> Option
     try:
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(_get_codex_session_info_rpc(cli, session_id, cwd))
+            return loop.run_until_complete(
+                _get_codex_session_info_rpc(cli, session_id, cwd, history_limit)
+            )
         finally:
             loop.close()
     except Exception as e:

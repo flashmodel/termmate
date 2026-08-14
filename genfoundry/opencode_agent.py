@@ -1420,8 +1420,9 @@ def get_opencode_session_info(
     cwd: Optional[str] = None,
     extra_env: Optional[Dict[str, str]] = None,
     cli_path: Optional[str] = None,
+    history_limit: int = 0,
 ) -> Optional[dict]:
-    """Return unified metadata and the last turn for an OpenCode session."""
+    """Return unified metadata and recent turns for an OpenCode session."""
     try:
         with _SyncOpenCodeServer(cwd, extra_env, cli_path) as server:
             sid = quote(session_id, safe="")
@@ -1432,10 +1433,10 @@ def get_opencode_session_info(
             if not isinstance(session, dict):
                 return None
 
-            prompt = None
-            response = None
+            turns = []
+            current = None
             entries = messages if isinstance(messages, list) else []
-            for entry in reversed(entries):
+            for entry in entries:
                 if not isinstance(entry, dict):
                     continue
                 info = entry.get("info") or {}
@@ -1445,11 +1446,19 @@ def get_opencode_session_info(
                     if isinstance(part, dict) and part.get("type") == "text"
                     and not part.get("ignored")
                 ).strip()
-                if info.get("role") == "assistant" and response is None and text:
-                    response = text
-                elif info.get("role") == "user" and text:
-                    prompt = text
-                    break
+                if info.get("role") == "user" and text:
+                    if current is not None:
+                        turns.append(current)
+                    current = {"prompt": text, "response": None}
+                elif info.get("role") == "assistant" and text and current is not None:
+                    response = current["response"]
+                    current["response"] = f"{response}\n\n{text}" if response else text
+
+            if current is not None:
+                turns.append(current)
+            if history_limit > 0:
+                turns = turns[-history_limit:]
+            last_turn = turns[-1] if turns else {}
 
             updated = (session.get("time") or {}).get("updated") or 0
             mtime = float(updated)
@@ -1458,8 +1467,9 @@ def get_opencode_session_info(
             return {
                 "summary": session.get("title"),
                 "mtime": mtime,
-                "prompt": prompt,
-                "response": response,
+                "turns": turns,
+                "prompt": last_turn.get("prompt"),
+                "response": last_turn.get("response"),
             }
     except Exception as error:
         LOG.warning("get_opencode_session_info failed: %s", error)

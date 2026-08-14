@@ -1073,12 +1073,17 @@ def _parse_session_entry(session_id: str, lite: dict) -> Optional[dict]:
     }
 
 
-def get_claude_session_tail(session_id: str, cwd: Optional[str] = None) -> Optional[dict]:
-    """Return the last user prompt and assistant text response for a Claude session.
+def get_claude_session_tail(
+    session_id: str,
+    cwd: Optional[str] = None,
+    history_limit: int = 0,
+) -> Optional[dict]:
+    """Return recent user/assistant conversation turns for a Claude session.
 
     Returns a dict with keys:
-      "prompt"   — last user text (str or None)
-      "response" — last assistant text response (str or None)
+      "turns"    — recent turns in chronological order
+      "prompt"   — last user text (kept for API compatibility)
+      "response" — last assistant text response (kept for API compatibility)
     Returns None if the session file cannot be found.
 
     Skips tool_result-only user messages and meta/system messages, mirroring
@@ -1089,7 +1094,7 @@ def get_claude_session_tail(session_id: str, cwd: Optional[str] = None) -> Optio
         return None
     fpath, _project_dir = result
 
-    messages = []  # list of (role, text) in file order
+    entries = []
     try:
         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
             for raw_line in f:
@@ -1102,65 +1107,144 @@ def get_claude_session_tail(session_id: str, cwd: Optional[str] = None) -> Optio
                     continue
                 if not isinstance(entry, dict):
                     continue
-                etype = entry.get("type")
-                if etype == "user":
-                    msg = entry.get("message", {})
-                    if not isinstance(msg, dict):
-                        continue
-                    content = msg.get("content", [])
-                    # skip tool_result-only and meta messages
-                    if entry.get("isMeta") or entry.get("isCompactSummary"):
-                        continue
-                    texts = []
-                    has_tool_result = False
-                    if isinstance(content, str):
-                        texts.append(content)
-                    elif isinstance(content, list):
-                        for blk in content:
-                            if not isinstance(blk, dict):
-                                continue
-                            if blk.get("type") == "tool_result":
-                                has_tool_result = True
-                            elif blk.get("type") == "text":
-                                t = blk.get("text", "")
-                                if t:
-                                    texts.append(t)
-                    if not texts and has_tool_result:
-                        continue
-                    text = "".join(texts).strip()
-                    if text and not _SKIP_PROMPT_RE.match(text):
-                        messages.append(("user", text))
-                elif etype == "assistant":
-                    msg = entry.get("message", {})
-                    if not isinstance(msg, dict):
-                        continue
-                    content = msg.get("content", [])
-                    texts = []
-                    if isinstance(content, str):
-                        texts.append(content)
-                    elif isinstance(content, list):
-                        for blk in content:
-                            if isinstance(blk, dict) and blk.get("type") == "text":
-                                t = blk.get("text", "")
-                                if t:
-                                    texts.append(t)
-                    text = "".join(texts).strip()
-                    if text:
-                        messages.append(("assistant", text))
+                entries.append(entry)
     except Exception as e:
         LOG.warning(f"get_claude_session_tail: error reading {fpath}: {e}")
         return None
 
-    last_prompt = None
-    last_response = None
-    for i in range(len(messages) - 1, -1, -1):
-        role, text = messages[i]
-        if role == "assistant" and last_response is None:
-            last_response = text
-        elif role == "user" and last_prompt is None:
-            last_prompt = text
-            break
-    return {"prompt": last_prompt, "response": last_response}
+    # Claude transcripts are append-only trees. Rewinds leave the abandoned
+    # branch in the JSONL file, and sidechain/team-agent messages can be mixed
+    # into the same transcript. Select the latest main-chain leaf and walk its
+    # parentUuid chain so the displayed history matches the resumed context.
+    by_uuid = {
+        entry["uuid"]: entry
+        for entry in entries
+        if isinstance(entry.get("uuid"), str)
+    }
+    if by_uuid:
+        parent_uuids = {
+            entry["parentUuid"]
+            for entry in entries
+            if isinstance(entry.get("parentUuid"), str)
+        }
+        entry_index = {
+            entry["uuid"]: i
+            for i, entry in enumerate(entries)
+            if entry.get("uuid") in by_uuid
+        }
+        leaf_candidates = []
+        for terminal in entries:
+            uid = terminal.get("uuid")
+            if not isinstance(uid, str) or uid in parent_uuids:
+                continue
+            current = terminal
+            seen = set()
+            while current is not None:
+                current_uid = current.get("uuid")
+                if not isinstance(current_uid, str) or current_uid in seen:
+                    break
+                seen.add(current_uid)
+                if (
+                    current.get("type") in ("user", "assistant")
+                    and not current.get("isSidechain")
+                    and not current.get("teamName")
+                    and not current.get("isMeta")
+                ):
+                    leaf_candidates.append(current)
+                    break
+                parent_uuid = current.get("parentUuid")
+                current = by_uuid.get(parent_uuid) if isinstance(parent_uuid, str) else None
+
+        if leaf_candidates:
+            leaf = max(leaf_candidates, key=lambda item: entry_index.get(item.get("uuid"), -1))
+            active_entries = []
+            current = leaf
+            seen = set()
+            while current is not None:
+                current_uid = current.get("uuid")
+                if not isinstance(current_uid, str) or current_uid in seen:
+                    break
+                seen.add(current_uid)
+                active_entries.append(current)
+                parent_uuid = current.get("parentUuid")
+                current = by_uuid.get(parent_uuid) if isinstance(parent_uuid, str) else None
+            entries = list(reversed(active_entries))
+
+    messages = []  # list of (role, text) on the active branch
+    try:
+        for entry in entries:
+            if entry.get("isSidechain") or entry.get("teamName"):
+                continue
+            etype = entry.get("type")
+            if etype == "user":
+                msg = entry.get("message", {})
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content", [])
+                # skip tool_result-only and meta messages
+                if entry.get("isMeta") or entry.get("isCompactSummary"):
+                    continue
+                texts = []
+                has_tool_result = False
+                if isinstance(content, str):
+                    texts.append(content)
+                elif isinstance(content, list):
+                    for blk in content:
+                        if not isinstance(blk, dict):
+                            continue
+                        if blk.get("type") == "tool_result":
+                            has_tool_result = True
+                        elif blk.get("type") == "text":
+                            t = blk.get("text", "")
+                            if t:
+                                texts.append(t)
+                if not texts and has_tool_result:
+                    continue
+                text = "".join(texts).strip()
+                if text and not _SKIP_PROMPT_RE.match(text):
+                    messages.append(("user", text))
+            elif etype == "assistant":
+                msg = entry.get("message", {})
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content", [])
+                texts = []
+                if isinstance(content, str):
+                    texts.append(content)
+                elif isinstance(content, list):
+                    for blk in content:
+                        if isinstance(blk, dict) and blk.get("type") == "text":
+                            t = blk.get("text", "")
+                            if t:
+                                texts.append(t)
+                text = "".join(texts).strip()
+                if text:
+                    messages.append(("assistant", text))
+    except Exception as e:
+        LOG.warning(f"get_claude_session_tail: error reading {fpath}: {e}")
+        return None
+
+    turns = []
+    current = None
+    for role, text in messages:
+        if role == "user":
+            if current is not None:
+                turns.append(current)
+            current = {"prompt": text, "response": None}
+        elif current is not None:
+            response = current["response"]
+            current["response"] = f"{response}\n\n{text}" if response else text
+    if current is not None:
+        turns.append(current)
+
+    if history_limit > 0:
+        turns = turns[-history_limit:]
+    last_turn = turns[-1] if turns else {}
+    return {
+        "turns": turns,
+        "prompt": last_turn.get("prompt"),
+        "response": last_turn.get("response"),
+    }
 
 
 def list_sessions_for_cwd(cwd: Optional[str] = None) -> list:
