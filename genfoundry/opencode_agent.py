@@ -80,10 +80,217 @@ def find_opencode_cli() -> Optional[str]:
         ]
 
     for path in candidates:
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            LOG.info("Found OpenCode CLI at default location: %s", path)
-            return path
+        try:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                LOG.info("Found OpenCode CLI at default location: %s", path)
+                return path
+        except Exception:
+            pass
     return None
+
+
+def _win32_kernel32():
+    """Return kernel32 with pointer-sized signatures used by process cleanup."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+    ]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    kernel32.Thread32First.restype = wintypes.BOOL
+    kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    kernel32.Thread32Next.restype = wintypes.BOOL
+    kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+    kernel32.ResumeThread.restype = wintypes.DWORD
+    return kernel32
+
+
+def _close_win32_handle(handle: Optional[int]) -> bool:
+    if not handle or sys.platform != "win32":
+        return False
+    try:
+        return bool(_win32_kernel32().CloseHandle(handle))
+    except Exception as err:
+        LOG.warning("Failed to close Win32 handle: %s", err)
+        return False
+
+
+def _create_win32_job_object() -> Optional[int]:
+    """Create a Windows Job Object configured to kill all processes on close."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = _win32_kernel32()
+
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+        JobObjectExtendedLimitInformation = 9
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+                ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryLimit", ctypes.c_size_t),
+                ("PeakJobMemoryLimit", ctypes.c_size_t),
+            ]
+
+        h_job = kernel32.CreateJobObjectW(None, None)
+        if not h_job:
+            return None
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+        res = kernel32.SetInformationJobObject(
+            h_job,
+            JobObjectExtendedLimitInformation,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        )
+        if not res:
+            kernel32.CloseHandle(h_job)
+            return None
+        return h_job
+    except Exception as err:
+        LOG.warning("Failed to create Win32 Job Object: %s", err)
+        return None
+
+
+def _assign_process_to_job_object(h_job: int, process: Any) -> bool:
+    """Assign a process (asyncio process, Popen, or PID) to a Windows Job Object."""
+    if not h_job or sys.platform != "win32":
+        return False
+    try:
+        kernel32 = _win32_kernel32()
+
+        h_proc = None
+        need_close = False
+        pid = None
+
+        if isinstance(process, int):
+            pid = process
+        elif hasattr(process, "pid") and process.pid is not None:
+            pid = process.pid
+
+        if hasattr(process, "_handle") and process._handle:
+            h_proc = process._handle
+        elif pid is not None:
+            PROCESS_SET_QUOTA = 0x0100
+            PROCESS_TERMINATE = 0x0001
+            h_proc = kernel32.OpenProcess(
+                PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid
+            )
+            need_close = True
+
+        if not h_proc:
+            return False
+
+        try:
+            res = kernel32.AssignProcessToJobObject(h_job, h_proc)
+            return bool(res)
+        finally:
+            if need_close and h_proc:
+                kernel32.CloseHandle(h_proc)
+    except Exception as err:
+        LOG.warning("Failed to assign process to Job Object: %s", err)
+        return False
+
+
+def _resume_win32_process(process: Any) -> bool:
+    """Resume every initial thread of a process created with CREATE_SUSPENDED."""
+    if sys.platform != "win32" or not getattr(process, "pid", None):
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class THREADENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", wintypes.LONG),
+                ("tpDeltaPri", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        kernel32 = _win32_kernel32()
+        snapshot = kernel32.CreateToolhelp32Snapshot(0x00000004, 0)
+        if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+            return False
+
+        resumed = 0
+        try:
+            entry = THREADENTRY32()
+            entry.dwSize = ctypes.sizeof(entry)
+            found = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+            while found:
+                if entry.th32OwnerProcessID == process.pid:
+                    thread = kernel32.OpenThread(0x0002, False, entry.th32ThreadID)
+                    if thread:
+                        try:
+                            if kernel32.ResumeThread(thread) != 0xFFFFFFFF:
+                                resumed += 1
+                        finally:
+                            kernel32.CloseHandle(thread)
+                found = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+        finally:
+            kernel32.CloseHandle(snapshot)
+        return resumed > 0
+    except Exception as err:
+        LOG.warning("Failed to resume suspended OpenCode process: %s", err)
+        return False
 
 
 class OpenCodeHTTPError(RuntimeError):
@@ -104,7 +311,12 @@ class OpenCodeAgent(BaseAgent):
         super().__init__(options)
 
         cli_command = self.options.cli_path or "opencode"
-        self.cli_path = shutil.which(cli_command) or find_opencode_cli() or cli_command
+        which_path = None
+        try:
+            which_path = shutil.which(cli_command)
+        except Exception:
+            pass
+        self.cli_path = which_path or find_opencode_cli() or cli_command
 
         self.server_url: Optional[str] = None
 
@@ -125,6 +337,7 @@ class OpenCodeAgent(BaseAgent):
 
         self._server_process: Optional[asyncio.subprocess.Process] = None
         self._server_log_task: Optional[asyncio.Task] = None
+        self._job_handle: Optional[int] = None
 
         self._sse_thread: Optional[threading.Thread] = None
         self._sse_stop = threading.Event()
@@ -272,10 +485,16 @@ class OpenCodeAgent(BaseAgent):
 
         kwargs: Dict[str, Any] = {}
         if sys.platform == "win32":
-            import subprocess
+            # The process must not run before it belongs to the kill-on-close
+            # Job.  Otherwise a fast .cmd launcher can create children which
+            # escape the Job before AssignProcessToJobObject is called.
+            self._job_handle = _create_win32_job_object()
+            if not self._job_handle:
+                raise RuntimeError("Failed to create the OpenCode Windows Job Object")
             kwargs["creationflags"] = (
                 subprocess.CREATE_NO_WINDOW
                 | subprocess.CREATE_NEW_PROCESS_GROUP
+                | 0x00000004  # CREATE_SUSPENDED
             )
         else:
             # Sublime may terminate plugin_host without completing
@@ -297,14 +516,41 @@ class OpenCodeAgent(BaseAgent):
             kwargs["stdin"] = asyncio.subprocess.PIPE
             kwargs["start_new_session"] = True
 
-        self._server_process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=self.options.cwd,
-            env=env,
-            **kwargs,
-        )
+        try:
+            self._server_process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=self.options.cwd,
+                env=env,
+                **kwargs,
+            )
+        except Exception:
+            if sys.platform == "win32":
+                _close_win32_handle(self._job_handle)
+                self._job_handle = None
+            raise
+
+        if sys.platform == "win32":
+            assigned = _assign_process_to_job_object(
+                self._job_handle, self._server_process
+            )
+            resumed = assigned and _resume_win32_process(self._server_process)
+            if not resumed:
+                # Closing an assigned Job terminates its process tree.  If
+                # assignment failed, explicitly terminate the still-suspended
+                # root process as well.
+                _close_win32_handle(self._job_handle)
+                self._job_handle = None
+                if (self._server_process
+                        and self._server_process.returncode is None):
+                    self._server_process.kill()
+                    await self._server_process.wait()
+                self._server_process = None
+                detail = "assign process to" if not assigned else "resume process in"
+                raise RuntimeError(
+                    f"Failed to {detail} the OpenCode Windows Job Object"
+                )
 
         try:
             url = await asyncio.wait_for(self._read_server_url(), timeout=10.0)
@@ -1112,17 +1358,14 @@ class OpenCodeAgent(BaseAgent):
 
     async def _terminate_server(self) -> None:
         process = self._server_process
-        if not process:
-            return
-        if process.returncode is None:
+        if sys.platform == "win32" and self._job_handle:
+            # KILL_ON_JOB_CLOSE is synchronous at the kernel boundary and does
+            # not depend on the Sublime background event loop staying alive.
+            _close_win32_handle(self._job_handle)
+            self._job_handle = None
+
+        if process and process.returncode is None:
             if sys.platform == "win32":
-                killer = await asyncio.create_subprocess_exec(
-                    "taskkill", "/PID", str(process.pid), "/T", "/F",
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
-                await killer.wait()
                 try:
                     exit_code = await asyncio.wait_for(process.wait(), timeout=2.0)
                     LOG.info(
@@ -1136,7 +1379,15 @@ class OpenCodeAgent(BaseAgent):
                         "killing: pid=%s",
                         process.pid,
                     )
-                    process.kill()
+                    killer = await asyncio.create_subprocess_exec(
+                        "taskkill", "/PID", str(process.pid), "/T", "/F",
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    await killer.wait()
+                    if process.returncode is None:
+                        process.kill()
                     await process.wait()
             else:
                 try:
@@ -1161,19 +1412,33 @@ class OpenCodeAgent(BaseAgent):
                     except ProcessLookupError:
                         pass
                     await process.wait()
+
         self._server_process = None
 
     def terminate_server_now(self) -> None:
         """Synchronously signal the managed server during plugin unload."""
         process = self._server_process
-        if not process or process.returncode is not None:
-            return
         try:
             if sys.platform == "win32":
-                os.kill(process.pid, signal.SIGTERM)
+                closed_job = False
+                if self._job_handle:
+                    closed_job = _close_win32_handle(self._job_handle)
+                    self._job_handle = None
+                if (not closed_job and process
+                        and process.returncode is None):
+                    subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                        timeout=2.0,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                return
+            if not process or process.returncode is not None:
                 return
             os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
+        except Exception:
             pass
 
     async def disconnect(self) -> None:
@@ -1263,6 +1528,7 @@ class _SyncOpenCodeServer:
         self.url = ""
         self.process: Optional[subprocess.Popen] = None
         self._reader: Optional[threading.Thread] = None
+        self._job_handle: Optional[int] = None
 
     def __enter__(self):
         cli_command = self.cli_path or "opencode"
@@ -1276,23 +1542,48 @@ class _SyncOpenCodeServer:
         env.update(self.extra_env)
         kwargs: Dict[str, Any] = {}
         if sys.platform == "win32":
+            self._job_handle = _create_win32_job_object()
+            if not self._job_handle:
+                raise RuntimeError("Failed to create the OpenCode Windows Job Object")
             kwargs["creationflags"] = (
                 subprocess.CREATE_NO_WINDOW
                 | subprocess.CREATE_NEW_PROCESS_GROUP
+                | 0x00000004  # CREATE_SUSPENDED
             )
         else:
             kwargs["start_new_session"] = True
 
-        self.process = subprocess.Popen(
-            [cli, "serve", "--hostname=127.0.0.1", "--port=0"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            cwd=self.cwd,
-            env=env,
-            **kwargs,
-        )
+        try:
+            self.process = subprocess.Popen(
+                [cli, "serve", "--hostname=127.0.0.1", "--port=0"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                cwd=self.cwd,
+                env=env,
+                **kwargs,
+            )
+        except Exception:
+            if sys.platform == "win32":
+                _close_win32_handle(self._job_handle)
+                self._job_handle = None
+            raise
+
+        if sys.platform == "win32":
+            assigned = _assign_process_to_job_object(self._job_handle, self.process)
+            resumed = assigned and _resume_win32_process(self.process)
+            if not resumed:
+                _close_win32_handle(self._job_handle)
+                self._job_handle = None
+                if self.process and self.process.poll() is None:
+                    self.process.kill()
+                    self.process.wait(timeout=2.0)
+                self.process = None
+                detail = "assign process to" if not assigned else "resume process in"
+                raise RuntimeError(
+                    f"Failed to {detail} the OpenCode Windows Job Object"
+                )
         lines: thread_queue.Queue = thread_queue.Queue()
 
         def read_output():
@@ -1326,15 +1617,22 @@ class _SyncOpenCodeServer:
         )
 
     def close(self):
+        if sys.platform == "win32" and self._job_handle:
+            _close_win32_handle(self._job_handle)
+            self._job_handle = None
         if self.process and self.process.poll() is None:
             if sys.platform == "win32":
-                subprocess.run(
-                    ["taskkill", "/PID", str(self.process.pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
+                try:
+                    self.process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(self.process.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                        timeout=2.0,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
             else:
                 try:
                     os.killpg(self.process.pid, signal.SIGTERM)
