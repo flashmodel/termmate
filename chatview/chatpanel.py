@@ -48,6 +48,10 @@ class TablePhantomManager:
         self.entries = active_entries
         self.phantom_set.update(phantoms)
 
+    def refresh(self):
+        """Redraw all table phantoms using their cached HTML."""
+        self._update()
+
     def truncate(self, cut_point):
         kept = []
         for key, table_html in self.entries:

@@ -9,7 +9,6 @@ import xml.etree.ElementTree
 import sublime
 
 from . import utils
-from .md_render import MarkdownFormatter
 
 LOG = logging.getLogger("TermMate")
 
@@ -214,29 +213,9 @@ class BaseChatMessageProcessor:
 
     def __init__(self, session):
         self.session = session
-        self.markdown_formatter = MarkdownFormatter(
-            max_width_getter=self._get_current_view_width
-        )
         self.last_is_tool_call = False
         self._plan_text = ""
         self._tool_file_re = _make_tool_file_re(self._TOOL_FILE_NAMES) if self._TOOL_FILE_NAMES else None
-
-    def _get_current_view_width(self):
-        view = getattr(self.session, "chat_view", None)
-        if not view:
-            return None
-        try:
-            wrap_width = view.settings().get("wrap_width", 0)
-            if isinstance(wrap_width, int) and not isinstance(wrap_width, bool) and wrap_width > 0:
-                return max(20, wrap_width - 4)
-
-            width_px, _ = view.viewport_extent()
-            em_px = view.em_width()
-            if em_px > 0 and width_px > 0:
-                return max(20, int(width_px / em_px) - 4)
-        except Exception:
-            pass
-        return None
 
     def handle_message(self, message):
         """Dispatch agent message to appropriate handler."""
@@ -271,15 +250,8 @@ class BaseChatMessageProcessor:
         return f"⏺ {name}" if name else ""
 
     def append_content(self, text, flush=False):
-        """Format and append text to the chat view."""
-        formatted_text = self.markdown_formatter.format(text, flush=flush)
-        html_tables = self.markdown_formatter.take_html_tables()
-        if formatted_text:
-            sublime.set_timeout(
-                lambda: self.session.chat_view.run_command("term_chat_output_append",
-                    {"text": formatted_text, "html_tables": html_tables}),
-                0
-            )
+        """Append Markdown content through the chat session."""
+        self.session.append_markdown(text, flush=flush)
 
     def append_error(self, error_msg):
         """Append error message to chat view."""

@@ -11,6 +11,9 @@ class MarkdownFormatter:
     with CJK character support. Supports stateful streaming.
     """
 
+    _HTML_LINE_BREAK_RE = re.compile(r'<br\s*/?\s*>', re.IGNORECASE)
+    _EXPLICIT_LINE_BREAK = '\n'
+
     def __init__(self, max_width_getter=None):
         self.table_buffer = []
         self.in_code_block = False
@@ -327,6 +330,13 @@ class MarkdownFormatter:
                 i += 2
                 continue
 
+            if text[i] == '<':
+                line_break = self._HTML_LINE_BREAK_RE.match(text, i)
+                if line_break:
+                    chars.append((self._EXPLICIT_LINE_BREAK, styles))
+                    i = line_break.end()
+                    continue
+
             if text[i] == '`':
                 run_end = i + 1
                 while run_end < len(text) and text[run_end] == '`':
@@ -366,11 +376,34 @@ class MarkdownFormatter:
             end -= 1
         return chars[start:end]
 
-    def _styled_width(self, chars):
+    def _split_explicit_lines(self, chars):
+        """Split styled characters at line breaks created from <br>."""
+        lines = [[]]
+        for char, styles in chars:
+            if char == self._EXPLICIT_LINE_BREAK:
+                lines.append([])
+            else:
+                lines[-1].append((char, styles))
+        return lines
+
+    def _styled_line_width(self, chars):
+        """Return the display width of one styled line."""
         return sum(self.char_width(char) for char, _ in chars)
 
+    def _widest_styled_line_width(self, chars):
+        """Return the widest explicit line in styled cell content."""
+        return max(self._styled_line_width(line)
+                   for line in self._split_explicit_lines(chars))
+
     def _wrap_styled_chars(self, chars, width):
-        """Wrap styled characters without losing their inline formatting."""
+        """Honor explicit breaks, then wrap without losing formatting."""
+        lines = []
+        for explicit_line in self._split_explicit_lines(chars):
+            lines.extend(self._wrap_styled_segment(explicit_line, width))
+        return lines
+
+    def _wrap_styled_segment(self, chars, width):
+        """Wrap one segment that contains no explicit line breaks."""
         if not chars:
             return [[]]
         remaining = list(chars)
@@ -433,7 +466,7 @@ class MarkdownFormatter:
         return ''.join(parts)
 
     def _pad_styled_line(self, chars, width, alignment):
-        padding = max(0, width - self._styled_width(chars))
+        padding = max(0, width - self._styled_line_width(chars))
         if alignment == 'right':
             left = padding
         elif alignment == 'center':
@@ -456,7 +489,9 @@ class MarkdownFormatter:
             display_rows.append(styled_row)
             for j, chars in enumerate(styled_row):
                 natural_widths[j] = max(
-                    natural_widths[j], self._styled_width(chars))
+                    natural_widths[j],
+                    self._widest_styled_line_width(chars),
+                )
 
         col_widths = self._fit_column_widths(
             natural_widths, self._get_table_max_width(), "html")
@@ -491,20 +526,20 @@ class MarkdownFormatter:
         return (
             '<body id="term-chat-table" style="margin:0;padding:0">'
             '<style>'
-            '.table{color:var(--foreground);font-family:var(--font-mono);'
+            '.table{color:var(--foreground);font-family:monospace;'
             'font-size:1rem;line-height:1.25rem;white-space:pre;'
             'display:block;margin:0.25rem 0 0.5rem 0;'
             'border:1px solid color(var(--foreground) alpha(0.35));'
             'border-radius:2px}'
-            '.logical-row{margin:0;padding-top:0.15rem;'
-            'padding-bottom:0.15rem;'
+            '.logical-row{margin:0;padding-top:0.4rem;'
+            'padding-bottom:0.4rem;'
             'border-bottom:1px solid color(var(--foreground) alpha(0.2))}'
-            '.header-row{padding-top:0.2rem;padding-bottom:0.2rem;'
+            '.header-row{padding-top:0.45rem;padding-bottom:0.45rem;'
             'border-bottom-color:'
             'color(var(--foreground) alpha(0.35))}'
             '.last-row{border-bottom-width:0}'
             '.visual-row{margin:0;padding:0}'
-            'code{font-family:var(--font-mono);color:var(--cyanish);'
+            'code{font-family:monospace;color:var(--cyanish);'
             'background-color:color(var(--foreground) alpha(0.08))}'
             'strong{font-weight:bold}'
             '</style><div class="table">' + ''.join(rendered) +
@@ -544,7 +579,7 @@ class MarkdownFormatter:
             if self.table_buffer:
                 parsed = self._parse_table(self.table_buffer)
                 if self._get_table_style() == "html" and parsed is not None:
-                    source_header = "≡ source"
+                    source_header = "≡"
                     source_lines = [source_header] + [
                         "  " + line for line in self.table_buffer
                     ]

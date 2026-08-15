@@ -23,6 +23,7 @@ from .chatpanel import (
     LoadingAnimation, NoticePhantom, RewindConfirmPanel, StatusHint,
     TablePhantomManager,
 )
+from .md_render import MarkdownFormatter
 from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
 from .install import run_install, find_existing_cli, get_agent_list_items
 
@@ -221,6 +222,7 @@ def _refresh_input_phantoms():
         for window_id, session in list(chatview_clients.items()):
             session.model_phantom.update()
             session.input_marker.update()
+            session.table_phantoms.refresh()
             LOG.debug(f"Redrew chat view input phantoms for window {window_id}")
     finally:
         preferences_redraw_scheduled = False
@@ -1211,6 +1213,7 @@ class ChatSession:
     def __init__(self, window, view, cwd, add_dirs=None, session_id=None):
         self.window = window
         self.chat_view = view
+        self._reset_markdown_formatter()
         self.cwd = cwd
         self.add_dirs = add_dirs or []
         self.loading_animation = LoadingAnimation(self.chat_view)
@@ -1305,6 +1308,44 @@ class ChatSession:
             add_dirs=self.add_dirs
         )
         self.agent_thread.start()
+
+    def _reset_markdown_formatter(self):
+        self.markdown_formatter = MarkdownFormatter(
+            max_width_getter=self._get_current_view_width,
+        )
+
+    def _get_current_view_width(self):
+        view = self.chat_view
+        try:
+            wrap_width = view.settings().get("wrap_width", 0)
+            if (isinstance(wrap_width, int)
+                    and not isinstance(wrap_width, bool)
+                    and wrap_width > 0):
+                return max(20, wrap_width - 4)
+
+            viewport_width, _ = view.viewport_extent()
+            character_width = view.em_width()
+            if viewport_width > 0 and character_width > 0:
+                return max(
+                    20,
+                    int(viewport_width / character_width) - 4,
+                )
+        except Exception:
+            pass
+        return None
+
+    def append_markdown(self, text, flush=False):
+        """Format and append Markdown content to the chat view."""
+        formatted_text = self.markdown_formatter.format(text, flush=flush)
+        html_tables = self.markdown_formatter.take_html_tables()
+        if formatted_text:
+            sublime.set_timeout(
+                lambda: self.chat_view.run_command(
+                    "term_chat_output_append",
+                    {"text": formatted_text, "html_tables": html_tables},
+                ),
+                0,
+            )
 
     @staticmethod
     def get_view_session_id(view):
@@ -1775,6 +1816,7 @@ class ChatSession:
             "debug_agent_message": settings.get("debug_agent_message", False),
         }
 
+        self._reset_markdown_formatter()
         if new_agent_provider == "codex":
             self.message_processor = CodexMessageProcessor(self)
         elif new_agent_provider == "pi":
@@ -1921,7 +1963,7 @@ class ChatSession:
                 self._replay_prompt(turn["prompt"])
                 self.chat_view.run_command("term_chat_output_append", {"text": "\n\n"})
             if turn.get("response"):
-                formatter = self.message_processor.markdown_formatter
+                formatter = self.markdown_formatter
                 response = formatter.format(
                     turn["response"] + "\n\n", flush=True)
                 self.chat_view.run_command("term_chat_output_append", {
