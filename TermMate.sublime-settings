@@ -31,7 +31,10 @@
     //
     //   "markdown" — keep tables in their original markdown form
     //                (aligned, but with "|" pipe separators).
-    "table_style": "bordered",
+    //
+    //   "html" — keep and fold the original markdown, then display a
+    //            minihtml phantom. Supports **strong** and `inline code`.
+    "table_style": "html",
 
     // Keep the Chat View in a dedicated pane.
     // When true, files you open will not appear in the chat's pane.

@@ -5,6 +5,67 @@ import sublime
 LOG = logging.getLogger("TermMate")
 
 
+class TablePhantomManager:
+    """Own folded Markdown table regions and their HTML phantoms."""
+
+    REGION_PREFIX = "term_chat_html_table_"
+
+    def __init__(self, view):
+        self.view = view
+        self.phantom_set = sublime.PhantomSet(view, "chatview_tables")
+        self.entries = []
+        self.next_id = 0
+
+    def add(self, region, table_html):
+        key = self.REGION_PREFIX + str(self.next_id)
+        self.next_id += 1
+        self.view.add_regions(
+            key,
+            [region],
+            flags=sublime.HIDDEN,
+        )
+        self.entries.append((key, table_html))
+        self.view.fold(region)
+        self._update()
+
+    def _update(self):
+        phantoms = []
+        active_entries = []
+        for key, table_html in self.entries:
+            regions = self.view.get_regions(key)
+            if not regions:
+                continue
+            region = regions[0]
+            active_entries.append((key, table_html))
+            # Anchor at the fold's end boundary so the phantom itself is not
+            # swallowed by the folded region.
+            anchor = sublime.Region(region.end(), region.end())
+            phantoms.append(sublime.Phantom(
+                anchor,
+                table_html,
+                sublime.LAYOUT_BLOCK,
+            ))
+        self.entries = active_entries
+        self.phantom_set.update(phantoms)
+
+    def truncate(self, cut_point):
+        kept = []
+        for key, table_html in self.entries:
+            regions = self.view.get_regions(key)
+            if regions and regions[0].end() < cut_point:
+                kept.append((key, table_html))
+            else:
+                self.view.erase_regions(key)
+        self.entries = kept
+        self._update()
+
+    def clear(self):
+        for key, _ in self.entries:
+            self.view.erase_regions(key)
+        self.entries = []
+        self.phantom_set.update([])
+
+
 class NoticePhantom:
     """Displays a notice without writing it to the buffer."""
 

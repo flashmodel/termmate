@@ -19,7 +19,10 @@ from .chatprocessor import (
     ClaudeMessageProcessor, CodexMessageProcessor, PiMessageProcessor,
     OpenCodeMessageProcessor,
 )
-from .chatpanel import LoadingAnimation, NoticePhantom, RewindConfirmPanel, StatusHint
+from .chatpanel import (
+    LoadingAnimation, NoticePhantom, RewindConfirmPanel, StatusHint,
+    TablePhantomManager,
+)
 from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
 from .install import run_install, find_existing_cli, get_agent_list_items
 
@@ -1211,6 +1214,7 @@ class ChatSession:
         self.cwd = cwd
         self.add_dirs = add_dirs or []
         self.loading_animation = LoadingAnimation(self.chat_view)
+        self.table_phantoms = TablePhantomManager(self.chat_view)
 
         self.notice_phantom = NoticePhantom(
             self.chat_view,
@@ -1689,6 +1693,7 @@ class ChatSession:
         self._redraw_prompt_highlights()
 
         self.artifact.truncate(cut_point)
+        self.table_phantoms.truncate(cut_point)
 
         rewind_text = self.chat_view.substr(region)
 
@@ -1916,7 +1921,13 @@ class ChatSession:
                 self._replay_prompt(turn["prompt"])
                 self.chat_view.run_command("term_chat_output_append", {"text": "\n\n"})
             if turn.get("response"):
-                self.chat_view.run_command("term_chat_output_append", {"text": turn["response"] + "\n\n"})
+                formatter = self.message_processor.markdown_formatter
+                response = formatter.format(
+                    turn["response"] + "\n\n", flush=True)
+                self.chat_view.run_command("term_chat_output_append", {
+                    "text": response,
+                    "html_tables": formatter.take_html_tables(),
+                })
 
         if session_info and session_info.get("mtime"):
             dt = datetime.datetime.fromtimestamp(session_info["mtime"]).strftime("%Y-%m-%d %H:%M")
@@ -2555,12 +2566,21 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
 
 class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
 
-    def run(self, edit, text):
+    def run(self, edit, text, html_tables=None):
         insert_at = get_input_start(self.view, 0) - 1
         inserted = self.view.insert(edit, insert_at, text)
         # The anchor region shifts with the insert; re-set to keep the
         # settings value in sync (and re-anchor if the anchor was missing).
         set_input_start(self.view, insert_at + inserted + 1)
+        if html_tables:
+            window = self.view.window()
+            session = (chatview_clients.get(window.id()) if window else None)
+            if session:
+                for table in html_tables:
+                    start = insert_at + table["start"]
+                    end = insert_at + table["end"]
+                    session.table_phantoms.add(
+                        sublime.Region(start, end), table["html"])
         self.view.show(self.view.size())
 
 
