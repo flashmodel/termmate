@@ -8,6 +8,13 @@ TermMate is a professional AI coding agent for Sublime Text that supports multi-
 
 See TermMate agentic coding features — **[live demo here →](https://termmate.app/sublime/)**
 
+TermMate's main agentic features include:
+
+- **autonomous coding workflow** - let agents explore your codebase, run commands, edit files, and complete tasks directly in Sublime Text.
+- **editor-native chat** - plan tasks, follow tool execution, approve agent actions, and review changes in an editor-native interface.
+- **workspace awareness** - reference files, line ranges, selections, directories, and project folders with smart `@` completion and sidebar actions.
+- **session management** - start fresh, resume previous conversations, or rewind and branch from earlier prompt.
+
 ## Getting Started
 
 ### 1. TermMate Installation
