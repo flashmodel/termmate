@@ -1,0 +1,7 @@
+TermMate 0.5.2
+==============
+
+- chat view now supports displaying Markdown tables as HTML
+  Markdown tables can now be displayed as clean minihtml tables in the chat
+  view by setting `"table_style": "html"`. The original Markdown is preserved
+  and folded underneath, so it remains searchable and easy to copy.
