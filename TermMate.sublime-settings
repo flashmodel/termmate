@@ -36,6 +36,14 @@
     //            minihtml phantom. Supports **strong** and `inline code`.
     "table_style": "html",
 
+    // Automatically fold a rendered diff when it contains more than this
+    // many diff lines. Set to 0 to keep all diffs expanded.
+    "diff_fold_limit": 200,
+
+    // Number of initial diff lines as a preview when a diff
+    // is folded. Set to 0 to fold the entire diff block.
+    "diff_preview_lines": 5,
+
     // Keep the Chat View in a dedicated pane.
     // When true, files you open will not appear in the chat's pane.
     "dedicated_chat_pane": true,

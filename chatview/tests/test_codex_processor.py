@@ -85,23 +85,23 @@ class TestCodexFileChangeFormatting(unittest.TestCase):
         output = processor._format_tool_block(block)
 
         expected = (
-            "⏺ fileChange chatview/chatprocessor.py#L4\n\n"
-            "````diff\n"
-            "@@ -4,2 +4,3 @@\n"
-            " import re\n"
-            "+import urllib.parse\n"
-            " import xml.etree.ElementTree\n"
-            "````\n\n"
-            "⏺ fileChange chatview/chatview.py#L2165\n\n"
-            "````diff\n"
-            "@@ -2165,2 +2165,5 @@\n"
-            '                         return ("noop", {})\n'
-            "+                    if session.message_processor."
+            "⏺ fileChange chatview/chatprocessor.py#L4\n"
+            "  ````diff\n"
+            "  @@ -4,2 +4,3 @@\n"
+            "   import re\n"
+            "  +import urllib.parse\n"
+            "   import xml.etree.ElementTree\n"
+            "  ````\n\n"
+            "⏺ fileChange chatview/chatview.py#L2165\n"
+            "  ````diff\n"
+            "  @@ -2165,2 +2165,5 @@\n"
+            '                           return ("noop", {})\n'
+            "  +                    if session.message_processor."
             "open_local_file_link(\n"
-            "+                            line_text, window, view, "
+            "  +                            line_text, window, view, "
             "click_point):\n"
-            '+                        return ("noop", {})\n'
-            "````"
+            '  +                        return ("noop", {})\n'
+            "  ````"
         )
         self.assertEqual(output, expected)
 
@@ -305,12 +305,12 @@ class TestOpenCodeMessageProcessor(unittest.TestCase):
 
         self.assertEqual(
             output,
-            "⏺ edit chatview/chatprocessor.py#L812\n\n"
-            "````diff\n"
-            "@@ -807,2 +812,3 @@\n"
-            "-old\n"
-            "+new\n"
-            "````",
+            "⏺ edit chatview/chatprocessor.py#L812\n"
+            "  ````diff\n"
+            "  @@ -807,2 +812,3 @@\n"
+            "  -old\n"
+            "  +new\n"
+            "  ````",
         )
 
     def test_formats_completed_shell_tool(self):

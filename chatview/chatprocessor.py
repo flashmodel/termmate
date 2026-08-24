@@ -243,7 +243,10 @@ class BaseChatMessageProcessor:
     def _render_diff_block(self, diff_text):
         if not diff_text:
             return ""
-        return f"````diff\n{diff_text.rstrip()}\n````"
+        # Keep the diff visually subordinate to its tool-call header without
+        # sacrificing much of the chat view's usable line width.
+        indented = "\n".join("  " + line for line in diff_text.rstrip().splitlines())
+        return f"  ````diff\n{indented}\n  ````"
 
     def _format_tool_block(self, block):
         name = block.get("name")
@@ -523,7 +526,7 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
         if is_edit:
             diff = _make_edit_diff(old_str, new_str or "", rel_path, start_line=start_line)
             if diff:
-                return header + "\n\n" + self._render_diff_block(diff)
+                return header + "\n" + self._render_diff_block(diff)
 
         return header
 
@@ -682,6 +685,8 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
             for change in changes:
                 path = change.get("path", "")
                 diff_text = change.get("diff") or ""
+                rendered_diff = self._render_diff_block(diff_text)
+                header = None
 
                 if path:
                     abs_path, rel = _resolve_rel_path(path, cwd)
@@ -690,14 +695,17 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
                         line_no = (_diff_start_line(diff_text)
                                    if diff_text else None)
                         file_part = f"{rel}#L{line_no}" if line_no else rel
-                        rendered_parts.append(f"⏺ fileChange {file_part}")
+                        header = f"⏺ fileChange {file_part}"
                     previous_path = path_key
                 else:
-                    rendered_parts.append("⏺ fileChange")
+                    header = "⏺ fileChange"
                     previous_path = None
 
-                rendered_diff = self._render_diff_block(diff_text)
-                if rendered_diff:
+                if header and rendered_diff:
+                    rendered_parts.append(f"{header}\n{rendered_diff}")
+                elif header:
+                    rendered_parts.append(header)
+                elif rendered_diff:
                     rendered_parts.append(rendered_diff)
 
             return ("\n\n".join(rendered_parts)
@@ -874,20 +882,26 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
             for change in changes:
                 path = change.get("path", "")
                 diff_text = change.get("diff") or ""
+                rendered_diff = self._render_diff_block(diff_text)
+                header = None
+
                 if path:
                     abs_path, rel_path = _resolve_rel_path(path, cwd)
                     path_key = os.path.normcase(os.path.normpath(abs_path))
                     if path_key != previous_path:
                         line_no = _diff_start_line(diff_text) if diff_text else None
                         file_part = f"{rel_path}#L{line_no}" if line_no else rel_path
-                        rendered_parts.append(f"⏺ fileChange {file_part}")
+                        header = f"⏺ fileChange {file_part}"
                     previous_path = path_key
                 else:
-                    rendered_parts.append("⏺ fileChange")
+                    header = "⏺ fileChange"
                     previous_path = None
 
-                rendered_diff = self._render_diff_block(diff_text)
-                if rendered_diff:
+                if header and rendered_diff:
+                    rendered_parts.append(f"{header}\n{rendered_diff}")
+                elif header:
+                    rendered_parts.append(header)
+                elif rendered_diff:
                     rendered_parts.append(rendered_diff)
             return ("\n\n".join(rendered_parts)
                     if rendered_parts else "⏺ fileChange")
@@ -958,7 +972,7 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
                 rel_path = f"{rel_path}#L{line_no}"
             header = f"⏺ {display_name} {rel_path}"
             rendered_diff = self._render_diff_block(diff_text)
-            return f"{header}\n\n{rendered_diff}" if rendered_diff else header
+            return f"{header}\n{rendered_diff}" if rendered_diff else header
 
         detail = block.get("title") or _format_tool_arguments(input_data)
         if block.get("status") == "error" and block.get("error"):
