@@ -298,6 +298,16 @@ To add the current file location or selected lines to **Chat with Agent**, confi
 ]
 ```
 
+### Additional Settings
+
+These settings can be added or changed in `Preferences → Package Settings → TermMate → Settings`:
+
+| Setting | Description | Values / default |
+| :--- | :--- | :--- |
+| `table_style` | Controls how Markdown tables are rendered in the Chat | `"bordered"`, `"markdown"`, or `"html"`; default: `"html"` |
+| `diff_fold_limit` | Automatically folds a diff when it contains more than this many diff lines. | Integer; default: `200`; set to `0` to keep all diffs expanded |
+| `dedicated_chat_pane` | Keeps the Chat tab in a dedicated pane so files opened elsewhere do not replace it. | `true` or `false`; default: `true` |
+
 ## 💡 TermMate Agent Tips
 
 - **Selection as Context**: Select code before starting a chat to focus the agent's attention on specific logic.
