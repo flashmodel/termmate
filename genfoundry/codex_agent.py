@@ -52,6 +52,58 @@ def find_codex_cli() -> Optional[str]:
     return None
 
 
+def find_git_dirs(workspace_root: Optional[str]) -> List[str]:
+    """Find all .git directories for workspace (root, parent repo, and submodules)."""
+    if not workspace_root or not os.path.isdir(workspace_root):
+        return []
+
+    root = os.path.abspath(workspace_root)
+    git_dirs = set()
+
+    def add_path(p: str):
+        abs_p = os.path.abspath(os.path.join(root, p))
+        if os.path.isdir(abs_p):
+            git_dirs.add(abs_p)
+        elif os.path.isfile(abs_p):
+            git_dirs.add(abs_p)
+            try:
+                with open(abs_p, "r", encoding="utf-8", errors="ignore") as f:
+                    txt = f.read().strip()
+                if txt.startswith("gitdir:"):
+                    git_dirs.add(os.path.abspath(os.path.join(os.path.dirname(abs_p), txt[7:].strip())))
+            except Exception:
+                pass
+
+    # 1. Resolve root/parent git repository via git CLI
+    try:
+        import subprocess
+        res = subprocess.run(
+            ["git", "rev-parse", "--git-dir", "--git-common-dir"],
+            cwd=root, capture_output=True, text=True, timeout=2
+        )
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                if line.strip():
+                    add_path(line.strip())
+    except Exception:
+        pass
+
+    # Direct check on workspace root
+    add_path(os.path.join(root, ".git"))
+
+    # 2. Scan nested submodules / monorepos (prune heavy & hidden dirs)
+    ignore = {"node_modules", ".venv", "venv", "dist", "build", "target", ".git"}
+    for cur_root, dirs, files in os.walk(root):
+        if ".git" in dirs:
+            add_path(os.path.join(cur_root, ".git"))
+            dirs.remove(".git")
+        if ".git" in files:
+            add_path(os.path.join(cur_root, ".git"))
+        dirs[:] = [d for d in dirs if d not in ignore and not d.startswith(".")]
+
+    return sorted(git_dirs)
+
+
 class CodexAgent(BaseAgent):
     """
     Client for interacting with Codex via "codex app-server" (JSON-RPC over stdio).
@@ -185,11 +237,18 @@ class CodexAgent(BaseAgent):
         if self.options.model:
             thread_params["model"] = self.options.model
 
-        # Initialize config if we have add_dirs or other config-based overrides
+        # Discover all relevant .git directories (root repo, submodules, worktrees)
+        git_dirs = find_git_dirs(self.options.cwd)
+        writable_roots = list(self.options.add_dirs or [])
+        for gd in git_dirs:
+            if gd not in writable_roots:
+                writable_roots.append(gd)
+
+        # Initialize config if we have add_dirs/git_dirs or other config-based overrides
         config_overrides = {}
 
-        if self.options.add_dirs:
-            config_overrides["sandbox_workspace_write.writable_roots"] = self.options.add_dirs
+        if writable_roots:
+            config_overrides["sandbox_workspace_write.writable_roots"] = writable_roots
 
         if self.options.disallowed_tools and "AskUserQuestion" in self.options.disallowed_tools:
             config_overrides["features.default_mode_request_user_input"] = False
@@ -209,21 +268,28 @@ class CodexAgent(BaseAgent):
             # default / allow-edit → all operations require approval
             thread_params["approvalPolicy"] = "untrusted"
 
+        sandbox_map = {
+            "read-only": {"type": "readOnly"},
+            "workspace-write": {
+                "type": "workspaceWrite",
+                "writableRoots": writable_roots,
+                "networkAccess": False,
+            },
+            "danger-full-access": {"type": "dangerFullAccess"},
+        }
         if self.options.sandbox_mode:
-            sandbox_map = {
-                "read-only": {"type": "readOnly"},
-                "workspace-write": {
-                    "type": "workspaceWrite",
-                    "writableRoots": [],
-                    "networkAccess": False,
-                },
-                "danger-full-access": {"type": "dangerFullAccess"},
-            }
             thread_params["sandbox"] = sandbox_map.get(self.options.sandbox_mode, {
                 "type": "workspaceWrite",
-                "writableRoots": [],
+                "writableRoots": writable_roots,
                 "networkAccess": False,
             })
+        else:
+            # Default to workspace-write with git and add_dirs writable
+            thread_params["sandbox"] = {
+                "type": "workspaceWrite",
+                "writableRoots": writable_roots,
+                "networkAccess": False,
+            }
 
         method = "thread/resume" if self.options.session_id else "thread/start"
         result = await self._rpc_request(method, thread_params)

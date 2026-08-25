@@ -350,6 +350,37 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("result", messages[-1].content)
 
+    def test_find_git_dirs(self):
+        from genfoundry.codex_agent import find_git_dirs
+        import tempfile
+        import shutil
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            # 1. Root .git
+            root_git = os.path.join(temp_dir, ".git")
+            os.makedirs(root_git)
+
+            # 2. Submodule .git
+            sub_dir = os.path.join(temp_dir, "pkg", "subpkg")
+            os.makedirs(os.path.join(sub_dir, ".git"))
+
+            # 3. Worktree pointer file
+            worktree_dir = os.path.join(temp_dir, "pkg", "worktree")
+            os.makedirs(worktree_dir)
+            target_git_dir = os.path.join(temp_dir, "real_git_dir")
+            os.makedirs(target_git_dir)
+            with open(os.path.join(worktree_dir, ".git"), "w") as f:
+                f.write(f"gitdir: {target_git_dir}\n")
+
+            dirs = find_git_dirs(temp_dir)
+            self.assertIn(root_git, dirs)
+            self.assertIn(os.path.join(sub_dir, ".git"), dirs)
+            self.assertIn(target_git_dir, dirs)
+        finally:
+            shutil.rmtree(temp_dir)
+
 
 if __name__ == "__main__":
     unittest.main()
+
