@@ -1895,7 +1895,7 @@ class ChatSession:
         if not quiet:
             if old_session_id:
                 session_info = self._fetch_session_info(current_agent_provider, old_session_id, cwd)
-                self._append_resume_banner(current_agent_provider, old_session_id, session_info)
+                self._append_resume_history(current_agent_provider, old_session_id, session_info)
             else:
                 self.chat_view.run_command("term_chat_output_append", {"text": f"\n\n[reconnecting agent...]\n\n"})
 
@@ -1954,7 +1954,7 @@ class ChatSession:
 
         return None
 
-    def _append_resume_banner(self, agent, session_id, session_info):
+    def _append_resume_history(self, agent, session_id, session_info):
         """Render resume banner and recent turns to the chat view. Pure display — no I/O."""
         import datetime
         self.chat_view.run_command("term_chat_output_append",
@@ -1967,7 +1967,7 @@ class ChatSession:
             if turn.get("response"):
                 formatter = self.markdown_formatter
                 response = formatter.format(
-                    turn["response"] + "\n\n", flush=True)
+                    turn["response"] + "\n\n\n", flush=True)
                 self.chat_view.run_command("term_chat_output_append", {
                     "text": response,
                     "html_tables": formatter.take_html_tables(),

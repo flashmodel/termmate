@@ -1,5 +1,6 @@
-"""Chat view rendering and folding helpers for TermMate."""
-
+"""
+Chat view rendering helpers for TermMate.
+"""
 
 def extract_diff_fold_ranges(text, limit, preview_lines=0):
     """Return relative offset ranges (start, end) for complete, over-limit fenced diff blocks.
