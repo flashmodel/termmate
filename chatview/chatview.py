@@ -24,6 +24,7 @@ from .chatpanel import (
     TablePhantomManager,
 )
 from .md_render import MarkdownFormatter
+from .chat_render import extract_diff_fold_ranges
 from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
 from .install import run_install, find_existing_cli, get_agent_list_items
 
@@ -56,56 +57,6 @@ PACKAGE_NAME = "TermMate"
 PROMPT_PREFIX = "\n❯ "  # transcript prefix for submitted prompts; the live input line uses InputPromptMarker instead
 PREFERENCES_CHANGE_KEY = "termmate_chatview_preferences"
 
-
-def find_diff_fold_regions(text, limit, preview_lines=0):
-    """Return relative Regions for complete, over-limit fenced diff blocks.
-
-    When preview_lines > 0, the opening fence and up to preview_lines remain
-    visible, folding remaining lines on an indented new line. When preview_lines
-    is 0, all diff content is folded directly at the end of the diff line.
-
-    Incomplete fences are deliberately ignored because chat output may arrive
-    in streaming chunks.
-    """
-    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
-        return []
-
-    if not isinstance(preview_lines, int) or isinstance(preview_lines, bool) or preview_lines < 0:
-        preview_lines = 0
-
-    regions = []
-    opening = None
-    diff_lines = 0
-    fold_start = None
-    offset = 0
-    for line in text.splitlines(keepends=True):
-        content = line.rstrip("\r\n")
-        stripped = content.strip()
-        if opening is None:
-            if (len(content) - len(content.lstrip(" ")) <= 3
-                    and stripped.startswith("```")
-                    and stripped.lstrip("`").strip() == "diff"):
-                opening_indent = len(content) - len(content.lstrip(" "))
-                fence_len = len(stripped) - len(stripped.lstrip("`"))
-                opening = (fence_len, opening_indent)
-                diff_lines = 0
-                fold_start = offset + len(content) if preview_lines == 0 else None
-        elif stripped and set(stripped) == {"`"}:
-            fence_length = len(stripped)
-            if fence_length >= opening[0]:
-                if diff_lines > limit and fold_start is not None:
-                    end_pos = offset + len(content)
-                    if end_pos > fold_start:
-                        regions.append((fold_start, end_pos))
-                opening = None
-                fold_start = None
-        else:
-            diff_lines += 1
-            if preview_lines > 0 and diff_lines == preview_lines + 1:
-                line_indent = len(content) - len(content.lstrip(" "))
-                fold_start = offset + min(opening[1], line_indent)
-        offset += len(line)
-    return regions
 
 # Global store for active ChatSession: window_id -> ChatSession
 chatview_clients = {}
@@ -1390,20 +1341,10 @@ class ChatSession:
         formatted_text = self.markdown_formatter.format(text, flush=flush)
         html_tables = self.markdown_formatter.take_html_tables()
         if formatted_text:
-            settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
-            diff_folds = find_diff_fold_regions(
-                formatted_text,
-                settings.get("diff_fold_limit", 15),
-                preview_lines=settings.get("diff_preview_lines", 5),
-            )
             sublime.set_timeout(
                 lambda: self.chat_view.run_command(
                     "term_chat_output_append",
-                    {
-                        "text": formatted_text,
-                        "html_tables": html_tables,
-                        "diff_folds": diff_folds,
-                    },
+                    {"text": formatted_text, "html_tables": html_tables},
                 ),
                 0,
             )
@@ -2669,7 +2610,7 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
 
 class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
 
-    def run(self, edit, text, html_tables=None, diff_folds=None):
+    def run(self, edit, text, html_tables=None):
         insert_at = get_input_start(self.view, 0) - 1
         inserted = self.view.insert(edit, insert_at, text)
         # The anchor region shifts with the insert; re-set to keep the
@@ -2684,7 +2625,14 @@ class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
                     end = insert_at + table["end"]
                     session.table_phantoms.add(
                         sublime.Region(start, end), table["html"])
-        for start, end in diff_folds or []:
+
+        settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+        diff_folds = extract_diff_fold_ranges(
+            text,
+            settings.get("diff_fold_limit", 15),
+            preview_lines=settings.get("diff_preview_lines", 5),
+        )
+        for start, end in diff_folds:
             if end > start:
                 self.view.fold(sublime.Region(insert_at + start, insert_at + end))
         self.view.show(self.view.size())
