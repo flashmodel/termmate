@@ -162,9 +162,10 @@ class FileChangesArtifact:
             add = entry.get("add", 0)
             del_ = entry.get("del", 0)
             stat = "  +{} -{}".format(add, del_) if (add or del_) else ""
-            start = base + len(text) + 4
-            text += "    " + rel + stat + "\n"
-            new_regions.append((sublime.Region(start, start + len(rel)), abs_path, rel, list(entry.get("diffs", []))))
+            row = "    " + rel + stat
+            start = base + len(text)
+            text += row + "\n"
+            new_regions.append((sublime.Region(start, start + len(row)), abs_path, rel, list(entry.get("diffs", []))))
 
         # Fold from end of header line to end of last file line (excl. trailing \n)
         fold_start = base + len(header)
