@@ -269,12 +269,20 @@ class AutoComplete:
             return None
 
         active_cwd, other_workspaces = cls.get_workspace_info(window, chat_workspace_key)
+
+        # Dynamic completions flag: inhibit buffer words and explicit/snippet completions
+        flags = sublime.INHIBIT_WORD_COMPLETIONS
+        if hasattr(sublime, "INHIBIT_EXPLICIT_COMPLETIONS"):
+            flags |= sublime.INHIBIT_EXPLICIT_COMPLETIONS
+        if hasattr(sublime, "DYNAMIC_COMPLETIONS"):
+            flags |= sublime.DYNAMIC_COMPLETIONS
+
         if not active_cwd:
-            return None
+            return sublime.CompletionList([], flags=flags)
 
         completions = []
 
-        # Root Level Completion (query.dir_part is empty)
+        # 1. Root Level Completion (query.dir_part is empty)
         #    Priority order:
         #    1) CWD Subdirectories (Highest priority!)
         #    2) CWD Files
@@ -319,13 +327,15 @@ class AutoComplete:
                 )
             )
 
-        # Subdirectory Level Completion (query.dir_part is specified)
+        # 2. Subdirectory Level Completion (query.dir_part is specified)
         else:
             target_dir = cls.resolve_target_dir(active_cwd, other_workspaces, query.dir_part)
             if not target_dir:
-                return None
+                return sublime.CompletionList([], flags=flags)
 
             sub_dirs, sub_files = cls.scan_directory(target_dir, query.file_filter)
+            if not sub_dirs and not sub_files:
+                return sublime.CompletionList([], flags=flags)
 
             for d in sub_dirs:
                 completions.append(sublime.CompletionItem(
@@ -342,11 +352,6 @@ class AutoComplete:
                     completion=f,
                     kind=sublime.KIND_VARIABLE
                 ))
-
-        # Dynamic completions flag for continuous keystroke querying
-        flags = sublime.INHIBIT_WORD_COMPLETIONS
-        if hasattr(sublime, "DYNAMIC_COMPLETIONS"):
-            flags |= sublime.DYNAMIC_COMPLETIONS
 
         return sublime.CompletionList(completions, flags=flags)
 

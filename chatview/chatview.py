@@ -45,6 +45,7 @@ PROMPT_HIGHLIGHT_FLAGS = sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE | sublim
 LOG = logging.getLogger("TermMate")
 
 CHAT_VIEW_FLAG = "chatview_chat"
+CHAT_QUICK_PROMPT_FLAG = "chatview_quick_prompt"
 CHAT_INPUT_START = "chatview_input_start"
 CHAT_INPUT_ANCHOR = "chatview_input_anchor"
 CHAT_WORKSPACE = "chatview_active_workspace"
@@ -2422,15 +2423,23 @@ class ChatViewListener(sublime_plugin.EventListener):
 
         return None
 
+    def _get_editable_start(self, view):
+        """Returns editable_start index if view is Chat View or Quick Message input panel, else None."""
+        if view.settings().get(CHAT_VIEW_FLAG, False):
+            return input_editable_start(view)
+        if view.settings().get(CHAT_QUICK_PROMPT_FLAG, False):
+            return 0
+        return None
+
     def on_query_completions(self, view, prefix, locations):
         """
         Provide filename and directory completions when typing '@' in the prompt area.
         Delegates to AutoComplete for path-segmented completions.
         """
-        if not view.settings().get(CHAT_VIEW_FLAG, False):
+        editable_start = self._get_editable_start(view)
+        if editable_start is None:
             return None
 
-        editable_start = input_editable_start(view)
         return AutoComplete.generate_completions(
             view=view,
             locations=locations,
@@ -2469,7 +2478,8 @@ class ChatViewListener(sublime_plugin.EventListener):
         """
         Trigger autocompletion immediately when '@' or a directory '/' is typed.
         """
-        if not view.settings().get(CHAT_VIEW_FLAG, False):
+        editable_start = self._get_editable_start(view)
+        if editable_start is None:
             return
 
         sel = view.sel()
@@ -2480,8 +2490,6 @@ class ChatViewListener(sublime_plugin.EventListener):
         if pos <= 0:
             return
 
-        # Check if in editable area
-        editable_start = input_editable_start(view)
         if pos < editable_start:
             return
 
@@ -2699,6 +2707,7 @@ class TermChatPromptCommand(sublime_plugin.WindowCommand):
         # Blank trailing lines give the panel a multi-line editing area from
         # the moment it opens.  With context, start below its first-line tags;
         # otherwise start on the first line as before.
+        panel.settings().set(CHAT_QUICK_PROMPT_FLAG, True)
         panel.settings().set("word_wrap", True)
         panel.settings().set("line_numbers", False)
         panel.settings().set("gutter", False)
