@@ -12,7 +12,7 @@ TermMate's main agentic features include:
 
 - **autonomous coding workflow** - let agents explore your codebase, run commands, edit files, and complete tasks directly in Sublime Text.
 - **editor-native chat** - plan tasks, follow tool execution, approve agent actions, and review changes in an editor-native interface.
-- **workspace awareness** - reference files, line ranges, selections, directories, and project folders with smart `@` completion and sidebar actions.
+- **workspace awareness** - reference files, line ranges, selections, and multi-level directory paths with cascading smart `@` completion and sidebar actions.
 - **session management** - start fresh, resume previous conversations, or rewind and branch from earlier prompt.
 
 ## Getting Started
@@ -117,11 +117,12 @@ Right-click on any file or text selection and choose **TermMate: Chat with Agent
 
 **2. File Tags `@` Smart Completion**
 
-Tag files in your prompt to give the agent precise project context. Typing `@` in the chat input instantly opens a completion popup with three categories of suggestions:
+Tag files in your prompt to give the agent precise project context. Typing `@` in the chat input instantly opens a completion popup with multi-level directory drilling:
 
-- 📂 Open files — files currently open in the window
-- 📄 Workspace files — files in the workspace root
-- 📁 Subdirectories — inserted with a trailing `/` to reference a whole directory
+- 📁 Subdirectories & cascading navigation — selecting a folder (e.g. `src/`) automatically cascades into its subdirectories and files without re-typing `@`
+- 📄 Workspace files — files in the active workspace root
+- 📦 Multi-root workspaces — drill into secondary workspace folders
+- 📂 Open files — files currently open in editor tabs
 
 A tag can point at a file (`@src/main.py`), a line or range (`@src/main.py#L42`, `@src/main.py#L10-25`), or a directory (`@src/`). Tagged files are sent to the agent as context along with your message. **Chat with Agent** and the sidebar context menu can also insert tags for you.
 
