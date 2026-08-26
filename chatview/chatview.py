@@ -27,6 +27,7 @@ from .md_render import MarkdownFormatter
 from .chat_render import extract_diff_fold_ranges
 from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
 from .install import run_install, find_existing_cli, get_agent_list_items
+from .autocomplete import AutoComplete
 
 def get_available_agents(settings):
     """Returns a list of available agents."""
@@ -2423,97 +2424,20 @@ class ChatViewListener(sublime_plugin.EventListener):
 
     def on_query_completions(self, view, prefix, locations):
         """
-        Provide filename completions when typing '@' in the prompt area.
-        Shows three categories: open files, current directory files, and subdirectories.
+        Provide filename and directory completions when typing '@' in the prompt area.
+        Delegates to AutoComplete for path-segmented completions.
         """
         if not view.settings().get(CHAT_VIEW_FLAG, False):
             return None
 
-        # Check if in editable area
         editable_start = input_editable_start(view)
-        pos = locations[0]
-
-        if pos < editable_start:
-            return None
-
-        # Check if the prefix is preceded by '@'
-        trigger_pos = pos - len(prefix) - 1
-        if trigger_pos < 0 or view.substr(trigger_pos) != '@':
-            return None
-
-        completions = []
-        window = view.window()
-        if not window:
-            return None
-
-        # Get current directory (first workspace folder)
-        current_dir = None
-        folders = window.folders()
-        if folders:
-            current_dir = folders[0]
-
-        # Category 1: Currently open files
-        seen_files = set()
-        for v in window.views():
-            file_path = v.file_name()
-            if not file_path:
-                continue
-
-            # Skip the chat view itself
-            if v.settings().get(CHAT_VIEW_FLAG, False):
-                continue
-
-            file_name = os.path.basename(file_path)
-            if file_name in seen_files:
-                continue
-
-            seen_files.add(file_name)
-
-            # Use relative path as hint if available
-            rel_path = file_name
-            if current_dir and file_path.startswith(current_dir):
-                rel_path = os.path.relpath(file_path, current_dir)
-
-            completions.append(sublime.CompletionItem(
-                file_name,
-                annotation=f"📂 {rel_path}",
-                completion=file_name,
-                kind=sublime.KIND_VARIABLE
-            ))
-
-        # Category 2: Files in current directory
-        if current_dir and os.path.isdir(current_dir):
-            try:
-                for item in os.listdir(current_dir):
-                    item_path = os.path.join(current_dir, item)
-                    if os.path.isfile(item_path) and not item.startswith('.'):
-                        if item not in seen_files:
-                            seen_files.add(item)
-                            completions.append(sublime.CompletionItem(
-                                item,
-                                annotation="📄 current dir",
-                                completion=item,
-                                kind=sublime.KIND_AMBIGUOUS
-                            ))
-            except OSError:
-                pass
-
-        # Category 3: Subdirectories in current directory
-        if current_dir and os.path.isdir(current_dir):
-            try:
-                for item in os.listdir(current_dir):
-                    item_path = os.path.join(current_dir, item)
-                    if os.path.isdir(item_path) and not item.startswith('.'):
-                        completions.append(sublime.CompletionItem(
-                            item + "/",
-                            annotation="📁 subdirectory",
-                            completion=item + "/",
-                            kind=sublime.KIND_NAMESPACE
-                        ))
-            except OSError:
-                pass
-
-        return sublime.CompletionList(completions, flags=sublime.INHIBIT_WORD_COMPLETIONS)
+        return AutoComplete.generate_completions(
+            view=view,
+            locations=locations,
+            editable_start=editable_start,
+            chat_view_flag=CHAT_VIEW_FLAG,
+            chat_workspace_key=CHAT_WORKSPACE
+        )
 
     def on_hover(self, view, point, hover_zone):
         """Show rewind confirm phantom when hovering over a prompt gutter dot."""
@@ -2543,12 +2467,11 @@ class ChatViewListener(sublime_plugin.EventListener):
 
     def on_modified_async(self, view):
         """
-        Trigger autocompletion immediately when '@' is typed.
+        Trigger autocompletion immediately when '@' or a directory '/' is typed.
         """
         if not view.settings().get(CHAT_VIEW_FLAG, False):
             return
 
-        # Check if the last character typed was '@'
         sel = view.sel()
         if not sel:
             return
@@ -2570,6 +2493,9 @@ class ChatViewListener(sublime_plugin.EventListener):
                 "api_completions_only": True,
                 "next_completion_if_showing": False
             })
+        elif last_char == '/':
+            # Check for segmented path directory cascade trigger
+            AutoComplete.check_cascade_trigger(view, editable_start)
 
 
 class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
