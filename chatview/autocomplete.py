@@ -1,6 +1,6 @@
 """
 Path-segment autocomplete manager for '@' tag file navigation in TermMate chatview.
-Provides multi-level directory drilling, tab completions, and dynamic popups.
+Provides multi-level directory drilling, multi-workspace routing, and dynamic popups.
 """
 
 import os
@@ -23,7 +23,7 @@ DEFAULT_IGNORED_NAMES = {
 class AtQuery(NamedTuple):
     """Encapsulates parsed @-completion query context."""
     full_query: str     # The entire query after '@', e.g. "src/components/Cha"
-    dir_part: str       # Normalized directory prefix, e.g. "src/components/"
+    dir_part: str       # Normalized directory prefix, e.g. "src/components/" or "backend/cmd/"
     file_filter: str    # Current typing prefix for filtering, e.g. "Cha"
     at_pos: int         # Absolute position of '@' in the view
 
@@ -60,7 +60,7 @@ def parse_at_query_text(text_before_cursor: str) -> Optional[Tuple[str, str, str
 
 
 class AutoComplete:
-    """Manages file/directory autocompletion triggered by '@'."""
+    """Manages file/directory autocompletion triggered by '@' with multi-workspace support."""
 
     @staticmethod
     def extract_at_query(view, pos: int, editable_start: int) -> Optional[AtQuery]:
@@ -92,59 +92,93 @@ class AutoComplete:
         )
 
     @staticmethod
-    def get_workspace_root(window, chat_workspace_key: str = "chatview_active_workspace") -> Optional[str]:
-        """Resolves the active workspace root folder."""
+    def get_workspace_info(
+        window,
+        chat_workspace_key: str = "chatview_active_workspace"
+    ) -> Tuple[Optional[str], List[str]]:
+        """
+        Resolves (active_cwd, other_workspaces).
+        - active_cwd: The agent's current working directory (window custom setting or first folder).
+        - other_workspaces: Any other folders in window.folders().
+        """
         if not window:
-            return None
+            return None, []
 
-        # Check custom workspace setting on window first
+        folders = window.folders() or []
         custom_cwd = window.settings().get(chat_workspace_key)
+
+        active_cwd = None
         if custom_cwd and os.path.isdir(custom_cwd):
-            return custom_cwd
+            active_cwd = os.path.normpath(custom_cwd)
+        elif folders:
+            active_cwd = os.path.normpath(folders[0])
 
-        folders = window.folders()
-        if folders:
-            return folders[0]
+        if not active_cwd:
+            return None, []
 
-        return None
+        other_workspaces = [
+            os.path.normpath(f) for f in folders
+            if os.path.normpath(f) != active_cwd and os.path.isdir(f)
+        ]
 
-    @staticmethod
-    def get_target_directory(workspace_root: str, dir_part: str) -> Optional[str]:
+        return active_cwd, other_workspaces
+
+    @classmethod
+    def resolve_target_dir(
+        cls,
+        active_cwd: str,
+        other_workspaces: List[str],
+        dir_part: str
+    ) -> Optional[str]:
         """
-        Resolves the absolute target directory and performs sandbox validation.
-        Prevents navigating outside the workspace root.
+        Resolves dir_part to an absolute physical directory path with sandbox boundary checks.
+        1. If dir_part begins with an other workspace's folder name (e.g. "backend/cmd/"),
+           routes to that other workspace.
+        2. Otherwise, resolves directly relative to active_cwd (e.g. "src/components/").
         """
-        if not workspace_root or not os.path.isdir(workspace_root):
-            return None
+        if not dir_part:
+            return active_cwd
 
-        target_dir = os.path.normpath(os.path.join(workspace_root, dir_part))
+        first_seg, sep, remaining = dir_part.partition('/')
 
-        # Security sandbox check: prevent ../ from traversing outside workspace root
+        # 1. Check if first_seg routes to an other workspace folder
+        for ws_folder in other_workspaces:
+            ws_name = os.path.basename(ws_folder.rstrip('/\\'))
+            if ws_name == first_seg:
+                sub_path = remaining if sep else ""
+                target = os.path.normpath(os.path.join(ws_folder, sub_path))
+                try:
+                    if os.path.commonpath([target, ws_folder]) == ws_folder and os.path.isdir(target):
+                        return target
+                except ValueError:
+                    pass
+
+        # 2. Default: route within active_cwd
+        target = os.path.normpath(os.path.join(active_cwd, dir_part))
         try:
-            common = os.path.commonpath([target_dir, workspace_root])
-            if common != workspace_root:
-                return None
+            if os.path.commonpath([target, active_cwd]) == active_cwd and os.path.isdir(target):
+                return target
         except ValueError:
-            return None
+            pass
 
-        if os.path.isdir(target_dir):
-            return target_dir
         return None
 
     @classmethod
     def get_open_files_completions(
         cls,
         window,
-        workspace_root: str,
+        active_cwd: str,
+        other_workspaces: List[str],
         file_filter: str,
         chat_view_flag: str
     ) -> List:
-        """Collects currently open views in the editor for root-level '@' completion."""
-        if not sublime:
+        """Collects currently open views in the editor across all workspace folders."""
+        if not sublime or not window:
             return []
 
         completions = []
         seen_paths = set()
+        all_roots = [active_cwd] + other_workspaces
 
         for v in window.views():
             file_path = v.file_name()
@@ -155,12 +189,18 @@ class AutoComplete:
             seen_paths.add(file_path)
 
             file_name = os.path.basename(file_path)
-            if file_path.startswith(workspace_root):
-                rel_path = os.path.relpath(file_path, workspace_root)
-            else:
-                rel_path = file_name
+            rel_path = file_name
 
-            # Case-insensitive prefix filter if user has started typing
+            for root in all_roots:
+                if file_path.startswith(root):
+                    if root == active_cwd:
+                        rel_path = os.path.relpath(file_path, active_cwd)
+                    else:
+                        ws_name = os.path.basename(root.rstrip('/\\'))
+                        rel_path = f"{ws_name}/{os.path.relpath(file_path, root)}"
+                    break
+
+            # Case-insensitive prefix filter
             if file_filter and not rel_path.lower().startswith(file_filter.lower()):
                 continue
 
@@ -214,7 +254,7 @@ class AutoComplete:
     ) -> Optional[object]:
         """
         Entry point for `on_query_completions`.
-        Returns dynamically refreshed CompletionList.
+        Returns dynamically refreshed CompletionList with CWD subdirectories prioritized.
         """
         if not sublime or not locations:
             return None
@@ -228,44 +268,82 @@ class AutoComplete:
         if not window:
             return None
 
-        workspace_root = cls.get_workspace_root(window, chat_workspace_key)
-        if not workspace_root:
-            return None
-
-        target_dir = cls.get_target_directory(workspace_root, query.dir_part)
-        if not target_dir:
+        active_cwd, other_workspaces = cls.get_workspace_info(window, chat_workspace_key)
+        if not active_cwd:
             return None
 
         completions = []
 
-        # 1. Root level: include currently open tabs
+        # Root Level Completion (query.dir_part is empty)
+        #    Priority order:
+        #    1) CWD Subdirectories (Highest priority!)
+        #    2) CWD Files
+        #    3) Other Workspace Root Folders (e.g. backend/)
+        #    4) Open Tabs across all projects
         if not query.dir_part:
+            # 1.1 Priority 1: CWD Subdirectories
+            cwd_dirs, cwd_files = cls.scan_directory(active_cwd, query.file_filter)
+            for d in cwd_dirs:
+                completions.append(sublime.CompletionItem(
+                    trigger=d + "/",
+                    annotation="📁 folder",
+                    completion=d + "/",
+                    kind=sublime.KIND_NAMESPACE
+                ))
+
+            # 1.2 Priority 2: CWD Files
+            for f in cwd_files:
+                completions.append(sublime.CompletionItem(
+                    trigger=f,
+                    annotation="📄 file",
+                    completion=f,
+                    kind=sublime.KIND_VARIABLE
+                ))
+
+            # 1.3 Priority 3: Other Workspace Root Folders
+            for ws_folder in other_workspaces:
+                ws_name = os.path.basename(ws_folder.rstrip('/\\'))
+                if query.file_filter and not ws_name.lower().startswith(query.file_filter.lower()):
+                    continue
+                completions.append(sublime.CompletionItem(
+                    trigger=ws_name + "/",
+                    annotation=f"📦 {ws_name} (workspace)",
+                    completion=ws_name + "/",
+                    kind=sublime.KIND_NAMESPACE
+                ))
+
+            # 1.4 Priority 4: Open Tabs
             completions.extend(
-                cls.get_open_files_completions(window, workspace_root, query.file_filter, chat_view_flag)
+                cls.get_open_files_completions(
+                    window, active_cwd, other_workspaces, query.file_filter, chat_view_flag
+                )
             )
 
-        # 2. Scan target directory for child folders and files
-        sub_dirs, sub_files = cls.scan_directory(target_dir, query.file_filter)
+        # Subdirectory Level Completion (query.dir_part is specified)
+        else:
+            target_dir = cls.resolve_target_dir(active_cwd, other_workspaces, query.dir_part)
+            if not target_dir:
+                return None
 
-        # Directory candidates with trailing '/'
-        for d in sub_dirs:
-            completions.append(sublime.CompletionItem(
-                trigger=d + "/",
-                annotation="📁 folder",
-                completion=d + "/",
-                kind=sublime.KIND_NAMESPACE
-            ))
+            sub_dirs, sub_files = cls.scan_directory(target_dir, query.file_filter)
 
-        # File candidates
-        for f in sub_files:
-            completions.append(sublime.CompletionItem(
-                trigger=f,
-                annotation="📄 file",
-                completion=f,
-                kind=sublime.KIND_VARIABLE
-            ))
+            for d in sub_dirs:
+                completions.append(sublime.CompletionItem(
+                    trigger=d + "/",
+                    annotation="📁 folder",
+                    completion=d + "/",
+                    kind=sublime.KIND_NAMESPACE
+                ))
 
-        # 3. Dynamic completions list
+            for f in sub_files:
+                completions.append(sublime.CompletionItem(
+                    trigger=f,
+                    annotation="📄 file",
+                    completion=f,
+                    kind=sublime.KIND_VARIABLE
+                ))
+
+        # Dynamic completions flag for continuous keystroke querying
         flags = sublime.INHIBIT_WORD_COMPLETIONS
         if hasattr(sublime, "DYNAMIC_COMPLETIONS"):
             flags |= sublime.DYNAMIC_COMPLETIONS

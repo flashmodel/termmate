@@ -47,29 +47,50 @@ class TestAutocomplete(unittest.TestCase):
         full_query, dir_part, file_filter, offset = parsed
         self.assertEqual(full_query, r"my\ folder/comp")
 
-    def test_sandbox_path_traversal_prevention(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Normal nested dir
-            os.makedirs(os.path.join(tmpdir, "src", "sub"), exist_ok=True)
-            valid = AutoComplete.get_target_directory(tmpdir, "src/sub/")
-            self.assertEqual(valid, os.path.join(tmpdir, "src", "sub"))
+    def test_multi_workspace_target_dir_routing(self):
+        with tempfile.TemporaryDirectory() as base_tmp:
+            cwd_dir = os.path.join(base_tmp, "frontend")
+            other_ws_dir = os.path.join(base_tmp, "backend")
+            os.makedirs(os.path.join(cwd_dir, "src", "components"), exist_ok=True)
+            os.makedirs(os.path.join(other_ws_dir, "cmd", "server"), exist_ok=True)
 
-            # Path traversal attempt outside workspace
-            invalid = AutoComplete.get_target_directory(tmpdir, "../../etc/")
-            self.assertIsNone(invalid)
+            other_workspaces = [other_ws_dir]
 
-    def test_scan_directory(self):
+            # 1. CWD root
+            resolved_cwd_root = AutoComplete.resolve_target_dir(cwd_dir, other_workspaces, "")
+            self.assertEqual(resolved_cwd_root, cwd_dir)
+
+            # 2. CWD subdirectory (e.g. "@src/components/")
+            resolved_cwd_sub = AutoComplete.resolve_target_dir(cwd_dir, other_workspaces, "src/components/")
+            self.assertEqual(resolved_cwd_sub, os.path.join(cwd_dir, "src", "components"))
+
+            # 3. Other workspace root (e.g. "@backend/")
+            resolved_other_root = AutoComplete.resolve_target_dir(cwd_dir, other_workspaces, "backend/")
+            self.assertEqual(resolved_other_root, other_ws_dir)
+
+            # 4. Other workspace subdirectory (e.g. "@backend/cmd/server/")
+            resolved_other_sub = AutoComplete.resolve_target_dir(cwd_dir, other_workspaces, "backend/cmd/server/")
+            self.assertEqual(resolved_other_sub, os.path.join(other_ws_dir, "cmd", "server"))
+
+            # 5. Sandbox boundary protection (traversal outside project)
+            invalid_traversal = AutoComplete.resolve_target_dir(cwd_dir, other_workspaces, "../../etc/")
+            self.assertIsNone(invalid_traversal)
+
+            invalid_other_traversal = AutoComplete.resolve_target_dir(cwd_dir, other_workspaces, "backend/../../etc/")
+            self.assertIsNone(invalid_other_traversal)
+
+    def test_scan_directory_and_sorting(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             os.makedirs(os.path.join(tmpdir, "components"), exist_ok=True)
             os.makedirs(os.path.join(tmpdir, "hooks"), exist_ok=True)
-            os.makedirs(os.path.join(tmpdir, "node_modules"), exist_ok=True)  # should be ignored
-            os.makedirs(os.path.join(tmpdir, ".git"), exist_ok=True)          # should be ignored
+            os.makedirs(os.path.join(tmpdir, "node_modules"), exist_ok=True)  # ignored
+            os.makedirs(os.path.join(tmpdir, ".git"), exist_ok=True)          # ignored
 
             with open(os.path.join(tmpdir, "index.ts"), "w") as f:
                 f.write("")
             with open(os.path.join(tmpdir, "main.ts"), "w") as f:
                 f.write("")
-            with open(os.path.join(tmpdir, ".DS_Store"), "w") as f:           # should be ignored
+            with open(os.path.join(tmpdir, ".DS_Store"), "w") as f:           # ignored
                 f.write("")
 
             sub_dirs, sub_files = AutoComplete.scan_directory(tmpdir, "")
