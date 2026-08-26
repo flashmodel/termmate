@@ -24,7 +24,7 @@ from .chatpanel import (
     TablePhantomManager,
 )
 from .md_render import MarkdownFormatter
-from .chat_render import extract_diff_fold_ranges
+from .chatrender import extract_diff_fold_ranges
 from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
 from .install import run_install, find_existing_cli, get_agent_list_items
 from .autocomplete import AutoComplete

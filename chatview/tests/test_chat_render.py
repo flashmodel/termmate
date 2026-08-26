@@ -1,5 +1,5 @@
 import unittest
-from chatview.chat_render import extract_diff_fold_ranges
+from chatview.chatrender import extract_diff_fold_ranges
 
 
 class TestDiffFolding(unittest.TestCase):
