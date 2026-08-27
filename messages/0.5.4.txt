@@ -1,0 +1,7 @@
+TermMate 0.5.4
+==============
+
+- Smart '@' File and Directory Autocomplete
+  Type '@' in the prompt area to quickly reference files and directories.
+  Selecting a directory automatically cascades into the next folder level,
+  with support for open editor tabs and multi-root workspace navigation.
