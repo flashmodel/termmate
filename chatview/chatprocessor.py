@@ -1076,10 +1076,11 @@ class PiMessageProcessor(BaseChatMessageProcessor):
                                 args = block.get("arguments", {})
                                 self._pending_edits[tool_call_id] = {
                                     "file_path": args.get("path") or args.get("file_path") or "",
-                                    "old_text": args.get("oldText"),
-                                    "new_text": args.get("newText"),
+                                    "old_text": args.get("oldText") or args.get("old_text"),
+                                    "new_text": args.get("newText") or args.get("content") or args.get("new_text"),
                                     "edits": args.get("edits"),
                                 }
+
                             # defer to toolResult
                         else:
                             if not self.last_is_tool_call:
@@ -1137,6 +1138,8 @@ class PiMessageProcessor(BaseChatMessageProcessor):
             # Stop loading on turn completion (heuristic)
             self.session.stop_loading()
             self.append_content("\n")
+            # Show collapsed file-changes artifact after the turn output settles
+            sublime.set_timeout(self.session.show_file_changes_artifact, 0)
 
         elif message.type == "message_end":
             data = message.content if isinstance(message.content, dict) else {}
@@ -1228,17 +1231,18 @@ class PiMessageProcessor(BaseChatMessageProcessor):
         return f"⏺ {name}" if name else ""
 
     def _format_pi_edit_result(self, pending, tool_result_data):
-        """Render edit/write header + diff from Pi toolResult data."""
+        """Render edit/write header + diff from Pi toolResult data and record artifact."""
         file_path = (pending or {}).get("file_path", "")
         if not file_path:
             return None
         cwd = self.session.agent_thread.cwd if self.session.agent_thread else ""
-        _, rel_path = _resolve_rel_path(file_path, cwd)
+        abs_path, rel_path = _resolve_rel_path(file_path, cwd)
 
         name = tool_result_data.get("toolName", "edit")
         first_line = (tool_result_data.get("details") or {}).get("firstChangedLine")
         header = f"⏺ {name} {rel_path}#L{first_line}" if first_line else f"⏺ {name} {rel_path}"
 
+        diff_text = None
         if name == "edit" and pending:
             edits = pending.get("edits")
             old_text = pending.get("old_text")
@@ -1249,10 +1253,22 @@ class PiMessageProcessor(BaseChatMessageProcessor):
                          if (d := _make_edit_diff(e.get("oldText") or "", e.get("newText") or "", rel_path,
                                                   start_line=first_line))]
                 if diffs:
-                    return header + "\n" + self._render_diff_block("\n".join(diffs))
+                    diff_text = "\n".join(diffs)
             elif old_text is not None:
-                diff = _make_edit_diff(old_text, new_text or "", rel_path, start_line=first_line)
-                if diff:
-                    return header + "\n" + self._render_diff_block(diff)
+                diff_text = _make_edit_diff(old_text, new_text or "", rel_path, start_line=first_line)
 
+        elif name == "write" and pending:
+            new_text = pending.get("new_text") or ""
+            if new_text:
+                lines = new_text.splitlines()
+                diff_text = ("@@ -0,0 +1,{} @@\n".format(len(lines))
+                             + "\n".join("+" + l for l in lines) + "\n")
+
+        # Record file changes for the artifact
+        if abs_path:
+            self.session.record_file_change(abs_path, rel_path, diff_text)
+
+        if diff_text:
+            return header + "\n" + self._render_diff_block(diff_text)
         return header
+

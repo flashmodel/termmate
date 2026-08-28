@@ -8,52 +8,20 @@ import re
 import sublime
 
 from . import utils
+from . import diffview
 
 LOG = logging.getLogger("TermMate")
 
 ARTIFACT_REGION_KEY = "chatview_artifact_files"
 ARTIFACT_REGION_SCOPE = "region.bluish"
 ARTIFACT_REGION_FLAGS = sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE | sublime.HIDDEN
-DIFF_VIEW_PATH_KEY = "chatview_artifact_diff_path"
-
-_DIFF_HEADER_RE = re.compile(r'^diff [ab]/(.+?) [ab]/.+$|^[+-]{3} [ab]/(.+)$')
-_DIFF_HUNK_RE = re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@')
+DIFF_VIEW_PATH_KEY = diffview.DIFF_VIEW_PATH_KEY
 
 
 def diff_view_click(view, abs_path, click_point):
-    """Handle a double-click in a diff view.
+    """Handle a double-click in a diff view by delegating to diffview module."""
+    return diffview.handle_diff_view_click(view, abs_path, click_point)
 
-    Tries to open the file named on the clicked header line, or jump to the
-    source line if the clicked line is a hunk range header.
-
-    Returns True if the click was handled (caller should suppress the default
-    drag_select command), False otherwise.
-    """
-    stripped = view.substr(view.line(click_point)).strip()
-
-    m = _DIFF_HEADER_RE.match(stripped)
-    if m:
-        rel = m.group(1) or m.group(2)
-        for folder in (view.window().folders() or []):
-            p = os.path.normpath(os.path.join(folder, rel))
-            if os.path.isfile(p):
-                view.window().open_file(p)
-                return True
-        sublime.status_message("File not found: " + rel)
-        return True
-
-    hunk_m = _DIFF_HUNK_RE.match(stripped)
-    if hunk_m:
-        line_no = int(hunk_m.group(1))
-        if os.path.isfile(abs_path):
-            view.window().open_file(
-                "{}:{}".format(abs_path, line_no),
-                sublime.ENCODED_POSITION)
-        else:
-            sublime.status_message("File not found")
-        return True
-
-    return False
 
 
 def _agent_data_dirs(extra_env=None):
@@ -154,7 +122,7 @@ class FileChangesArtifact:
 
         count = len(files)
         header = "▣ {} file{} changed".format(count, "s" if count != 1 else "")
-        text = header + "\n"
+        text = "\n" + header + "\n"
         new_regions = []
         for abs_path in files:
             entry = self.file_changes.pop(abs_path, {})
@@ -225,8 +193,7 @@ class FileChangesArtifact:
                 break
 
         name = os.path.basename(rel_path) + " (changes)"
-        diff_view = utils.show_diff_text(self.window, "".join(parts), name)
-        diff_view.settings().set(DIFF_VIEW_PATH_KEY, abs_path)
+        diffview.show_diff_text(self.window, "".join(parts), name, abs_path=abs_path)
 
     def truncate(self, cut_point):
         """Drop artifact file regions that fall inside a truncated tail (rewind)."""

@@ -1,39 +1,89 @@
 %YAML 1.2
 ---
 # http://www.sublimetext.com/docs/syntax.html
-# Diff syntax for TermMate artifact diff views. Extends the built-in Diff
-# syntax and re-scopes the file-path portion of the header lines
-# (`diff a/.. b/..`, `--- a/..`, `+++ b/..`) as variable.function.chatview
-# — the same clickable-file coloring used for artifact file names in
-# ChatMD.sublime-syntax — signalling that these paths jump to the file.
-#
-# The hunk range lines (`@@ -175,24 +175,6 @@`) have their line numbers
-# colored as variable.function.chatview; the `,count` suffix is left unstyled.
+# Diff syntax for TermMate artifact diff views.
+# Self-contained syntax supporting both line-numbered diffs and standard unified diffs.
 name: ChatDiff
 hidden: true
 scope: source.diff.chatview
 version: 2
 
-extends: Packages/Diff/Diff.sublime-syntax
-
 contexts:
-  diff-header:
-    - meta_prepend: true
-    # `diff a/path b/path` — highlight each path, skip the `a/`/`b/` prefix.
-    - match: '{{bol}}diff (?:[ab]/(\S+) [ab]/(\S+)){{eol}}'
+  main:
+    # 1. Diff Git headers: `diff --git a/... b/...` or `diff a/... b/...`
+    - match: '^diff (?:--git )?[ab]/(\S+) [ab]/(\S+)$'
+      scope: meta.diff.header.git
       captures:
         1: variable.function.chatview
         2: variable.function.chatview
 
-  # `--- a/path` and `+++ b/path` share the same rule: skip prefix, highlight path.
-  diff-header-unified-from-file:
-    - meta_prepend: true
-    - match: '[ab]/(\S+)'
+    # 2. File origin headers: `--- a/...` and `+++ b/...`
+    - match: '^--- [ab]/(\S+).*$'
+      scope: meta.diff.header.from-file
+      captures:
+        1: variable.function.chatview
+    - match: '^\+\+\+ [ab]/(\S+).*$'
+      scope: meta.diff.header.to-file
       captures:
         1: variable.function.chatview
 
-  diff-header-unified-to-file:
-    - meta_prepend: true
-    - match: '[ab]/(\S+)'
+    # 3. Line-numbered hunk banner: e.g. "           @@ -42,5 +42,5 @@"
+    - match: '^\s*(@@\s*-\d+(?:,\d+)?\s*\+\d+(?:,\d+)?\s*@@)(.*)$'
+      scope: meta.diff.range.unified
       captures:
-        1: variable.function.chatview
+        1: variable.function.chatview punctuation.definition.range.diff
+        2: comment.line.diff
+
+    # 4. Standard unnumbered hunk banner: e.g. "@@ -42,5 +42,5 @@"
+    - match: '^(@@\s*-\d+(?:,\d+)?\s*\+\d+(?:,\d+)?\s*@@)(.*)$'
+      scope: meta.diff.range.unified
+      captures:
+        1: variable.function.chatview punctuation.definition.range.diff
+        2: comment.line.diff
+
+    # 5. Line-numbered deleted line: has old line number, no new line number, -
+    - match: '^([ \t]*\d+)\s+(-)(.*)$'
+      scope: meta.diff.line.deleted markup.deleted.diff
+      captures:
+        1: constant.numeric.line-number.old.diff
+        2: punctuation.definition.deleted.diff
+        3: markup.deleted.diff
+
+    # 6. Line-numbered inserted line: no old line number, has new line number, +
+    - match: '^[ \t]*(\d+)\s+(\+)(.*)$'
+      scope: meta.diff.line.inserted markup.inserted.diff
+      captures:
+        1: constant.numeric.line-number.new.diff
+        2: punctuation.definition.inserted.diff
+        3: markup.inserted.diff
+
+    # 7. Line-numbered context line: has both old and new line numbers, 2 spaces
+    - match: '^([ \t]*\d+)\s+(\d+)\s{2}(.*)$'
+      scope: meta.diff.line.context
+      captures:
+        1: constant.numeric.line-number.old.diff
+        2: constant.numeric.line-number.new.diff
+
+    # 8. Standard raw diff deleted line (starts with -)
+    - match: '^(-)(.*)$'
+      scope: meta.diff.line.deleted markup.deleted.diff
+      captures:
+        1: punctuation.definition.deleted.diff
+        2: markup.deleted.diff
+
+    # 9. Standard raw diff inserted line (starts with +)
+    - match: '^(\+)(.*)$'
+      scope: meta.diff.line.inserted markup.inserted.diff
+      captures:
+        1: punctuation.definition.inserted.diff
+        2: markup.inserted.diff
+
+    # 10. Standard raw diff context line (starts with space)
+    - match: '^ (.*)$'
+      scope: meta.diff.line.context
+
+    # 11. Diff metadata / comments / notes (e.g. index ..., \ No newline ...)
+    - match: '^(index|new file mode|deleted file mode|similarity index|rename from|rename to)\b.*$'
+      scope: meta.diff.header comment.line.diff
+    - match: '^\s*(\\.*)$'
+      scope: meta.diff comment.line.diff
