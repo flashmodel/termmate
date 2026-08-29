@@ -227,6 +227,7 @@ class TestOpenCodeMessageProcessor(unittest.TestCase):
             start_loading=MagicMock(),
             stop_loading=MagicMock(),
             show_file_changes_artifact=MagicMock(),
+            record_file_change=MagicMock(),
             update_last_prompt_uuid=MagicMock(),
         )
         self.processor = OpenCodeMessageProcessor(self.session)

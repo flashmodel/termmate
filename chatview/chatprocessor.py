@@ -924,7 +924,7 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
         if path and lower_name in ("read", "write", "edit", "apply_patch", "patch"):
             cwd = (self.session.agent_thread.cwd
                    if self.session.agent_thread else self.session.cwd) or ""
-            _, rel_path = _resolve_rel_path(path, cwd)
+            abs_path, rel_path = _resolve_rel_path(path, cwd)
             line_no = None
             diff_text = ""
             if lower_name == "read":
@@ -963,6 +963,23 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
                             rel_path,
                             start_line=start_line,
                         ) or ""
+
+            elif lower_name == "write":
+                new_str = (
+                    input_data.get("content")
+                    or input_data.get("contents")
+                    or input_data.get("text")
+                    or input_data.get("newString")
+                    or input_data.get("new_string")
+                )
+                if new_str:
+                    lines = str(new_str).splitlines()
+                    diff_text = ("@@ -0,0 +1,{} @@\n".format(len(lines))
+                                 + "\n".join("+" + l for l in lines) + "\n")
+
+            # Record file changes for the artifact
+            if abs_path and diff_text and lower_name in ("edit", "write", "apply_patch", "patch"):
+                self.session.record_file_change(abs_path, rel_path, diff_text)
 
             try:
                 line_no = int(line_no) if line_no is not None else None

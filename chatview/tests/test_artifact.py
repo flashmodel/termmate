@@ -97,6 +97,41 @@ class TestArtifact(unittest.TestCase):
         processor.handle_message(res_msg)
         mock_sublime.set_timeout.assert_called_with(mock_session.show_file_changes_artifact, 0)
 
+    def test_opencode_message_processor_artifact(self):
+        from chatview.chatprocessor import OpenCodeMessageProcessor
+        from genfoundry.base_agent import Message
+
+        mock_session = MagicMock()
+        mock_session.agent_thread.cwd = "/workspace"
+        processor = OpenCodeMessageProcessor(mock_session)
+
+        # 1. tool_use edit message
+        edit_msg = Message(
+            "tool_use",
+            content={
+                "name": "edit",
+                "input": {
+                    "filePath": "/workspace/README.md",
+                    "oldString": "# Title\n",
+                    "newString": "# New Title\n",
+                }
+            }
+        )
+        processor.handle_message(edit_msg)
+
+        # Verify session.record_file_change was called
+        mock_session.record_file_change.assert_called_once()
+        abs_p, rel_p, diff_t = mock_session.record_file_change.call_args[0]
+        self.assertEqual(abs_p, "/workspace/README.md")
+        self.assertEqual(rel_p, "README.md")
+        self.assertIn("-# Title", diff_t)
+        self.assertIn("+# New Title", diff_t)
+
+        # 2. Stop message
+        stop_msg = Message("stop", content={})
+        processor.handle_message(stop_msg)
+        mock_sublime.set_timeout.assert_called_with(mock_session.show_file_changes_artifact, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
