@@ -754,6 +754,8 @@ class OpenCodeAgent(BaseAgent):
             self._submit_sse_data("\n".join(data_lines))
 
     def _submit_sse_data(self, raw: str) -> None:
+        if self.options.debug_agent_message:
+            LOG.info("opencode msg: %s", raw)
         try:
             event = json.loads(raw)
         except (TypeError, ValueError):
