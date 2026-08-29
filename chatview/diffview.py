@@ -252,14 +252,13 @@ def parse_numbered_line(line_str: str):
 
 def handle_diff_view_click(view: sublime.View, abs_path: str, click_point: int) -> bool:
     """
-    Handle double-click in a line-numbered diff view.
+    Handle double-click in a diff view.
 
     Jumps to:
     1. Header line -> Opens source file.
     2. Hunk banner -> Jumps to start line of the hunk.
-    3. Numbered code line -> Jumps directly to the exact source line number.
 
-    Returns True if handled, False otherwise.
+    Numbered code lines return False so standard word selection works.
     """
     if click_point is None:
         return False
@@ -286,16 +285,6 @@ def handle_diff_view_click(view: sublime.View, abs_path: str, click_point: int) 
         if new_start:
             line_no = int(new_start)
             _jump_to_source_line(view.window(), abs_path, line_no)
-            return True
-
-    # 3. Numbered code line check
-    parsed = parse_numbered_line(line_str)
-    if parsed:
-        old_no, new_no, sign, _ = parsed
-        # Prefer new line number for additions/context; fallback to old line number for deletions
-        target_line = new_no if new_no is not None else old_no
-        if target_line is not None:
-            _jump_to_source_line(view.window(), abs_path, target_line)
             return True
 
     return False

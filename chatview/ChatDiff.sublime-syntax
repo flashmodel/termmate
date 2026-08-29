@@ -27,19 +27,13 @@ contexts:
       captures:
         1: variable.function.chatview
 
-    # 3. Line-numbered hunk banner: e.g. "           @@ -42,5 +42,5 @@"
-    - match: '^\s*(@@\s*-\d+(?:,\d+)?\s*\+\d+(?:,\d+)?\s*@@)(.*)$'
-      scope: meta.diff.range.unified
+    # 3. Hunk banner: e.g. "           @@ -42,5 +42,6 @@" or "@@ -42,5 +42,6 @@"
+    - match: '^\s*(@@\s*-)(\d+)((?:,\d+)?\s*\+)(\d+)((?:,\d+)?\s*@@)(.*)$'
+      scope: meta.diff.range.unified punctuation.definition.range.diff
       captures:
-        1: variable.function.chatview punctuation.definition.range.diff
-        2: comment.line.diff
-
-    # 4. Standard unnumbered hunk banner: e.g. "@@ -42,5 +42,5 @@"
-    - match: '^(@@\s*-\d+(?:,\d+)?\s*\+\d+(?:,\d+)?\s*@@)(.*)$'
-      scope: meta.diff.range.unified
-      captures:
-        1: variable.function.chatview punctuation.definition.range.diff
-        2: comment.line.diff
+        2: variable.function.chatview
+        4: variable.function.chatview
+        6: comment.line.diff
 
     # 5. Line-numbered deleted line: has old line number, no new line number, -
     - match: '^([ \t]*\d+)\s+(-)(.*)$'

@@ -111,39 +111,29 @@ class TestDiffView(unittest.TestCase):
         self.assertEqual(sign, "+")
         self.assertEqual(content, "def added()")
 
-    def test_handle_diff_view_click_numbered_lines(self):
+    def test_handle_diff_view_click(self):
         # Mock sublime view & window
         mock_view = MagicMock()
         mock_window = MagicMock()
         mock_view.window.return_value = mock_window
 
-        # 1. Click on added line 43
-        mock_view.substr.return_value = "      43 +def added()"
-        mock_view.line.return_value = MagicMock()
-        
         import sublime
-        # Test with a mock abs path
         import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".py") as tf:
-            handled = handle_diff_view_click(mock_view, tf.name, 100)
-            self.assertTrue(handled)
-            mock_window.open_file.assert_called_with(f"{tf.name}:43", sublime.ENCODED_POSITION)
 
-        # 2. Click on deleted line 42
-        mock_window.reset_mock()
-        mock_view.substr.return_value = "  42     -def removed()"
         with tempfile.NamedTemporaryFile(suffix=".py") as tf:
-            handled = handle_diff_view_click(mock_view, tf.name, 100)
+            # 1. Click on diff header
+            mock_view.substr.return_value = f"diff a/{tf.name} b/{tf.name}"
+            handled = handle_diff_view_click(mock_view, tf.name, 10)
             self.assertTrue(handled)
-            mock_window.open_file.assert_called_with(f"{tf.name}:42", sublime.ENCODED_POSITION)
+            mock_window.open_file.assert_called_with(tf.name)
 
-        # 3. Click on hunk banner
-        mock_window.reset_mock()
-        mock_view.substr.return_value = "        @@ -42,5 +50,6 @@"
-        with tempfile.NamedTemporaryFile(suffix=".py") as tf:
-            handled = handle_diff_view_click(mock_view, tf.name, 100)
+            # 2. Click on hunk banner -> jumps to hunk new_start line
+            mock_window.reset_mock()
+            mock_view.substr.return_value = "        @@ -42,5 +50,6 @@"
+            handled = handle_diff_view_click(mock_view, tf.name, 50)
             self.assertTrue(handled)
             mock_window.open_file.assert_called_with(f"{tf.name}:50", sublime.ENCODED_POSITION)
+
 
 
 if __name__ == "__main__":
