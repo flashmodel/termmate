@@ -256,7 +256,7 @@ Set a custom base URL and auth token so Claude routes through OpenRouter (`ANTHR
 
 **Example: Gemini API key for OpenCode**
 
-OpenCode uses the `GOOGLE_GENERATIVE_AI_API_KEY` environment variable. Set it here to authenticate without modifying your system environment:
+OpenCode uses the `GOOGLE_GENERATIVE_AI_API_KEY` environment variable. Set it here to authenticate without modifying your system environment (you may need to remove existing local auth.json via delete `~/.local/share/opencode/auth.json` first):
 
 ```json
 {
