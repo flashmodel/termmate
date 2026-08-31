@@ -56,6 +56,9 @@
     // Set to 0 to load the full conversation history.
     "session_history_limit": 50,
 
+    // Whether to display the agent and model status indicator in the status bar (e.g. "▣ claude(default)").
+    "show_status_indicator": true,
+
     // Path or command name for the coding CLI executable.
     "claude_command": "",
     "codex_command": "",

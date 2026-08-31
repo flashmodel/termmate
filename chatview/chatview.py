@@ -119,8 +119,11 @@ def update_agent_model_status(window, view=None):
     if not window:
         return
 
+    settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+    show_status = settings.get("show_status_indicator", True)
+
     status = None
-    if window.id() in chatview_clients:
+    if show_status and window.id() in chatview_clients:
         agent_provider = window.settings().get(CHAT_AGENT, "claude") or "claude"
         model = window.settings().get(f"chatview_model_{agent_provider}") or "default"
         display_model = format_model_display_name(agent_provider, model)
