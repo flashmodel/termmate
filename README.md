@@ -1,5 +1,8 @@
 # TermMate — Agentic Coding Assistant for Sublime Text
 
+[![Sublime Forum](https://img.shields.io/badge/Sublime_Forum-Discussion-FF9800?logo=sublimetext&logoColor=white)](https://forum.sublimetext.com/t/using-agentic-coding-in-st-with-codex-claude-cli/78323)
+[![Package Control](https://img.shields.io/badge/Package_Control-TermMate-389826?logo=sublimetext&logoColor=white)](https://packagecontrol.io/packages/TermMate)
+
 **Claude Code, OpenAI Codex, OpenCode, and Pi coding agents for Sublime Text**
 
 ![TermMate Screenshot](screenshot.png)
@@ -103,7 +106,9 @@ The example above sets `GEMINI_API_KEY` for Pi Agent authentication.
 
 You can stop a running conversation at any time. Use the shortcut `Cmd+Escape` (Mac) / `Shift+Escape` (Windows/Linux) in the chat window, or run `TermMate: Stop Conversation` from the command palette.
 
-For a detailed guide, see the [TermMate Documentation](https://termmate.app/docs/setup).
+For a detailed guide, see the [TermMate Documentation](https://termmate.app/docs/setup)
+
+Have questions or feedback? Join the [Sublime Forum discussion](https://forum.sublimetext.com/t/using-agentic-coding-in-st-with-codex-claude-cli/78323)
 
 ## Usage & Key Features
 
