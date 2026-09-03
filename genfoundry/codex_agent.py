@@ -147,6 +147,7 @@ class CodexAgent(BaseAgent):
         self._permission_callback: Optional[Callable] = self.options.can_use_tool
         # Track active turn so we know when it completes
         self._active_turn_id: Optional[str] = None
+        self._last_rpc_error: Optional[Any] = None
         # Pending approval responses from the UI, keyed by approval_id
         self._pending_approvals: Dict[str, asyncio.Future] = {}
         # Cache item data from item/started, keyed by itemId
@@ -278,30 +279,20 @@ class CodexAgent(BaseAgent):
             # default / allow-edit → all operations require approval
             thread_params["approvalPolicy"] = "untrusted"
 
+        # Map sandbox_mode to Codex app-server v2 SandboxMode string enum
         sandbox_map = {
-            "read-only": {"type": "readOnly"},
-            "workspace-write": {
-                "type": "workspaceWrite",
-                "writableRoots": writable_roots,
-                "networkAccess": False,
-            },
-            "danger-full-access": {"type": "dangerFullAccess"},
+            "read-only": "read-only",
+            "workspace-write": "workspace-write",
+            "danger-full-access": "danger-full-access",
         }
         if self.options.sandbox_mode:
-            thread_params["sandbox"] = sandbox_map.get(self.options.sandbox_mode, {
-                "type": "workspaceWrite",
-                "writableRoots": writable_roots,
-                "networkAccess": False,
-            })
+            thread_params["sandbox"] = sandbox_map.get(self.options.sandbox_mode, "workspace-write")
         else:
-            # Default to workspace-write with git and add_dirs writable
-            thread_params["sandbox"] = {
-                "type": "workspaceWrite",
-                "writableRoots": writable_roots,
-                "networkAccess": False,
-            }
+            # Default to workspace-write (writable_roots configured in config_overrides)
+            thread_params["sandbox"] = "workspace-write"
 
         method = "thread/resume" if self.options.session_id else "thread/start"
+        self._last_rpc_error = None
         result = await self._rpc_request(method, thread_params)
         if result and isinstance(result, dict):
             thread = result.get("thread", {})
@@ -318,6 +309,14 @@ class CodexAgent(BaseAgent):
                 LOG.info(f"Codex connect {method}: {self.thread_id} (resumed {self._turn_count} turns)")
             else:
                 LOG.info(f"Codex connect {method}: {self.thread_id}")
+        else:
+            err_detail = f": {self._parse_codex_error(self._last_rpc_error)}" if self._last_rpc_error else ""
+            action = "resume session" if self.options.session_id else "start session"
+            err_msg = f"Failed to {action}{err_detail}"
+            LOG.error(err_msg)
+            await self._message_queue.put(
+                Message(MessageType.ERROR.value, content=err_msg)
+            )
 
         if prompt:
             await self.send_message(prompt)
@@ -343,10 +342,13 @@ class CodexAgent(BaseAgent):
 
     async def send_message(self, content: str, parent_tool_use_id: Optional[str] = None, proceed_plan: bool = False) -> None:
         """Send a user message to Codex by starting a new turn on the thread."""
-        if not self._is_connected:
-            raise RuntimeError("Client is not connected. Call connect() first.")
-        if not self.thread_id:
-            raise RuntimeError("No active thread. Call connect() first.")
+        if not self._is_connected or not self.thread_id:
+            err_msg = "Agent not connected. Please restart chat."
+            LOG.error(err_msg)
+            await self._message_queue.put(
+                Message(MessageType.ERROR.value, content=err_msg)
+            )
+            return
 
         self._plan_text = ""
         params: Dict[str, Any] = {
@@ -550,6 +552,7 @@ class CodexAgent(BaseAgent):
             if future and not future.done():
                 if "error" in data:
                     LOG.error(f"RPC error [{rid}]: {data['error']}")
+                    self._last_rpc_error = data["error"]
                     future.set_result(None)
                 else:
                     future.set_result(data.get("result"))

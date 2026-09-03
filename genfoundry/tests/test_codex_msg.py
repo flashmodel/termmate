@@ -384,6 +384,19 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
         finally:
             shutil.rmtree(temp_dir)
 
+    async def test_thread_start_sandbox_parameter(self):
+        fake_proc = FakeProcess()
+        agent = await self._create_agent(fake_proc)
+        try:
+            start_call = next((c for c in self._rpc_calls if c.get("method") == "thread/start"), None)
+            self.assertIsNotNone(start_call)
+            params = start_call.get("params", {})
+            # sandbox must be a string enum, never a dict
+            self.assertIsInstance(params.get("sandbox"), str)
+            self.assertEqual(params.get("sandbox"), "workspace-write")
+        finally:
+            await agent.disconnect()
+
 
 if __name__ == "__main__":
     unittest.main()
