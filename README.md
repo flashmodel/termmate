@@ -61,27 +61,17 @@ curl -fsSL https://pi.dev/install.sh | sh
 
 Authenticate the agents via your terminal, or skip the CLI login by setting API keys directly in TermMate's settings — see [Custom Environment Variables](#custom-environment-variables).
 
-**Claude Code:**
-
 ```bash
+# Claude Code
 /login
-```
 
-**Codex:**
-
-```bash
+# Codex
 codex login
-```
 
-**OpenCode:**
-
-```bash
+# OpenCode
 /connect
-```
 
-**Pi Agent:**
-
-```bash
+# Pi Agent
 /login
 ```
 
