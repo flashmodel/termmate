@@ -98,7 +98,7 @@ You can stop a running conversation at any time. Use the shortcut `Cmd+Escape` (
 
 For a detailed guide, see the [TermMate Documentation](https://termmate.app/docs/setup)
 
-Have questions or feedback? Join the [Sublime Forum discussion](https://forum.sublimetext.com/t/using-agentic-coding-in-st-with-codex-claude-cli/78323)
+Have questions or feedback, join the [Sublime Forum discussion](https://forum.sublimetext.com/t/using-agentic-coding-in-st-with-codex-claude-cli/78323)
 
 ## Usage & Key Features
 
