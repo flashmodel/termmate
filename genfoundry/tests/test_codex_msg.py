@@ -365,18 +365,22 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
             sub_dir = os.path.join(temp_dir, "pkg", "subpkg")
             os.makedirs(os.path.join(sub_dir, ".git"))
 
-            # 3. Worktree pointer file
+            # 3. Worktree pointer file with commondir
             worktree_dir = os.path.join(temp_dir, "pkg", "worktree")
             os.makedirs(worktree_dir)
-            target_git_dir = os.path.join(temp_dir, "real_git_dir")
+            target_git_dir = os.path.join(temp_dir, "real_git_dir", "worktrees", "wt1")
+            common_git_dir = os.path.join(temp_dir, "real_git_dir")
             os.makedirs(target_git_dir)
             with open(os.path.join(worktree_dir, ".git"), "w") as f:
                 f.write(f"gitdir: {target_git_dir}\n")
+            with open(os.path.join(target_git_dir, "commondir"), "w") as f:
+                f.write("../..\n")
 
             dirs = find_git_dirs(temp_dir)
             self.assertIn(root_git, dirs)
             self.assertIn(os.path.join(sub_dir, ".git"), dirs)
             self.assertIn(target_git_dir, dirs)
+            self.assertIn(common_git_dir, dirs)
         finally:
             shutil.rmtree(temp_dir)
 

@@ -53,7 +53,10 @@ def find_codex_cli() -> Optional[str]:
 
 
 def find_git_dirs(workspace_root: Optional[str]) -> List[str]:
-    """Find all .git directories for workspace (root, parent repo, and submodules)."""
+    """
+    Find all .git directories for workspace (root, parent repo, and submodules).
+    Scoped strictly to the logical Git repository belonging to workspace_root.
+    """
     if not workspace_root or not os.path.isdir(workspace_root):
         return []
 
@@ -61,7 +64,7 @@ def find_git_dirs(workspace_root: Optional[str]) -> List[str]:
     git_dirs = set()
 
     def add_path(p: str):
-        abs_p = os.path.abspath(os.path.join(root, p))
+        abs_p = os.path.abspath(p) if os.path.isabs(p) else os.path.abspath(os.path.join(root, p))
         if os.path.isdir(abs_p):
             git_dirs.add(abs_p)
         elif os.path.isfile(abs_p):
@@ -70,7 +73,14 @@ def find_git_dirs(workspace_root: Optional[str]) -> List[str]:
                 with open(abs_p, "r", encoding="utf-8", errors="ignore") as f:
                     txt = f.read().strip()
                 if txt.startswith("gitdir:"):
-                    git_dirs.add(os.path.abspath(os.path.join(os.path.dirname(abs_p), txt[7:].strip())))
+                    target = os.path.abspath(os.path.join(os.path.dirname(abs_p), txt[7:].strip()))
+                    git_dirs.add(target)
+                    # Resolve worktree commondir (shared objects and refs)
+                    commondir_file = os.path.join(target, "commondir")
+                    if os.path.isfile(commondir_file):
+                        with open(commondir_file, "r", encoding="utf-8", errors="ignore") as cf:
+                            c_target = os.path.abspath(os.path.join(target, cf.read().strip()))
+                            git_dirs.add(c_target)
             except Exception:
                 pass
 
@@ -237,7 +247,7 @@ class CodexAgent(BaseAgent):
         if self.options.model:
             thread_params["model"] = self.options.model
 
-        # Discover all relevant .git directories (root repo, submodules, worktrees)
+        # Discover all relevant .git directories strictly for cwd's logical repo boundary (excluding add_dirs)
         git_dirs = find_git_dirs(self.options.cwd)
         writable_roots = list(self.options.add_dirs or [])
         for gd in git_dirs:
