@@ -1,3 +1,4 @@
+import html
 import logging
 import enum
 import os
@@ -735,7 +736,7 @@ class ModelPanel:
 
         stop_hint_html = self.status_hint.render()
 
-        html = f"""
+        panel_html = f"""
         <body id="chatview-model" style="margin: 0; padding: 0;">
             <style>
                 .model-row {{
@@ -781,7 +782,7 @@ class ModelPanel:
                 </a>
                 <a href="set_model" class="model-tag" style="margin-left: 4px;">
                     <span class="label">Model:</span>
-                    <span class="value">{display_model}</span>
+                    <span class="value">{html.escape(display_model)}</span>
                 </a>{plan_tag_html}{stop_hint_html}
             </div>
         </body>
@@ -789,7 +790,7 @@ class ModelPanel:
 
         phantom = sublime.Phantom(
             region,
-            html,
+            panel_html,
             sublime.LAYOUT_BLOCK,
             self._on_navigate
         )
@@ -3060,26 +3061,36 @@ class TermChatSetModelListHandler(sublime_plugin.ListInputHandler):
     def list_items(self):
         # Get the active ChatSession to access available_models
         window = sublime.active_window()
-        if window:
-            window_id = window.id()
-            if window_id in chatview_clients:
-                session = chatview_clients[window_id]
-                if session.available_models:
-                    # Return list of tuples: (display_text, value)
-                    items = [
-                        (f"{m['displayName']} - {m['description']}", m['value'])
-                        for m in session.available_models
-                    ]
+        if not window:
+            return []
 
-                    # Move current model to the front
-                    if self.current_model:
-                        for i, item in enumerate(items):
-                            if item[1] == self.current_model:
-                                items.insert(0, items.pop(i))
-                                break
-                    return items
+        window_id = window.id()
+        if window_id not in chatview_clients:
+            return []
 
-        return []
+        session = chatview_clients[window_id]
+        if not session.available_models:
+            return []
+
+        items = []
+        for m in session.available_models:
+            desc = m.get("description") or ""
+            annotation = m.get("annotation") or ""
+            items.append(sublime.ListInputItem(
+                text=m.get("displayName") or m.get("value") or "",
+                value=m.get("value") or "",
+                details=html.escape(desc) if desc else "",
+                annotation=html.escape(annotation) if annotation else "",
+            ))
+
+        # Move current model to the front
+        if self.current_model:
+            for i, item in enumerate(items):
+                if item.value == self.current_model:
+                    items.insert(0, items.pop(i))
+                    break
+
+        return items
 
     def placeholder(self):
         return "Select a model"

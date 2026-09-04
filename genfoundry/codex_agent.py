@@ -176,6 +176,10 @@ class CodexAgent(BaseAgent):
                     "displayName": m.get("displayName") or m.get("id", ""),
                     "description": m.get("description", ""),
                     "value": m.get("id", ""),
+                    "inputModalities": m.get("inputModalities") or [],
+                    "supportedReasoningEfforts": m.get("supportedReasoningEfforts") or [],
+                    "defaultReasoningEffort": m.get("defaultReasoningEffort"),
+                    "isDefault": m.get("isDefault", False),
                 }
                 for m in result.get("data", [])
                 if m.get("id") and not m.get("hidden", False)

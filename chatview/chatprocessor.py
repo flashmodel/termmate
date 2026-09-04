@@ -61,6 +61,21 @@ def _format_tool_arguments(arguments):
     return text
 
 
+def format_model_badge(m: dict) -> str:
+    """Format model capability badge using default base heuristics."""
+    return BaseChatMessageProcessor(None).format_model_badge(m)
+
+
+def format_model_display(m: dict) -> tuple:
+    """Format raw model data for UI presentation using default base heuristics."""
+    return BaseChatMessageProcessor(None).format_model_display(m)
+
+
+def normalize_model(m: dict) -> dict:
+    """Normalize model dictionary using default base processor."""
+    return BaseChatMessageProcessor(None).normalize_model(m)
+
+
 def _make_tool_file_re(tool_names):
     alt = "|".join(re.escape(n) for n in tool_names)
     return re.compile(rf'^⏺ (?:{alt}) (.+?)(?:#L(\d+)(?:-L(\d+))?)?(?:,.*)?$')
@@ -216,6 +231,56 @@ class BaseChatMessageProcessor:
         self.last_is_tool_call = False
         self._plan_text = ""
         self._tool_file_re = _make_tool_file_re(self._TOOL_FILE_NAMES) if self._TOOL_FILE_NAMES else None
+
+    def format_model_badge(self, m: dict) -> str:
+        """Format a compact reasoning/thinking badge based strictly on structured capabilities."""
+        if m.get("supportsAdaptiveThinking"):
+            return "Thinking"
+
+        reasoning_efforts = m.get("supportedReasoningEfforts") or m.get("supportedEffortLevels") or []
+        default_effort = m.get("defaultReasoningEffort")
+        if reasoning_efforts or (default_effort and default_effort != "none") or m.get("supportsEffort"):
+            return "Reasoning"
+
+        return ""
+
+    def format_model_display(self, m: dict) -> tuple:
+        """Format raw model data for UI presentation.
+        Returns (display_name, value, description, annotation).
+        """
+        value = m.get("value") or m.get("model") or m.get("id") or ""
+        display_name = m.get("displayName") or m.get("title") or m.get("name") or value
+        desc = (m.get("description") or "").replace("`", "")
+        desc = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', desc)
+        desc = re.sub(r'<([^>]+)>', r'\1', desc)
+        desc = " ".join(desc.split())
+        if len(desc) > 120:
+            desc = desc[:117] + "..."
+        annotation = self.format_model_badge(m)
+        if annotation:
+            # Ensure pure plain text with no HTML markup
+            annotation = re.sub(r'<[^>]+>', '', annotation).strip()
+        return display_name, value, desc, annotation
+
+    def normalize_model(self, m: dict) -> dict:
+        """Enrich raw model dict with standard display fields while retaining all raw keys."""
+        item = dict(m)
+        display_name, value, desc, annotation = self.format_model_display(m)
+        item["displayName"] = display_name
+        item["value"] = value
+        item["description"] = desc
+        item["annotation"] = annotation
+        return item
+
+    def set_available_models(self, models):
+        """Normalize and store available models, retaining raw keys while adding standard display fields."""
+        if not isinstance(models, list):
+            return
+        if not self.session:
+            return
+        self.session.available_models = [
+            self.normalize_model(m) for m in models if isinstance(m, dict)
+        ]
 
     def handle_message(self, message):
         """Dispatch agent message to appropriate handler."""
@@ -433,13 +498,13 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
                     response_data = response_outer.get("response", {})
                     models = response_data.get("models", [])
                     if models:
-                        self.session.available_models = models
+                        self.set_available_models(models)
 
         elif message.type == "models_update":
             if hasattr(message, "content") and isinstance(message.content, dict):
                 models = message.content.get("models", [])
                 if models:
-                    self.session.available_models = models
+                    self.set_available_models(models)
 
     def _format_tool_block(self, block):
         name = block.get("name")
@@ -615,7 +680,7 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
             if hasattr(message, "content") and isinstance(message.content, dict):
                 models = message.content.get("models", [])
                 if models:
-                    self.session.available_models = models
+                    self.set_available_models(models)
 
         elif message.type == "result":
             # Flush markdown formatter buffer
@@ -827,7 +892,7 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
             content = message.content if isinstance(message.content, dict) else {}
             models = content.get("models", [])
             if models:
-                self.session.available_models = models
+                self.set_available_models(models)
         elif message.type == "plan_delta":
             content = message.content if isinstance(message.content, str) else ""
             if content:
@@ -1183,13 +1248,13 @@ class PiMessageProcessor(BaseChatMessageProcessor):
                     response_data = response_outer.get("response", {})
                     models = response_data.get("models", [])
                     if models:
-                        self.session.available_models = models
+                        self.set_available_models(models)
 
         elif message.type == "models_update":
             if hasattr(message, "content") and isinstance(message.content, dict):
                 models = message.content.get("models", [])
                 if models:
-                    self.session.available_models = models
+                    self.set_available_models(models)
 
     def _format_tool_block(self, block):
         name = block.get("name")

@@ -12,6 +12,9 @@ from chatview.chatprocessor import (
     CodexMessageProcessor,
     OpenCodeMessageProcessor,
     _parse_markdown_file_target,
+    format_model_badge,
+    format_model_display,
+    normalize_model,
 )
 from genfoundry.base_agent import Message
 
@@ -322,6 +325,89 @@ class TestOpenCodeMessageProcessor(unittest.TestCase):
         })
 
         self.assertEqual(output, "⏺ command (python3 -m unittest)")
+
+
+class TestModelFormatting(unittest.TestCase):
+
+    def test_format_model_badge_capabilities(self):
+        # Adaptive thinking model
+        m_thinking = {
+            "value": "claude-3-7-sonnet-latest",
+            "displayName": "Sonnet 3.7",
+            "description": "Claude 3.7 with hybrid thinking",
+            "inputModalities": ["text", "image"],
+            "supportsAdaptiveThinking": True,
+        }
+        self.assertEqual(format_model_badge(m_thinking), "Thinking")
+
+        # Free / standard model without reasoning capability
+        m_free = {
+            "value": "meta-llama/llama-3.3-70b-instruct:free",
+            "displayName": "Llama 3.3 70B (free)",
+        }
+        self.assertEqual(format_model_badge(m_free), "")
+
+        # Model with structured effort levels
+        m_1m = {
+            "value": "google/gemini-2.5-pro",
+            "displayName": "Gemini 2.5 Pro [1M]",
+            "description": "1M context window model",
+            "supportedReasoningEfforts": ["low", "high"],
+        }
+        self.assertEqual(format_model_badge(m_1m), "Reasoning")
+
+        # Model with default reasoning effort
+        m_default_effort = {
+            "value": "openai/o1",
+            "displayName": "o1",
+            "defaultReasoningEffort": "medium",
+        }
+        self.assertEqual(format_model_badge(m_default_effort), "Reasoning")
+
+    def test_format_model_display_normalizes_fields(self):
+        m = {
+            "value": "deepseek/deepseek-r1",
+            "displayName": "DeepSeek R1",
+            "description": "DeepSeek reasoning model\r\nwith multi-line description.",
+            "supportedReasoningEfforts": ["high"],
+        }
+        display_name, value, desc, annotation = format_model_display(m)
+        self.assertEqual(display_name, "DeepSeek R1")
+        self.assertEqual(value, "deepseek/deepseek-r1")
+        self.assertEqual(desc, "DeepSeek reasoning model with multi-line description.")
+        self.assertEqual(annotation, "Reasoning")
+
+    def test_normalize_model_retains_raw_data(self):
+        raw = {
+            "model": "gpt-5.6-turbo",
+            "title": "GPT-5.6 Turbo",
+            "description": "Fast next-gen model",
+            "inputModalities": ["text", "image"],
+            "supportedReasoningEfforts": ["low", "high"],
+            "customInternalFlag": 12345,
+        }
+        enriched = normalize_model(raw)
+        # Standardized keys
+        self.assertEqual(enriched["displayName"], "GPT-5.6 Turbo")
+        self.assertEqual(enriched["value"], "gpt-5.6-turbo")
+        self.assertEqual(enriched["description"], "Fast next-gen model")
+        self.assertEqual(enriched["annotation"], "Reasoning")
+        # Raw keys retained
+        self.assertEqual(enriched["inputModalities"], ["text", "image"])
+        self.assertEqual(enriched["supportedReasoningEfforts"], ["low", "high"])
+        self.assertEqual(enriched["customInternalFlag"], 12345)
+
+    def test_normalize_model_cleans_markdown_links_and_urls(self):
+        raw = {
+            "id": "poolside/laguna-s-2.1",
+            "name": "Laguna S 2.1",
+            "description": "Latest coding agent model from [Poolside](<https://poolside.ai/>). Laguna S 2.1 is a 118B total parameter model...",
+        }
+        enriched = normalize_model(raw)
+        self.assertEqual(
+            enriched["description"],
+            "Latest coding agent model from Poolside. Laguna S 2.1 is a 118B total parameter model...",
+        )
 
 
 if __name__ == "__main__":
