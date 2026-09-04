@@ -209,6 +209,7 @@ When confirmed, TermMate forks the session at the selected prompt, removes all s
 | **Set Workspace** | - | - | `TermMate: Set Working Directory` |
 | **Plan Mode** | - | - | `TermMate: Plan Mode` |
 | **Approve Mode** | - | - | `TermMate: Approve Mode` |
+| **Reasoning Effort** | - | - | `TermMate: Reasoning Effort` |
 
 ## Configuration
 
