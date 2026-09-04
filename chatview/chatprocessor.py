@@ -325,6 +325,8 @@ class BaseChatMessageProcessor:
         self.session.available_models = [
             self.normalize_model(m) for m in models if isinstance(m, dict)
         ]
+        if hasattr(self.session, "on_available_models_updated") and callable(self.session.on_available_models_updated):
+            self.session.on_available_models_updated()
 
     def handle_message(self, message):
         """Dispatch agent message to appropriate handler."""

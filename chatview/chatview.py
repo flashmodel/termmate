@@ -129,6 +129,12 @@ def update_agent_model_status(window, view=None):
         agent_provider = window.settings().get(CHAT_AGENT, "claude") or "claude"
         model = window.settings().get(f"chatview_model_{agent_provider}") or "default"
         display_model = format_model_display_name(agent_provider, model)
+
+        session = chatview_clients.get(window.id())
+        think_level = window.settings().get(f"chatview_think_level_{agent_provider}")
+        if think_level and session and any(m.get("value") == model and m.get("annotation") for m in session.available_models):
+            display_model = f"{display_model}:{think_level}"
+
         status = f"▣ {agent_provider}({display_model})"
 
     for target in [view] if view else window.views():
@@ -1337,6 +1343,10 @@ class ChatSession:
             add_dirs=self.add_dirs
         )
         self.agent_thread.start()
+
+    def on_available_models_updated(self):
+        """Called when available models are loaded or updated from the agent."""
+        update_agent_model_status(self.window)
 
     def _reset_markdown_formatter(self):
         self.markdown_formatter = MarkdownFormatter(
@@ -3258,13 +3268,8 @@ class TermChatSetModelCommand(sublime_plugin.WindowCommand):
 
         # If level was not explicitly provided and the selected model
         # supports thinking/reasoning, automatically prompt for thinking level.
-        if not level and session and session.available_models:
-            selected_model = next(
-                (m for m in session.available_models if (m.get("value") or m.get("model") or m.get("id")) == model),
-                None
-            )
-            if selected_model and selected_model.get("annotation"):
-                sublime.set_timeout(lambda: self.window.run_command("term_chat_set_think_level"), 10)
+        if not level and session and any(m.get("value") == model and m.get("annotation") for m in session.available_models):
+            sublime.set_timeout(lambda: self.window.run_command("term_chat_set_think_level"), 10)
 
     def input(self, args):
         if "model" in args:
@@ -3345,6 +3350,8 @@ class TermChatSetThinkLevelCommand(sublime_plugin.WindowCommand):
             session.model_phantom.update()
             if session.agent_thread:
                 session.agent_thread.update_config(think_level=level)
+
+        update_agent_model_status(self.window)
 
     def input(self, args):
         agent_provider = self.window.settings().get(CHAT_AGENT, "claude")
