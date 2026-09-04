@@ -9,12 +9,14 @@ from unittest.mock import MagicMock, patch
 sys.modules.setdefault("sublime", MagicMock())
 
 from chatview.chatprocessor import (
+    ClaudeMessageProcessor,
     CodexMessageProcessor,
     OpenCodeMessageProcessor,
     _parse_markdown_file_target,
     format_model_badge,
     format_model_display,
     normalize_model,
+    get_think_presets,
 )
 from genfoundry.base_agent import Message
 
@@ -408,6 +410,34 @@ class TestModelFormatting(unittest.TestCase):
             enriched["description"],
             "Latest coding agent model from Poolside. Laguna S 2.1 is a 118B total parameter model...",
         )
+
+
+class TestThinkPresets(unittest.TestCase):
+    def test_codex_with_advertised_efforts(self):
+        active_model = {
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": "low", "description": "Quick reasoning"},
+                {"reasoningEffort": "high", "description": "Deep reasoning"},
+            ]
+        }
+        presets = get_think_presets("codex", active_model)
+        self.assertEqual(len(presets), 2)
+        self.assertEqual(presets[0]["value"], "low")
+        self.assertEqual(presets[0]["description"], "Quick reasoning")
+        self.assertEqual(presets[1]["value"], "high")
+        self.assertEqual(presets[1]["description"], "Deep reasoning")
+
+    def test_codex_without_data_uses_safe_standard_presets(self):
+        presets = get_think_presets("codex", None)
+        values = [p["value"] for p in presets]
+        self.assertEqual(values, ["auto", "low", "medium", "high", "xhigh"])
+        # none is not in the blind fallback
+        self.assertNotIn("none", values)
+
+    def test_claude_presets(self):
+        presets = get_think_presets("claude", None)
+        values = [p["value"] for p in presets]
+        self.assertEqual(values, ["adaptive", "low", "medium", "high", "xhigh", "none"])
 
 
 if __name__ == "__main__":

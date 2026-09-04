@@ -268,6 +268,9 @@ class CodexAgent(BaseAgent):
         if self.options.disallowed_tools and "AskUserQuestion" in self.options.disallowed_tools:
             config_overrides["features.default_mode_request_user_input"] = False
 
+        if getattr(self.options, "think_level", None) and self.options.think_level not in ("auto", "default"):
+            config_overrides["model_reasoning_effort"] = self.options.think_level
+
         if config_overrides:
             thread_params["config"] = config_overrides
 
@@ -330,6 +333,11 @@ class CodexAgent(BaseAgent):
         self.options.model = model
         LOG.info(f"Codex model switched to: {model}")
 
+    def set_think_level(self, level: str) -> None:
+        """Dynamically switch the reasoning effort level; takes effect on the next turn."""
+        self.options.think_level = level
+        LOG.info(f"Codex reasoning effort switched to: {level}")
+
     def _extract_turn_id(self, data: dict) -> Optional[str]:
         """Extract turnId from a message params or result dict."""
         if not data:
@@ -363,6 +371,8 @@ class CodexAgent(BaseAgent):
             params["expectedTurnId"] = self._active_turn_id
         if self.options.model:
             params["model"] = self.options.model
+        if getattr(self.options, "think_level", None) and self.options.think_level not in ("auto", "default"):
+            params["effort"] = self.options.think_level
 
         # Determine the target collaboration mode for this turn.
         # - If proceed_plan is True, we must explicitly exit Plan mode to execute.

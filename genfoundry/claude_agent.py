@@ -132,6 +132,11 @@ class ClaudeCodeAgent(BaseAgent):
         if self.options.model:
             cmd.extend(["--model", self.options.model])
 
+        # Add thinking/reasoning effort if specified and supported by CLI flag
+        think_level = getattr(self.options, "think_level", None)
+        if think_level and think_level.lower() not in ("auto", "default", "adaptive", "none", "off"):
+            cmd.extend(["--effort", think_level])
+
         if self.options.add_dirs:
             for directory in self.options.add_dirs:
                 cmd.extend(["--add-dir", str(directory)])
@@ -176,6 +181,10 @@ class ClaudeCodeAgent(BaseAgent):
 
         # Send initialization control_request
         await self._send_initialize_request()
+
+        # Apply initial thinking tokens / effort via control request if specified
+        if think_level:
+            await self.set_think_level(think_level)
 
         # Send initial prompt if provided
         if prompt:
@@ -249,6 +258,39 @@ class ClaudeCodeAgent(BaseAgent):
             "model": model,
         }
         await self._send_control_request(request)
+
+    async def set_think_level(self, level: str) -> None:
+        """
+        Dynamically adjust thinking budget during an active conversation.
+
+        Args:
+            level: Symbolic effort level (e.g. 'none', 'off', 'low', 'medium', 'high', 'xhigh', 'adaptive').
+        """
+        self.options.think_level = level
+        if not self.is_connected:
+            return
+
+        token_budget_map = {
+            "none": 0,
+            "off": 0,
+            "low": 2048,
+            "medium": 8192,
+            "high": 16384,
+            "xhigh": 32768,
+            "max": 32768,
+            "adaptive": None,
+            "auto": None,
+            "default": None,
+        }
+        tokens = token_budget_map.get(level.lower(), None) if isinstance(level, str) else level
+
+        request = {
+            "subtype": "set_max_thinking_tokens",
+            "max_thinking_tokens": tokens,
+        }
+        await self._send_control_request(request)
+        self.options.think_level = level
+        LOG.info(f"Claude think_level updated to: {level} (max_tokens: {tokens})")
 
     async def rewind_files(self, user_message_id: str) -> None:
         """Restore all files modified after the given user message back to their

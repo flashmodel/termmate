@@ -93,6 +93,7 @@ class AgentOptions:
         add_dirs: Optional[List[str]] = None,
         debug_agent_message: bool = False,
         enable_file_checkpoint: bool = False,
+        think_level: Optional[str] = None,
     ):
         import os
         self.cwd = cwd or os.getcwd()
@@ -112,6 +113,7 @@ class AgentOptions:
         self.add_dirs = add_dirs or []
         self.debug_agent_message = debug_agent_message
         self.enable_file_checkpoint = enable_file_checkpoint
+        self.think_level = think_level
 
 
 class BaseAgent(abc.ABC):
@@ -119,6 +121,10 @@ class BaseAgent(abc.ABC):
 
     def __init__(self, options: Optional[AgentOptions] = None):
         self.options = options or AgentOptions()
+
+    def set_think_level(self, level: str) -> None:
+        """Set reasoning / thinking effort level."""
+        self.options.think_level = level
 
     @abc.abstractmethod
     async def connect(self, prompt: Optional[str] = None) -> None:

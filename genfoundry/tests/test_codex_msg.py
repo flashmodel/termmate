@@ -60,9 +60,10 @@ class FakeProcess:
 
 class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
 
-    async def _create_agent(self, fake_proc: FakeProcess) -> CodexAgent:
+    async def _create_agent(self, fake_proc: FakeProcess, opts: AgentOptions = None) -> CodexAgent:
         """Create a CodexAgent with a fake subprocess."""
-        opts = AgentOptions(cli_path="/usr/bin/true")
+        if opts is None:
+            opts = AgentOptions(cli_path="/usr/bin/true")
         agent = CodexAgent(options=opts)
 
         # Intercept _write_json to capture outgoing requests and auto-reply
@@ -394,6 +395,40 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
             # sandbox must be a string enum, never a dict
             self.assertIsInstance(params.get("sandbox"), str)
             self.assertEqual(params.get("sandbox"), "workspace-write")
+        finally:
+            await agent.disconnect()
+
+    async def test_thread_start_think_level_and_turn_effort(self):
+        fake_proc = FakeProcess()
+        opts = AgentOptions(cli_path="/usr/bin/true", think_level="high")
+        agent = await self._create_agent(fake_proc, opts=opts)
+        try:
+            # 1. Verify thread/start config contains model_reasoning_effort
+            start_call = next((c for c in self._rpc_calls if c.get("method") == "thread/start"), None)
+            self.assertIsNotNone(start_call)
+            config = start_call.get("params", {}).get("config", {})
+            self.assertEqual(config.get("model_reasoning_effort"), "high")
+
+            # 2. Verify turn/start receives effort param
+            await agent.send_message("Solve this puzzle")
+            turn_call = next((c for c in self._rpc_calls if c.get("method") == "turn/start"), None)
+            self.assertIsNotNone(turn_call)
+            turn_params = turn_call.get("params", {})
+            self.assertEqual(turn_params.get("effort"), "high")
+
+            # 3. Dynamically change think level and verify next turn
+            agent.set_think_level("low")
+            await agent.send_message("Solve faster")
+            turn_calls = [c for c in self._rpc_calls if c.get("method") == "turn/start"]
+            self.assertGreaterEqual(len(turn_calls), 2)
+            self.assertEqual(turn_calls[-1].get("params", {}).get("effort"), "low")
+
+            # 4. Set to auto and verify effort is not attached (allowing model default)
+            agent.set_think_level("auto")
+            await agent.send_message("Solve normally")
+            turn_calls = [c for c in self._rpc_calls if c.get("method") == "turn/start"]
+            self.assertGreaterEqual(len(turn_calls), 3)
+            self.assertNotIn("effort", turn_calls[-1].get("params", {}))
         finally:
             await agent.disconnect()
 

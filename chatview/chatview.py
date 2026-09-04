@@ -18,7 +18,7 @@ from ..genfoundry.codex_agent import get_codex_session_info
 from ..genfoundry.pi_agent import get_pi_session_tail
 from .chatprocessor import (
     ClaudeMessageProcessor, CodexMessageProcessor, PiMessageProcessor,
-    OpenCodeMessageProcessor,
+    OpenCodeMessageProcessor, get_think_presets,
 )
 from .chatpanel import (
     LoadingAnimation, NoticePhantom, RewindConfirmPanel, StatusHint,
@@ -51,6 +51,7 @@ CHAT_INPUT_START = "chatview_input_start"
 CHAT_INPUT_ANCHOR = "chatview_input_anchor"
 CHAT_WORKSPACE = "chatview_active_workspace"
 CHAT_MODEL = "chatview_model"
+CHAT_THINK_LEVEL = "chatview_think_level"
 CHAT_PLAN_MODE = "chatview_plan_mode"
 CHAT_AGENT = "chatview_agent_provider"
 CHAT_SESSION_ID = "chatview_session_id"
@@ -360,6 +361,7 @@ class AgentThread(threading.Thread):
                 self.anthropic_config.get("agent_provider", "claude") == "claude"
                 and self.anthropic_config.get("enable_file_checkpoint", True)
             ),
+            think_level=self.anthropic_config.get("think_level"),
         )
 
         agent_provider = self.anthropic_config.get("agent_provider", "claude")
@@ -632,6 +634,23 @@ class AgentThread(threading.Thread):
                     self.loop
                 )
                 LOG.info(f"Updated Pi model to: {model}")
+
+        if "think_level" in kwargs:
+            think_level = kwargs["think_level"]
+            if isinstance(self.agent, CodexAgent):
+                self.agent.set_think_level(think_level)
+                LOG.info(f"Updated Codex think_level to: {think_level}")
+            elif isinstance(self.agent, ClaudeCodeAgent):
+                asyncio.run_coroutine_threadsafe(
+                    self.agent.set_think_level(think_level),
+                    self.loop
+                )
+                LOG.info(f"Updated Claude think_level to: {think_level}")
+            elif hasattr(self.agent, "set_think_level"):
+                res = self.agent.set_think_level(think_level)
+                if asyncio.iscoroutine(res):
+                    asyncio.run_coroutine_threadsafe(res, self.loop)
+                LOG.info(f"Updated think_level to: {think_level}")
 
 
 class InputPromptMarker:
@@ -1292,11 +1311,13 @@ class ChatSession:
 
         # Use provider-specific model key so switching agents won't carry over incompatible models
         model = self.window.settings().get(f"chatview_model_{agent_provider}") or None
+        think_level = self.window.settings().get(f"chatview_think_level_{agent_provider}") or None
 
         disallowed_tools = self._get_disallowed_tools(settings)
 
         anthropic_config = {
             "model": model,
+            "think_level": think_level,
             "plan_mode": self.window.settings().get(CHAT_PLAN_MODE) == PlanMode.PLANNING.value,
             "allowed_tools": settings.get("allowed_tools"),
             "disallowed_tools": disallowed_tools,
@@ -3052,8 +3073,9 @@ class TermChatInterruptCommand(sublime_plugin.WindowCommand):
 
 
 class TermChatSetModelListHandler(sublime_plugin.ListInputHandler):
-    def __init__(self, current_model=None):
+    def __init__(self, current_model=None, think_level=None):
         self.current_model = current_model
+        self.think_level = think_level
 
     def name(self):
         return "model"
@@ -3072,13 +3094,20 @@ class TermChatSetModelListHandler(sublime_plugin.ListInputHandler):
         if not session.available_models:
             return []
 
+        agent_provider = window.settings().get(CHAT_AGENT, "claude")
+        think_level = self.think_level or window.settings().get(f"chatview_think_level_{agent_provider}")
+
         items = []
         for m in session.available_models:
             desc = m.get("description") or ""
             annotation = m.get("annotation") or ""
+            val = m.get("value") or ""
+            if val == self.current_model and annotation and think_level:
+                annotation = f"{annotation} · {think_level}"
+
             items.append(sublime.ListInputItem(
-                text=m.get("displayName") or m.get("value") or "",
-                value=m.get("value") or "",
+                text=m.get("displayName") or val or "",
+                value=val,
                 details=html.escape(desc) if desc else "",
                 annotation=html.escape(annotation) if annotation else "",
             ))
@@ -3226,11 +3255,85 @@ class TermChatSetModelCommand(sublime_plugin.WindowCommand):
                 # Get current model to highlight it
                 agent_provider = self.window.settings().get(CHAT_AGENT, "claude")
                 current_model = self.window.settings().get(f"chatview_model_{agent_provider}")
+                think_level = self.window.settings().get(f"chatview_think_level_{agent_provider}")
                 # Use ListInputHandler for dropdown selection
-                return TermChatSetModelListHandler(current_model)
+                return TermChatSetModelListHandler(current_model, think_level=think_level)
 
         # Fallback to TextInputHandler for manual input
         return TermChatSetModelTextHandler()
+
+
+class TermChatSetThinkLevelListHandler(sublime_plugin.ListInputHandler):
+    def __init__(self, current_level=None, agent_provider="claude", active_model=None):
+        self.current_level = current_level
+        self.agent_provider = agent_provider
+        self.active_model = active_model or {}
+
+    def name(self):
+        return "level"
+
+    def list_items(self):
+        presets = get_think_presets(self.agent_provider, self.active_model)
+        items = [
+            sublime.ListInputItem(
+                text=p["text"],
+                value=p["value"],
+                details=html.escape(p.get("description", "")),
+            )
+            for p in presets
+        ]
+
+        # Move current level to the front
+        if self.current_level:
+            for i, item in enumerate(items):
+                if item.value == self.current_level:
+                    items.insert(0, items.pop(i))
+                    break
+
+        return items
+
+    def placeholder(self):
+        return "Select thinking / reasoning level"
+
+    def description(self, value, text):
+        return f"Set Thinking Level: {value}"
+
+
+class TermChatSetThinkLevelCommand(sublime_plugin.WindowCommand):
+    """
+    Sets the thinking / reasoning effort level for ChatView sessions in the current window.
+    """
+    def run(self, level):
+        if not level:
+            return
+        level = level.strip()
+        agent_provider = self.window.settings().get(CHAT_AGENT, "claude")
+        self.window.settings().set(f"chatview_think_level_{agent_provider}", level)
+        self.window.settings().set(CHAT_THINK_LEVEL, level)
+        sublime.status_message(f"{PACKAGE_NAME} thinking level set to: {level}")
+
+        window_id = self.window.id()
+        if window_id in chatview_clients:
+            session = chatview_clients[window_id]
+            if session.agent_thread:
+                session.agent_thread.update_config(think_level=level)
+
+    def input(self, args):
+        agent_provider = self.window.settings().get(CHAT_AGENT, "claude")
+        current_level = self.window.settings().get(f"chatview_think_level_{agent_provider}")
+
+        active_model = {}
+        window_id = self.window.id()
+        if window_id in chatview_clients:
+            session = chatview_clients[window_id]
+            current_model_val = self.window.settings().get(f"chatview_model_{agent_provider}")
+            if session.available_models and current_model_val:
+                for m in session.available_models:
+                    if m.get("value") == current_model_val:
+                        active_model = m
+                        break
+
+        return TermChatSetThinkLevelListHandler(current_level, agent_provider, active_model)
 
 
 class TermChatPlanModeInputHandler(sublime_plugin.ListInputHandler):

@@ -28,6 +28,10 @@
         "command": "term_chat_set_model"
     },
     {
+        "caption": "TermMate: Reasoning Effort\tthinking level",
+        "command": "term_chat_set_think_level"
+    },
+    {
         "caption": "TermMate: Agent\tswitch agent provider",
         "command": "term_chat_set_agent"
     },

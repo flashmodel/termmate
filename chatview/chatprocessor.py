@@ -220,11 +220,55 @@ def _parse_markdown_file_target(target, cwd):
     return path, line, column
 
 
+_REASONING_EFFORT_DESCRIPTIONS = {
+    "auto": "Use model default reasoning effort",
+    "default": "Use model default reasoning effort",
+    "none": "Disable reasoning",
+    "minimal": "Lowest reasoning effort",
+    "low": "Fast responses with light reasoning",
+    "medium": "Balanced speed and reasoning depth (standard)",
+    "high": "Deep reasoning for complex coding tasks",
+    "xhigh": "Maximum reasoning effort",
+    "adaptive": "Dynamic thinking managed by model (default)",
+}
+
+
 class BaseChatMessageProcessor:
     """
     Handles buffering, formatting, and displaying messages from the agent.
     """
     _TOOL_FILE_NAMES = ()
+
+    @classmethod
+    def get_default_think_presets(cls) -> list:
+        """Return fallback reasoning/thinking presets when no model data is loaded."""
+        return []
+
+    @classmethod
+    def normalize_think_efforts(cls, efforts: list) -> list:
+        """Normalize raw effort list/presets into uniform [{'value', 'text', 'description'}, ...]."""
+        items = []
+        for effort in efforts:
+            if isinstance(effort, dict):
+                val = effort.get("reasoningEffort") or effort.get("value") or effort.get("effort") or ""
+                desc = effort.get("description") or _REASONING_EFFORT_DESCRIPTIONS.get(val, "Reasoning effort level")
+                text = effort.get("text") or val
+            elif isinstance(effort, (tuple, list)) and len(effort) >= 2:
+                val, desc = effort[0], effort[1]
+                text = val
+            elif isinstance(effort, str):
+                val = effort
+                text = effort
+                desc = _REASONING_EFFORT_DESCRIPTIONS.get(val, "Reasoning effort level")
+            else:
+                continue
+            if val:
+                items.append({
+                    "value": str(val),
+                    "text": str(text),
+                    "description": str(desc),
+                })
+        return items
 
     def __init__(self, session):
         self.session = session
@@ -399,6 +443,17 @@ class BaseChatMessageProcessor:
 
 class ClaudeMessageProcessor(BaseChatMessageProcessor):
     _TOOL_FILE_NAMES = ("Read", "Edit", "Write")
+
+    @classmethod
+    def get_default_think_presets(cls) -> list:
+        return [
+            {"value": "adaptive", "text": "adaptive", "description": "Dynamic thinking managed by model (default)"},
+            {"value": "low", "text": "low", "description": "Light thinking budget (~2k tokens)"},
+            {"value": "medium", "text": "medium", "description": "Standard thinking depth (~8k tokens)"},
+            {"value": "high", "text": "high", "description": "Comprehensive reasoning (~16k tokens)"},
+            {"value": "xhigh", "text": "xhigh", "description": "Extended thinking depth for Opus 4.7 (~32k tokens)"},
+            {"value": "none", "text": "none", "description": "Disable extended thinking (0 tokens)"},
+        ]
 
     def _handle_typed_message(self, message):
         if message.type == "assistant":
@@ -624,6 +679,16 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
 class CodexMessageProcessor(BaseChatMessageProcessor):
     _TOOL_FILE_NAMES = ("fileChange", "ImageView")
 
+    @classmethod
+    def get_default_think_presets(cls) -> list:
+        return [
+            {"value": "auto", "text": "auto", "description": "Model default reasoning effort"},
+            {"value": "low", "text": "low", "description": "Fast responses with light reasoning"},
+            {"value": "medium", "text": "medium", "description": "Balanced speed and reasoning depth (standard)"},
+            {"value": "high", "text": "high", "description": "Deep reasoning for complex coding tasks"},
+            {"value": "xhigh", "text": "xhigh", "description": "Maximum reasoning effort"},
+        ]
+
     def _handle_typed_message(self, message):
         if message.type == "assistant":
             self.session.start_loading()
@@ -847,6 +912,14 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
     """Render normalized OpenCode server events in the native chat view."""
 
     _TOOL_FILE_NAMES = ("fileChange", "read", "write", "edit", "apply_patch")
+
+    @classmethod
+    def get_default_think_presets(cls) -> list:
+        return [
+            {"value": "low", "text": "low", "description": "Light reasoning"},
+            {"value": "medium", "text": "medium", "description": "Standard reasoning"},
+            {"value": "high", "text": "high", "description": "High reasoning"},
+        ]
 
     def _handle_typed_message(self, message):
         # Unlike Codex, OpenCode's adapter emits only streaming text and does
@@ -1077,6 +1150,15 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
 
 class PiMessageProcessor(BaseChatMessageProcessor):
     _TOOL_FILE_NAMES = ("read", "edit", "write")
+
+    @classmethod
+    def get_default_think_presets(cls) -> list:
+        return [
+            {"value": "minimal", "text": "minimal", "description": "Minimal reasoning effort"},
+            {"value": "low", "text": "low", "description": "Light reasoning effort"},
+            {"value": "medium", "text": "medium", "description": "Standard reasoning effort"},
+            {"value": "high", "text": "high", "description": "High reasoning effort"},
+        ]
 
     def __init__(self, session):
         super().__init__(session)
@@ -1353,4 +1435,36 @@ class PiMessageProcessor(BaseChatMessageProcessor):
         if diff_text:
             return header + "\n" + self._render_diff_block(diff_text)
         return header
+
+
+PROCESSOR_MAP = {
+    "claude": ClaudeMessageProcessor,
+    "codex": CodexMessageProcessor,
+    "opencode": OpenCodeMessageProcessor,
+    "pi": PiMessageProcessor,
+}
+
+
+def get_processor_class(agent_provider: str):
+    if not agent_provider:
+        return BaseChatMessageProcessor
+    return PROCESSOR_MAP.get(agent_provider.lower(), BaseChatMessageProcessor)
+
+
+def get_think_presets(agent_provider: str, active_model: dict = None) -> list:
+    """
+    Return a unified list of thinking/reasoning effort presets for UI presentation:
+    [{'value': str, 'text': str, 'description': str}, ...]
+
+    When model data exists (supportedReasoningEfforts is populated), strictly normalize
+    and return those efforts.
+    When no data exists (or supportedReasoningEfforts is empty), return the safe
+    standard presets for the provider.
+    """
+    processor_cls = get_processor_class(agent_provider)
+    model_efforts = (active_model or {}).get("supportedReasoningEfforts")
+    if model_efforts:
+        return processor_cls.normalize_think_efforts(model_efforts)
+    return processor_cls.get_default_think_presets()
+
 
