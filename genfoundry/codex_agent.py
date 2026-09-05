@@ -457,7 +457,7 @@ class CodexAgent(BaseAgent):
         self._process.stdin.write(raw.encode("utf-8"))
         await self._process.stdin.drain()
 
-    async def _rpc_request(self, method: str, params: Dict[str, Any], timeout: float = 30.0) -> Any:
+    async def _rpc_request(self, method: str, params: Dict[str, Any], timeout: float = 60.0) -> Any:
         """Send a JSON-RPC request and wait for its response."""
         rid = self._next_id()
         future: asyncio.Future = asyncio.get_event_loop().create_future()
