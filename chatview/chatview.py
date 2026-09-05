@@ -3083,16 +3083,43 @@ class TermChatInterruptCommand(sublime_plugin.WindowCommand):
 
 
 class TermChatSetModelListHandler(sublime_plugin.ListInputHandler):
-    def __init__(self, current_model=None, think_level=None):
+    def __init__(self, current_model=None, think_level=None, window=None):
         self.current_model = current_model
         self.think_level = think_level
+        self.window = window or sublime.active_window()
 
     def name(self):
         return "model"
 
+    def next_input(self, args):
+        model = args.get("model")
+        if not model:
+            return None
+
+        window = self.window or sublime.active_window()
+        agent_provider = window.settings().get(CHAT_AGENT, "claude") if window else "claude"
+
+        active_model = {}
+        if window and window.id() in chatview_clients:
+            session = chatview_clients[window.id()]
+            if session and session.available_models:
+                active_model = next((m for m in session.available_models if m.get("value") == model), {})
+
+        presets = get_think_presets(agent_provider, active_model)
+        if presets:
+            current_level = window.settings().get(f"chatview_think_level_{agent_provider}") if window else None
+            return TermChatSetThinkLevelListHandler(
+                current_level=current_level,
+                agent_provider=agent_provider,
+                active_model=active_model,
+                selected_model=model,
+                window=window,
+            )
+        return None
+
     def list_items(self):
         # Get the active ChatSession to access available_models
-        window = sublime.active_window()
+        window = self.window or sublime.active_window()
         if not window:
             return []
 
@@ -3139,8 +3166,31 @@ class TermChatSetModelListHandler(sublime_plugin.ListInputHandler):
 
 
 class TermChatSetModelTextHandler(sublime_plugin.TextInputHandler):
+    def __init__(self, window=None):
+        self.window = window or sublime.active_window()
+
     def name(self):
         return "model"
+
+    def next_input(self, args):
+        model = args.get("model")
+        if not model:
+            return None
+
+        window = self.window or sublime.active_window()
+        agent_provider = window.settings().get(CHAT_AGENT, "claude") if window else "claude"
+
+        presets = get_think_presets(agent_provider, None)
+        if presets:
+            current_level = window.settings().get(f"chatview_think_level_{agent_provider}") if window else None
+            return TermChatSetThinkLevelListHandler(
+                current_level=current_level,
+                agent_provider=agent_provider,
+                active_model=None,
+                selected_model=model,
+                window=window,
+            )
+        return None
 
     def placeholder(self):
         return "Enter model name (e.g., sonnet, opus, haiku)"
@@ -3251,25 +3301,19 @@ class TermChatSetModelCommand(sublime_plugin.WindowCommand):
             self.window.settings().set(f"chatview_think_level_{agent_provider}", level)
             self.window.settings().set(CHAT_THINK_LEVEL, level)
             config_updates["think_level"] = level
-            sublime.status_message(f"{PACKAGE_NAME} model set to: {model} (thinking: {level})")
+            term = "thinking" if agent_provider == "claude" else "reasoning"
+            sublime.status_message(f"{PACKAGE_NAME} model set to: {model} ({term}: {level})")
         else:
             sublime.status_message(f"{PACKAGE_NAME} model set to: {model}")
 
-        # Update the model phantom if session exists
         window_id = self.window.id()
         session = chatview_clients.get(window_id)
         if session:
             session.model_phantom.update()
-            # Update the running agent directly
             if session.agent_thread:
                 session.agent_thread.update_config(**config_updates)
 
         update_agent_model_status(self.window)
-
-        # If level was not explicitly provided and the selected model
-        # supports thinking/reasoning, automatically prompt for thinking level.
-        if not level and session and any(m.get("value") == model and m.get("annotation") for m in session.available_models):
-            sublime.set_timeout(lambda: self.window.run_command("term_chat_set_think_level"), 10)
 
     def input(self, args):
         if "model" in args:
@@ -3285,20 +3329,30 @@ class TermChatSetModelCommand(sublime_plugin.WindowCommand):
                 current_model = self.window.settings().get(f"chatview_model_{agent_provider}")
                 think_level = self.window.settings().get(f"chatview_think_level_{agent_provider}")
                 # Use ListInputHandler for dropdown selection
-                return TermChatSetModelListHandler(current_model, think_level=think_level)
+                return TermChatSetModelListHandler(current_model, think_level=think_level, window=self.window)
 
         # Fallback to TextInputHandler for manual input
-        return TermChatSetModelTextHandler()
+        return TermChatSetModelTextHandler(window=self.window)
 
 
 class TermChatSetThinkLevelListHandler(sublime_plugin.ListInputHandler):
-    def __init__(self, current_level=None, agent_provider="claude", active_model=None):
+    def __init__(self, current_level=None, agent_provider="claude", active_model=None, selected_model=None, window=None):
         self.current_level = current_level
         self.agent_provider = agent_provider
         self.active_model = active_model or {}
+        self.selected_model = selected_model
+        self.window = window or sublime.active_window()
+        self.confirmed = False
 
     def name(self):
         return "level"
+
+    def confirm(self, value):
+        self.confirmed = True
+
+    def cancel(self):
+        if not self.confirmed and self.selected_model and self.window:
+            self.window.run_command("term_chat_set_model", {"model": self.selected_model})
 
     def list_items(self):
         presets = get_think_presets(self.agent_provider, self.active_model)
@@ -3311,10 +3365,12 @@ class TermChatSetThinkLevelListHandler(sublime_plugin.ListInputHandler):
             for p in presets
         ]
 
-        # Move current level to the front
-        if self.current_level:
+        # Move current level (or model default) to the front
+        default_effort = (self.active_model or {}).get("defaultReasoningEffort")
+        target_front = self.current_level or default_effort
+        if target_front:
             for i, item in enumerate(items):
-                if item.value == self.current_level:
+                if item.value == target_front:
                     items.insert(0, items.pop(i))
                     break
 
@@ -3335,14 +3391,26 @@ class TermChatSetThinkLevelCommand(sublime_plugin.WindowCommand):
     """
     Sets the thinking / reasoning effort level for ChatView sessions in the current window.
     """
-    def run(self, level):
+    def _get_active_model(self, agent_provider):
+        window_id = self.window.id()
+        if window_id in chatview_clients:
+            session = chatview_clients[window_id]
+            current_model_val = self.window.settings().get(f"chatview_model_{agent_provider}")
+            if session.available_models and current_model_val:
+                for m in session.available_models:
+                    if m.get("value") == current_model_val:
+                        return m
+        return {}
+
+    def run(self, level=None):
         if not level:
             return
         level = level.strip()
         agent_provider = self.window.settings().get(CHAT_AGENT, "claude")
         self.window.settings().set(f"chatview_think_level_{agent_provider}", level)
         self.window.settings().set(CHAT_THINK_LEVEL, level)
-        sublime.status_message(f"{PACKAGE_NAME} thinking level set to: {level}")
+        term = "thinking level" if agent_provider == "claude" else "reasoning effort"
+        sublime.status_message(f"{PACKAGE_NAME} {term} set to: {level}")
 
         window_id = self.window.id()
         if window_id in chatview_clients:
@@ -3355,19 +3423,14 @@ class TermChatSetThinkLevelCommand(sublime_plugin.WindowCommand):
 
     def input(self, args):
         agent_provider = self.window.settings().get(CHAT_AGENT, "claude")
+        active_model = self._get_active_model(agent_provider)
+        presets = get_think_presets(agent_provider, active_model)
+        if not presets:
+            term = "Thinking level" if agent_provider == "claude" else "Reasoning effort"
+            sublime.status_message(f"{PACKAGE_NAME}: {term} is not supported for {agent_provider}")
+            return None
+
         current_level = self.window.settings().get(f"chatview_think_level_{agent_provider}")
-
-        active_model = {}
-        window_id = self.window.id()
-        if window_id in chatview_clients:
-            session = chatview_clients[window_id]
-            current_model_val = self.window.settings().get(f"chatview_model_{agent_provider}")
-            if session.available_models and current_model_val:
-                for m in session.available_models:
-                    if m.get("value") == current_model_val:
-                        active_model = m
-                        break
-
         return TermChatSetThinkLevelListHandler(current_level, agent_provider, active_model)
 
 

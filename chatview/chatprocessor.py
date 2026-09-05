@@ -915,14 +915,6 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
 
     _TOOL_FILE_NAMES = ("fileChange", "read", "write", "edit", "apply_patch")
 
-    @classmethod
-    def get_default_think_presets(cls) -> list:
-        return [
-            {"value": "low", "text": "low", "description": "Light reasoning"},
-            {"value": "medium", "text": "medium", "description": "Standard reasoning"},
-            {"value": "high", "text": "high", "description": "High reasoning"},
-        ]
-
     def _handle_typed_message(self, message):
         # Unlike Codex, OpenCode's adapter emits only streaming text and does
         # not repeat the completed assistant message.  Render deltas directly.
@@ -1152,15 +1144,6 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
 
 class PiMessageProcessor(BaseChatMessageProcessor):
     _TOOL_FILE_NAMES = ("read", "edit", "write")
-
-    @classmethod
-    def get_default_think_presets(cls) -> list:
-        return [
-            {"value": "minimal", "text": "minimal", "description": "Minimal reasoning effort"},
-            {"value": "low", "text": "low", "description": "Light reasoning effort"},
-            {"value": "medium", "text": "medium", "description": "Standard reasoning effort"},
-            {"value": "high", "text": "high", "description": "High reasoning effort"},
-        ]
 
     def __init__(self, session):
         super().__init__(session)
@@ -1458,15 +1441,20 @@ def get_think_presets(agent_provider: str, active_model: dict = None) -> list:
     Return a unified list of thinking/reasoning effort presets for UI presentation:
     [{'value': str, 'text': str, 'description': str}, ...]
 
-    When model data exists (supportedReasoningEfforts is populated), strictly normalize
-    and return those efforts.
-    When no data exists (or supportedReasoningEfforts is empty), return the safe
-    standard presets for the provider.
+    When active_model is missing/empty, return the provider's default presets,
+    empty for unsupported providers
     """
     processor_cls = get_processor_class(agent_provider)
-    model_efforts = (active_model or {}).get("supportedReasoningEfforts")
-    if model_efforts:
-        return processor_cls.normalize_think_efforts(model_efforts)
+    if active_model:
+        model_efforts = (
+            active_model.get("supportedReasoningEfforts")
+            or active_model.get("supportedEffortLevels")
+        )
+        if model_efforts:
+            return processor_cls.normalize_think_efforts(model_efforts)
+        if active_model.get("supportsAdaptiveThinking"):
+            return processor_cls.get_default_think_presets()
+        return []
     return processor_cls.get_default_think_presets()
 
 
