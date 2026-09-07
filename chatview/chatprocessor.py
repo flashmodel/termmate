@@ -240,9 +240,37 @@ class BaseChatMessageProcessor:
     _TOOL_FILE_NAMES = ()
 
     @classmethod
+    def for_provider(cls, agent_provider: str):
+        """Return the processor class for the given agent provider."""
+        if not agent_provider:
+            return cls
+        return PROCESSOR_MAP.get(agent_provider.lower(), cls)
+
+    @classmethod
     def get_default_think_presets(cls) -> list:
         """Return fallback reasoning/thinking presets when no model data is loaded."""
         return []
+
+    @classmethod
+    def get_think_presets(cls, active_model: dict = None) -> list:
+        """
+        Return a unified list of thinking/reasoning effort presets for UI presentation:
+        [{'value': str, 'text': str, 'description': str}, ...]
+
+        When active_model is missing/empty, return the provider's default presets,
+        empty for unsupported providers.
+        """
+        if active_model:
+            model_efforts = (
+                active_model.get("supportedReasoningEfforts")
+                or active_model.get("supportedEffortLevels")
+            )
+            if model_efforts:
+                return cls.normalize_think_efforts(model_efforts)
+            if active_model.get("supportsAdaptiveThinking"):
+                return cls.get_default_think_presets()
+            return []
+        return cls.get_default_think_presets()
 
     @classmethod
     def normalize_think_efforts(cls, efforts: list) -> list:
@@ -314,6 +342,11 @@ class BaseChatMessageProcessor:
         item["value"] = value
         item["description"] = desc
         item["annotation"] = annotation
+        item["supportedReasoningEfforts"] = (
+            m.get("supportedReasoningEfforts")
+            or m.get("supportedEffortLevels")
+            or []
+        )
         return item
 
     def set_available_models(self, models):
@@ -456,6 +489,20 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
             {"value": "xhigh", "text": "xhigh", "description": "Extended thinking depth for Opus 4.7 (~32k tokens)"},
             {"value": "none", "text": "none", "description": "Disable extended thinking (0 tokens)"},
         ]
+
+    @classmethod
+    def get_think_presets(cls, active_model: dict = None) -> list:
+        if active_model:
+            model_efforts = (
+                active_model.get("supportedReasoningEfforts")
+                or active_model.get("supportedEffortLevels")
+            )
+            if model_efforts:
+                return cls.normalize_think_efforts(model_efforts)
+            if active_model.get("supportsAdaptiveThinking"):
+                return cls.get_default_think_presets()
+            return []
+        return cls.get_default_think_presets()
 
     def _handle_typed_message(self, message):
         if message.type == "assistant":
@@ -690,6 +737,15 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
             {"value": "high", "text": "high", "description": "Deep reasoning for complex coding tasks"},
             {"value": "xhigh", "text": "xhigh", "description": "Maximum reasoning effort"},
         ]
+
+    @classmethod
+    def get_think_presets(cls, active_model: dict = None) -> list:
+        if active_model:
+            model_efforts = active_model.get("supportedReasoningEfforts")
+            if model_efforts:
+                return cls.normalize_think_efforts(model_efforts)
+            return []
+        return cls.get_default_think_presets()
 
     def _handle_typed_message(self, message):
         if message.type == "assistant":
@@ -1428,33 +1484,5 @@ PROCESSOR_MAP = {
     "opencode": OpenCodeMessageProcessor,
     "pi": PiMessageProcessor,
 }
-
-
-def get_processor_class(agent_provider: str):
-    if not agent_provider:
-        return BaseChatMessageProcessor
-    return PROCESSOR_MAP.get(agent_provider.lower(), BaseChatMessageProcessor)
-
-
-def get_think_presets(agent_provider: str, active_model: dict = None) -> list:
-    """
-    Return a unified list of thinking/reasoning effort presets for UI presentation:
-    [{'value': str, 'text': str, 'description': str}, ...]
-
-    When active_model is missing/empty, return the provider's default presets,
-    empty for unsupported providers
-    """
-    processor_cls = get_processor_class(agent_provider)
-    if active_model:
-        model_efforts = (
-            active_model.get("supportedReasoningEfforts")
-            or active_model.get("supportedEffortLevels")
-        )
-        if model_efforts:
-            return processor_cls.normalize_think_efforts(model_efforts)
-        if active_model.get("supportsAdaptiveThinking"):
-            return processor_cls.get_default_think_presets()
-        return []
-    return processor_cls.get_default_think_presets()
 
 

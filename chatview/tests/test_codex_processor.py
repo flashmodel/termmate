@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 sys.modules.setdefault("sublime", MagicMock())
 
 from chatview.chatprocessor import (
+    BaseChatMessageProcessor,
     ClaudeMessageProcessor,
     CodexMessageProcessor,
     OpenCodeMessageProcessor,
@@ -16,7 +17,6 @@ from chatview.chatprocessor import (
     format_model_badge,
     format_model_display,
     normalize_model,
-    get_think_presets,
 )
 from genfoundry.base_agent import Message
 
@@ -413,6 +413,13 @@ class TestModelFormatting(unittest.TestCase):
 
 
 class TestThinkPresets(unittest.TestCase):
+    def test_for_provider_resolution(self):
+        self.assertIs(BaseChatMessageProcessor.for_provider("codex"), CodexMessageProcessor)
+        self.assertIs(BaseChatMessageProcessor.for_provider("claude"), ClaudeMessageProcessor)
+        self.assertIs(BaseChatMessageProcessor.for_provider("opencode"), OpenCodeMessageProcessor)
+        self.assertIs(BaseChatMessageProcessor.for_provider("unknown"), BaseChatMessageProcessor)
+        self.assertIs(BaseChatMessageProcessor.for_provider(""), BaseChatMessageProcessor)
+
     def test_codex_with_advertised_efforts(self):
         active_model = {
             "supportedReasoningEfforts": [
@@ -420,24 +427,50 @@ class TestThinkPresets(unittest.TestCase):
                 {"reasoningEffort": "high", "description": "Deep reasoning"},
             ]
         }
-        presets = get_think_presets("codex", active_model)
+        presets = BaseChatMessageProcessor.for_provider("codex").get_think_presets(active_model)
         self.assertEqual(len(presets), 2)
         self.assertEqual(presets[0]["value"], "low")
         self.assertEqual(presets[0]["description"], "Quick reasoning")
         self.assertEqual(presets[1]["value"], "high")
         self.assertEqual(presets[1]["description"], "Deep reasoning")
 
+        # Direct classmethod call
+        class_presets = CodexMessageProcessor.get_think_presets(active_model)
+        self.assertEqual(class_presets, presets)
+
     def test_codex_without_data_uses_safe_standard_presets(self):
-        presets = get_think_presets("codex", None)
+        presets = BaseChatMessageProcessor.for_provider("codex").get_think_presets(None)
         values = [p["value"] for p in presets]
         self.assertEqual(values, ["auto", "low", "medium", "high", "xhigh"])
         # none is not in the blind fallback
         self.assertNotIn("none", values)
+        self.assertEqual(CodexMessageProcessor.get_think_presets(None), presets)
 
     def test_claude_presets(self):
-        presets = get_think_presets("claude", None)
+        presets = BaseChatMessageProcessor.for_provider("claude").get_think_presets(None)
         values = [p["value"] for p in presets]
         self.assertEqual(values, ["adaptive", "low", "medium", "high", "xhigh", "none"])
+        self.assertEqual(ClaudeMessageProcessor.get_think_presets(None), presets)
+
+    def test_claude_with_model_efforts(self):
+        active_model = {
+            "supportedEffortLevels": [
+                {"value": "low", "description": "Light thinking"},
+                {"value": "high", "description": "Deep thinking"},
+            ]
+        }
+        presets = ClaudeMessageProcessor.get_think_presets(active_model)
+        self.assertEqual([p["value"] for p in presets], ["low", "high"])
+
+    def test_claude_with_unified_supported_reasoning_efforts(self):
+        active_model = {
+            "supportedReasoningEfforts": [
+                {"value": "low", "description": "Light thinking"},
+                {"value": "high", "description": "Deep thinking"},
+            ]
+        }
+        presets = ClaudeMessageProcessor.get_think_presets(active_model)
+        self.assertEqual([p["value"] for p in presets], ["low", "high"])
 
 
 if __name__ == "__main__":

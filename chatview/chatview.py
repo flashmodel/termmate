@@ -17,8 +17,9 @@ from ..genfoundry.claude_agent import get_claude_session_tail
 from ..genfoundry.codex_agent import get_codex_session_info
 from ..genfoundry.pi_agent import get_pi_session_tail
 from .chatprocessor import (
+    BaseChatMessageProcessor,
     ClaudeMessageProcessor, CodexMessageProcessor, PiMessageProcessor,
-    OpenCodeMessageProcessor, get_think_presets,
+    OpenCodeMessageProcessor,
 )
 from .chatpanel import (
     LoadingAnimation, NoticePhantom, RewindConfirmPanel, StatusHint,
@@ -1301,14 +1302,7 @@ class ChatSession:
             agent_provider = self.available_agents[0]
             self.window.settings().set(CHAT_AGENT, agent_provider)
 
-        if agent_provider == "codex":
-            self.message_processor = CodexMessageProcessor(self)
-        elif agent_provider == "pi":
-            self.message_processor = PiMessageProcessor(self)
-        elif agent_provider == "opencode":
-            self.message_processor = OpenCodeMessageProcessor(self)
-        else:
-            self.message_processor = ClaudeMessageProcessor(self)
+        self.message_processor = BaseChatMessageProcessor.for_provider(agent_provider)(self)
 
         # Load cli_path from settings (provider-specific only, no fallback to avoid mixing CLIs)
         cli_path = settings.get(f"{agent_provider}_command")
@@ -1856,14 +1850,7 @@ class ChatSession:
         }
 
         self._reset_markdown_formatter()
-        if new_agent_provider == "codex":
-            self.message_processor = CodexMessageProcessor(self)
-        elif new_agent_provider == "pi":
-            self.message_processor = PiMessageProcessor(self)
-        elif new_agent_provider == "opencode":
-            self.message_processor = OpenCodeMessageProcessor(self)
-        else:
-            self.message_processor = ClaudeMessageProcessor(self)
+        self.message_processor = BaseChatMessageProcessor.for_provider(new_agent_provider)(self)
 
         cwd = get_best_dir(self.chat_view)
         self.agent_thread = AgentThread(
@@ -3105,7 +3092,7 @@ class TermChatSetModelListHandler(sublime_plugin.ListInputHandler):
             if session and session.available_models:
                 active_model = next((m for m in session.available_models if m.get("value") == model), {})
 
-        presets = get_think_presets(agent_provider, active_model)
+        presets = BaseChatMessageProcessor.for_provider(agent_provider).get_think_presets(active_model)
         if presets:
             current_level = window.settings().get(f"chatview_think_level_{agent_provider}") if window else None
             return TermChatSetThinkLevelListHandler(
@@ -3180,7 +3167,7 @@ class TermChatSetModelTextHandler(sublime_plugin.TextInputHandler):
         window = self.window or sublime.active_window()
         agent_provider = window.settings().get(CHAT_AGENT, "claude") if window else "claude"
 
-        presets = get_think_presets(agent_provider, None)
+        presets = BaseChatMessageProcessor.for_provider(agent_provider).get_think_presets(None)
         if presets:
             current_level = window.settings().get(f"chatview_think_level_{agent_provider}") if window else None
             return TermChatSetThinkLevelListHandler(
@@ -3355,7 +3342,7 @@ class TermChatSetThinkLevelListHandler(sublime_plugin.ListInputHandler):
             self.window.run_command("term_chat_set_model", {"model": self.selected_model})
 
     def list_items(self):
-        presets = get_think_presets(self.agent_provider, self.active_model)
+        presets = BaseChatMessageProcessor.for_provider(self.agent_provider).get_think_presets(self.active_model)
         items = [
             sublime.ListInputItem(
                 text=p["text"],
@@ -3385,6 +3372,32 @@ class TermChatSetThinkLevelListHandler(sublime_plugin.ListInputHandler):
     def description(self, value, text):
         term = "Thinking Level" if self.agent_provider == "claude" else "Reasoning Effort"
         return f"{term}: {value}"
+
+
+class TermChatSetThinkLevelTextHandler(sublime_plugin.TextInputHandler):
+    def __init__(self, current_level=None, agent_provider="claude", window=None):
+        self.current_level = current_level
+        self.agent_provider = agent_provider
+        self.window = window or sublime.active_window()
+
+    def name(self):
+        return "level"
+
+    def placeholder(self):
+        term = "thinking level" if self.agent_provider == "claude" else "reasoning effort"
+        if self.current_level:
+            return f"Enter {term} (current: {self.current_level})"
+        return f"Enter {term} (e.g. low, medium, high, auto)"
+
+    def initial_text(self):
+        return self.current_level or ""
+
+    def description(self, text):
+        term = "Thinking Level" if self.agent_provider == "claude" else "Reasoning Effort"
+        return f"{term}: {text}" if text else term
+
+    def validate(self, text):
+        return bool(text.strip())
 
 
 class TermChatSetThinkLevelCommand(sublime_plugin.WindowCommand):
@@ -3422,16 +3435,17 @@ class TermChatSetThinkLevelCommand(sublime_plugin.WindowCommand):
         update_agent_model_status(self.window)
 
     def input(self, args):
-        agent_provider = self.window.settings().get(CHAT_AGENT, "claude")
-        active_model = self._get_active_model(agent_provider)
-        presets = get_think_presets(agent_provider, active_model)
-        if not presets:
-            term = "Thinking level" if agent_provider == "claude" else "Reasoning effort"
-            sublime.status_message(f"{PACKAGE_NAME}: {term} is not supported for {agent_provider}")
+        if "level" in args:
             return None
 
+        agent_provider = self.window.settings().get(CHAT_AGENT, "claude")
+        active_model = self._get_active_model(agent_provider)
+        presets = BaseChatMessageProcessor.for_provider(agent_provider).get_think_presets(active_model)
         current_level = self.window.settings().get(f"chatview_think_level_{agent_provider}")
-        return TermChatSetThinkLevelListHandler(current_level, agent_provider, active_model)
+        if presets:
+            return TermChatSetThinkLevelListHandler(current_level, agent_provider, active_model, window=self.window)
+
+        return TermChatSetThinkLevelTextHandler(current_level, agent_provider, window=self.window)
 
 
 class TermChatPlanModeInputHandler(sublime_plugin.ListInputHandler):
