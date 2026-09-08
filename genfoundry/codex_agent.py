@@ -13,7 +13,7 @@ import shutil
 import sys
 import logging
 import re
-from typing import Optional, Dict, Any, AsyncIterator, List, Callable, Union
+from typing import Optional, Dict, Any, AsyncIterator, List, Callable, Union, Set
 
 LOG = logging.getLogger("TermMate")
 
@@ -52,10 +52,40 @@ def find_codex_cli() -> Optional[str]:
     return None
 
 
+def _resolve_git_dir(path: str, base_dir: str) -> Set[str]:
+    """
+    Resolve a .git path (directory or worktree/submodule pointer file) into real git directories.
+    Handles standard .git directories, worktree gitdir pointers, and worktree commondir references.
+    """
+    abs_p = os.path.abspath(path) if os.path.isabs(path) else os.path.abspath(os.path.join(base_dir, path))
+    results = set()
+
+    if os.path.isdir(abs_p):
+        results.add(abs_p)
+    elif os.path.isfile(abs_p):
+        results.add(abs_p)
+        try:
+            with open(abs_p, "r", encoding="utf-8", errors="ignore") as f:
+                txt = f.read().strip()
+            if txt.startswith("gitdir:"):
+                target = os.path.abspath(os.path.join(os.path.dirname(abs_p), txt[7:].strip()))
+                results.add(target)
+                # Resolve worktree commondir (shared objects and refs)
+                commondir_file = os.path.join(target, "commondir")
+                if os.path.isfile(commondir_file):
+                    with open(commondir_file, "r", encoding="utf-8", errors="ignore") as cf:
+                        results.add(os.path.abspath(os.path.join(target, cf.read().strip())))
+        except Exception:
+            pass
+
+    return results
+
+
 def find_git_dirs(workspace_root: Optional[str]) -> List[str]:
     """
     Find all .git directories for workspace (root, parent repo, and submodules).
     Scoped strictly to the logical Git repository belonging to workspace_root.
+    Pure-Python implementation without external git CLI dependencies or subprocesses.
     """
     if not workspace_root or not os.path.isdir(workspace_root):
         return []
@@ -63,52 +93,26 @@ def find_git_dirs(workspace_root: Optional[str]) -> List[str]:
     root = os.path.abspath(workspace_root)
     git_dirs = set()
 
-    def add_path(p: str):
-        abs_p = os.path.abspath(p) if os.path.isabs(p) else os.path.abspath(os.path.join(root, p))
-        if os.path.isdir(abs_p):
-            git_dirs.add(abs_p)
-        elif os.path.isfile(abs_p):
-            git_dirs.add(abs_p)
-            try:
-                with open(abs_p, "r", encoding="utf-8", errors="ignore") as f:
-                    txt = f.read().strip()
-                if txt.startswith("gitdir:"):
-                    target = os.path.abspath(os.path.join(os.path.dirname(abs_p), txt[7:].strip()))
-                    git_dirs.add(target)
-                    # Resolve worktree commondir (shared objects and refs)
-                    commondir_file = os.path.join(target, "commondir")
-                    if os.path.isfile(commondir_file):
-                        with open(commondir_file, "r", encoding="utf-8", errors="ignore") as cf:
-                            c_target = os.path.abspath(os.path.join(target, cf.read().strip()))
-                            git_dirs.add(c_target)
-            except Exception:
-                pass
+    # 1. Walk up parent directories to find containing root/parent repository
+    curr = root
+    while curr:
+        candidate = os.path.join(curr, ".git")
+        if os.path.exists(candidate):
+            git_dirs.update(_resolve_git_dir(candidate, root))
+            break
+        parent = os.path.dirname(curr)
+        if parent == curr:
+            break
+        curr = parent
 
-    # 1. Resolve root/parent git repository via git CLI
-    try:
-        import subprocess
-        res = subprocess.run(
-            ["git", "rev-parse", "--git-dir", "--git-common-dir"],
-            cwd=root, capture_output=True, text=True, timeout=2
-        )
-        if res.returncode == 0:
-            for line in res.stdout.splitlines():
-                if line.strip():
-                    add_path(line.strip())
-    except Exception:
-        pass
-
-    # Direct check on workspace root
-    add_path(os.path.join(root, ".git"))
-
-    # 2. Scan nested submodules / monorepos (prune heavy & hidden dirs)
+    # 2. Scan nested submodules / monorepos within workspace_root
     ignore = {"node_modules", ".venv", "venv", "dist", "build", "target", ".git"}
     for cur_root, dirs, files in os.walk(root):
         if ".git" in dirs:
-            add_path(os.path.join(cur_root, ".git"))
+            git_dirs.update(_resolve_git_dir(os.path.join(cur_root, ".git"), root))
             dirs.remove(".git")
         if ".git" in files:
-            add_path(os.path.join(cur_root, ".git"))
+            git_dirs.update(_resolve_git_dir(os.path.join(cur_root, ".git"), root))
         dirs[:] = [d for d in dirs if d not in ignore and not d.startswith(".")]
 
     return sorted(git_dirs)

@@ -385,6 +385,38 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
         finally:
             shutil.rmtree(temp_dir)
 
+    def test_find_git_dirs_from_subdirectory(self):
+        from genfoundry.codex_agent import find_git_dirs
+        import tempfile
+        import shutil
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            # Setup: root_repo/.git and root_repo/deep/nested/workspace
+            root_git = os.path.join(temp_dir, ".git")
+            os.makedirs(root_git)
+            deep_workspace = os.path.join(temp_dir, "deep", "nested", "workspace")
+            os.makedirs(deep_workspace)
+
+            # Upward traversal finds parent repository root .git
+            dirs = find_git_dirs(deep_workspace)
+            self.assertEqual(dirs, [root_git])
+        finally:
+            shutil.rmtree(temp_dir)
+
+    def test_find_git_dirs_non_git_workspace(self):
+        from genfoundry.codex_agent import find_git_dirs
+        import tempfile
+        import shutil
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            # Workspace with no git repo around
+            dirs = find_git_dirs(temp_dir)
+            self.assertEqual(dirs, [])
+        finally:
+            shutil.rmtree(temp_dir)
+
     async def test_thread_start_sandbox_parameter(self):
         fake_proc = FakeProcess()
         agent = await self._create_agent(fake_proc)
