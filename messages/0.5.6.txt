@@ -1,0 +1,11 @@
+TermMate 0.5.6
+==============
+
+- Set Model Reasoning Effort
+  Add reasoning level for supported models in Claude Code and Codex.
+  Use "TermMate: Reasoning Effort" from the Command Palette or switch to
+  reasoning model to select thinking levels.
+
+- Git Operations in Codex Sandbox
+  Codex can now commit code and operate in git worktrees while running in
+  sandbox mode.
