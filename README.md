@@ -250,6 +250,28 @@ Set a custom base URL and auth token so Claude routes through OpenRouter (`ANTHR
 }
 ```
 
+**Example: Azure AI Foundry for Codex**
+
+```toml
+model_provider = "azure"
+
+[model_providers.azure]
+name = "Azure OpenAI"
+base_url = "https://YOUR_RESOURCE_NAME.openai.azure.com/openai/v1"
+env_key = "AZURE_OPENAI_API_KEY"
+wire_api = "responses"
+```
+
+Add the Microsoft Azure AI Foundry configuration above to `~/.codex/config.toml`, then set `AZURE_OPENAI_API_KEY` in TermMate settings:
+
+```json
+{
+    "env": {
+        "AZURE_OPENAI_API_KEY": "your-api-key"
+    }
+}
+```
+
 **Example: Gemini API key for OpenCode**
 
 OpenCode uses the `GOOGLE_GENERATIVE_AI_API_KEY` environment variable. Set it here to authenticate without modifying your system environment (you may need to remove existing local auth.json via delete `~/.local/share/opencode/auth.json` first):
