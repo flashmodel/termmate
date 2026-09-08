@@ -134,7 +134,7 @@ def update_agent_model_status(window, view=None):
         session = chatview_clients.get(window.id())
         think_level = window.settings().get(f"chatview_think_level_{agent_provider}")
         if think_level and session and any(m.get("value") == model and m.get("annotation") for m in session.available_models):
-            display_model = f"{display_model}:{think_level}"
+            display_model = f"{display_model} :{think_level}"
 
         status = f"▣ {agent_provider}({display_model})"
 
