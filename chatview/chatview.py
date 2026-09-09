@@ -1436,10 +1436,10 @@ class ChatSession:
             self._auto_approve(request_id, input_data)
             return
 
-        risky_tools = ("Bash",)
-        if approve_mode == ApproveMode.ALLOW_EDIT.value and tool_name not in risky_tools:
-            self._auto_approve(request_id, input_data)
-            return
+        if approve_mode == ApproveMode.ALLOW_EDIT.value:
+            if not self.message_processor.is_risky_tool(tool_name):
+                self._auto_approve(request_id, input_data)
+                return
 
         self.permission_panel.show(request_id, tool_name, input_data, approve_mode=approve_mode)
 

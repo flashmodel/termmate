@@ -238,6 +238,11 @@ class BaseChatMessageProcessor:
     Handles buffering, formatting, and displaying messages from the agent.
     """
     _TOOL_FILE_NAMES = ()
+    _RISKY_TOOLS = ("Bash", "command_execution", "bash")
+
+    def is_risky_tool(self, tool_name: str) -> bool:
+        """Return True if tool requires user confirmation under allow-edit mode."""
+        return tool_name in self._RISKY_TOOLS
 
     @classmethod
     def for_provider(cls, agent_provider: str):
@@ -478,6 +483,7 @@ class BaseChatMessageProcessor:
 
 class ClaudeMessageProcessor(BaseChatMessageProcessor):
     _TOOL_FILE_NAMES = ("Read", "Edit", "Write")
+    _RISKY_TOOLS = ("Bash",)
 
     @classmethod
     def get_default_think_presets(cls) -> list:
@@ -727,6 +733,7 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
 
 class CodexMessageProcessor(BaseChatMessageProcessor):
     _TOOL_FILE_NAMES = ("fileChange", "ImageView")
+    _RISKY_TOOLS = ("command_execution",)
 
     @classmethod
     def get_default_think_presets(cls) -> list:
@@ -970,6 +977,7 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
     """Render normalized OpenCode server events in the native chat view."""
 
     _TOOL_FILE_NAMES = ("fileChange", "read", "write", "edit", "apply_patch")
+    _RISKY_TOOLS = ("Bash",)
 
     def _handle_typed_message(self, message):
         # Unlike Codex, OpenCode's adapter emits only streaming text and does
@@ -1200,6 +1208,13 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
 
 class PiMessageProcessor(BaseChatMessageProcessor):
     _TOOL_FILE_NAMES = ("read", "edit", "write")
+    _RISKY_TOOLS = ("Bash",)
+
+    def is_risky_tool(self, tool_name: str) -> bool:
+        """Return True if tool requires user confirmation under allow-edit mode."""
+        if tool_name.startswith("Extension UI:") or tool_name.startswith("extension_ui_"):
+            return True
+        return super().is_risky_tool(tool_name)
 
     def __init__(self, session):
         super().__init__(session)
