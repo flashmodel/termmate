@@ -426,7 +426,8 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
             params = start_call.get("params", {})
             # sandbox must be a string enum, never a dict
             self.assertIsInstance(params.get("sandbox"), str)
-            self.assertEqual(params.get("sandbox"), "workspace-write")
+            expected_sandbox = "danger-full-access" if sys.platform == "win32" else "workspace-write"
+            self.assertEqual(params.get("sandbox"), expected_sandbox)
         finally:
             await agent.disconnect()
 

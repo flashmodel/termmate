@@ -298,6 +298,10 @@ class CodexAgent(BaseAgent):
         }
         if self.options.sandbox_mode:
             thread_params["sandbox"] = sandbox_map.get(self.options.sandbox_mode, "workspace-write")
+        elif sys.platform == "win32":
+            # On Windows without native sandbox, workspace-write gets downgraded to read-only by Codex.
+            # Default to danger-full-access and rely on chatview's permission approval flow.
+            thread_params["sandbox"] = "danger-full-access"
         else:
             # Default to workspace-write (writable_roots configured in config_overrides)
             thread_params["sandbox"] = "workspace-write"
