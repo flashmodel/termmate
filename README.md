@@ -252,7 +252,7 @@ Set a custom base URL and auth token so Claude routes through OpenRouter (`ANTHR
 
 **Example: Azure AI Foundry for Codex**
 
-```toml
+```
 model_provider = "azure"
 
 [model_providers.azure]
