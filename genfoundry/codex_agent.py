@@ -285,7 +285,7 @@ class CodexAgent(BaseAgent):
         #   "never"      — never ask
         approve_mode = self.options.approve_mode
         if approve_mode == "accept-all":
-            thread_params["approvalPolicy"] = "never"
+            thread_params["approvalPolicy"] = "on-request"
         else:
             # default / allow-edit → all operations require approval
             thread_params["approvalPolicy"] = "untrusted"
