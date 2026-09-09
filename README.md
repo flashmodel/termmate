@@ -257,12 +257,12 @@ model_provider = "azure"
 
 [model_providers.azure]
 name = "Azure OpenAI"
-base_url = "https://YOUR_RESOURCE_NAME.openai.azure.com/openai/v1"
+base_url = "https://YOUR_RESOURCE_NAME.services.ai.azure.com/openai/v1"
 env_key = "AZURE_OPENAI_API_KEY"
 wire_api = "responses"
 ```
 
-Add the Microsoft Azure AI Foundry configuration above to `~/.codex/config.toml`, then set `AZURE_OPENAI_API_KEY` in TermMate settings:
+Replace `YOUR_RESOURCE_NAME` with your Azure Foundry resource and add the configuration above to `~/.codex/config.toml`, then set `AZURE_OPENAI_API_KEY` in TermMate settings:
 
 ```json
 {
