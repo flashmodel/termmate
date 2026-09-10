@@ -135,7 +135,7 @@ Run `TermMate: Quick Message` from the command palette to compose and send a mes
 
 You can use the command palette (`TermMate: Split Chat Window`) or right-click the chat view tab and select **TermMate: Split Chat Window** to split the editor layout and place the chat view into its own dedicated pane. By default, this pane is isolated so opening other files will not overwrite the chat view. This isolation behavior can be configured via the `dedicated_chat_pane` setting.
 
-## Advanced Control
+## Agent Modes & Controls
 
 ### Plan Mode
 
