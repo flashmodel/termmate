@@ -249,7 +249,18 @@ class BaseChatMessageProcessor:
         """Return the processor class for the given agent provider."""
         if not agent_provider:
             return cls
-        return PROCESSOR_MAP.get(agent_provider.lower(), cls)
+        p = agent_provider.lower()
+        if p in PROCESSOR_MAP:
+            return PROCESSOR_MAP[p]
+        try:
+            settings = sublime.load_settings("TermMate.sublime-settings")
+            from .install import normalize_acp_agents
+            acp_agents = normalize_acp_agents(settings.get("acp_agents", []))
+            if p in acp_agents:
+                return AcpMessageProcessor
+        except Exception:
+            pass
+        return cls
 
     @classmethod
     def get_default_think_presets(cls) -> list:
@@ -1493,11 +1504,97 @@ class PiMessageProcessor(BaseChatMessageProcessor):
         return header
 
 
+class AcpMessageProcessor(BaseChatMessageProcessor):
+    """Message processor for ACP (Agent Client Protocol) agents like Gemini CLI."""
+    _RISKY_TOOLS = ("execute", "bash", "command_execution", "terminal", "run_shell_command", "Bash")
+
+    def _format_tool_block(self, block):
+        if not isinstance(block, dict):
+            return ""
+        kind = block.get("kind", "tool")
+        title = block.get("title") or block.get("name", "")
+
+        if kind == "execute" and title:
+            # Clean execution title brackets
+            title = re.sub(r'\s*\[.*?\]', '', title)
+
+        if not title:
+            return f"⏺ {kind.capitalize()}"
+
+        if "\n" in title:
+            lines = title.split("\n", 1)
+            first_line = lines[0]
+            rest = lines[1] if len(lines) > 1 else ""
+            indented = "\n".join("    " + l for l in rest.split("\n"))
+            return f"⏺ {kind.capitalize()} {first_line}\n\n{indented}"
+        return f"⏺ {kind.capitalize()} {title}"
+
+    def _handle_typed_message(self, message):
+        if message.type == "thinking":
+            # Think block is not shown in chat view per requirement
+            self.session.start_loading(text="thinking")
+            return
+
+        if message.type == "text":
+            self.session.start_loading()
+            if self.last_is_tool_call:
+                self.append_content("\n")
+                self.last_is_tool_call = False
+            content = message.content if isinstance(message.content, str) else ""
+            if content:
+                self.append_content(content)
+            return
+
+        if message.type == "tool_use":
+            if not self.last_is_tool_call:
+                self.append_content("\n")
+            self.last_is_tool_call = True
+            self.append_content(self._format_tool_block(message.content) + "\n")
+            return
+
+        if message.type == "control_request":
+            request = message.content.get("request", {})
+            if request.get("subtype") == "can_use_tool":
+                tool_name = request.get("tool_name")
+                input_data = request.get("input", {})
+                request_id = message.content.get("request_id")
+                self.session.permission_requests[request_id] = (tool_name, input_data)
+                self.session.show_permission_phantom(request_id, tool_name, input_data)
+            return
+
+        if message.type == "models_update":
+            models = (message.content or {}).get("models", [])
+            if models:
+                self.set_available_models(models)
+            return
+
+        if message.type == "system":
+            content = message.content if isinstance(message.content, dict) else {}
+            session_id = content.get("session_id")
+            if session_id and content.get("subtype") == "init":
+                self.session.set_view_session_id(self.session.chat_view, session_id)
+            return
+
+        if message.type == "result":
+            self.append_content("", flush=True)
+            self.session.stop_loading()
+            self.append_content("\n")
+            return
+
+        if message.type == "error":
+            self.append_error(message.content)
+            self.session.stop_loading()
+            return
+
+
 PROCESSOR_MAP = {
     "claude": ClaudeMessageProcessor,
     "codex": CodexMessageProcessor,
     "opencode": OpenCodeMessageProcessor,
     "pi": PiMessageProcessor,
+    "acp": AcpMessageProcessor,
+    "gemini": AcpMessageProcessor,
 }
+
 
 
