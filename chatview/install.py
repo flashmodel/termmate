@@ -10,18 +10,22 @@ from ..genfoundry.claude_agent import find_claude_cli
 from ..genfoundry.codex_agent import find_codex_cli
 from ..genfoundry.pi_agent import find_pi_cli
 from ..genfoundry.opencode_agent import find_opencode_cli
+from ..genfoundry.antigravity_agent import find_antigravity_cli
 from .chatpanel import LoadingAnimation
 
-AGENT_CLI_NAME = {"claude": "claude", "codex": "codex", "pi": "pi", "opencode": "opencode"}
+AGENT_CLI_NAME = {"claude": "claude", "codex": "codex", "pi": "pi", "opencode": "opencode",
+                  "antigravity": "agy"}
 AGENT_FIND_FN  = {"claude": find_claude_cli, "codex": find_codex_cli,
-                  "opencode": find_opencode_cli, "pi": find_pi_cli}
+                  "opencode": find_opencode_cli, "pi": find_pi_cli,
+                  "antigravity": find_antigravity_cli}
 AGENT_LABEL    = {"claude": "Claude Code", "codex": "Codex", "pi": "Pi Agent",
-                  "opencode": "OpenCode"}
+                  "opencode": "OpenCode", "antigravity": "Antigravity"}
 AGENT_DOCS_URL = {
     "claude": "https://code.claude.com/docs/en/setup",
     "codex":  "https://developers.openai.com/codex/cli",
     "pi":     "https://pi.dev/",
     "opencode": "https://opencode.ai/docs/",
+    "antigravity": "https://antigravity.google/docs/cli/headless",
 }
 
 
@@ -122,6 +126,22 @@ def get_agent_install_info(agent):
             "curl -fsSL https://opencode.ai/install | bash",
             True,
             {"PATH": install_bin + os.pathsep + os.environ.get("PATH", "")},
+        )
+
+    if agent == "antigravity":
+        local_bin = os.path.join(home, ".local", "bin")
+        if is_win:
+            return (
+                display,
+                'powershell -ExecutionPolicy ByPass -c "irm https://antigravity.google/cli/install.ps1 | iex"',
+                True,
+                {},
+            )
+        return (
+            display,
+            "curl -fsSL https://antigravity.google/install.sh | bash",
+            True,
+            {"PATH": local_bin + os.pathsep + os.environ.get("PATH", "")},
         )
 
     return display, None, False, {}
@@ -298,7 +318,10 @@ def get_agent_list_items(settings):
     for agent in AGENT_FIND_FN:
         existing = find_existing_cli(agent, settings)
         if is_win:
-            location = "%APPDATA%\\npm"
+            if agent == "antigravity":
+                location = "%LOCALAPPDATA%\\agy\\bin"
+            else:
+                location = "%APPDATA%\\npm"
         elif agent == "opencode":
             location = "~/.opencode/bin"
         else:

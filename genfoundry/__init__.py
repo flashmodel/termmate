@@ -19,6 +19,13 @@ from .opencode_agent import (
     list_opencode_sessions,
     get_opencode_session_info,
 )
+from .antigravity_agent import (
+    AntigravityAgent,
+    find_antigravity_cli,
+    query as antigravity_query,
+    list_antigravity_sessions,
+    get_antigravity_session_tail,
+)
 
 __all__ = [
     "BaseAgent",
@@ -46,4 +53,9 @@ __all__ = [
     "find_opencode_cli",
     "list_opencode_sessions",
     "get_opencode_session_info",
+    "AntigravityAgent",
+    "find_antigravity_cli",
+    "antigravity_query",
+    "list_antigravity_sessions",
+    "get_antigravity_session_tail",
 ]

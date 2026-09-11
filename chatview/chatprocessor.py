@@ -773,6 +773,7 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
                 self.append_content(text_content + "\n")
 
         elif message.type == "tool_use":
+            self.session.start_loading()
             if not self.last_is_tool_call:
                 self.append_content("\n")
             self.last_is_tool_call = True
@@ -1493,11 +1494,289 @@ class PiMessageProcessor(BaseChatMessageProcessor):
         return header
 
 
+class AntigravityMessageProcessor(BaseChatMessageProcessor):
+    """Render normalized Antigravity CLI events in the native chat view."""
+
+    _TOOL_DISPLAY_NAMES = {
+        "run_command": "RunCommand",
+        "view_file": "ViewFile",
+        "write_to_file": "WriteFile",
+        "replace_file_content": "EditFile",
+        "multi_replace_file_content": "EditFile",
+        "list_dir": "ListDir",
+        "grep_search": "GrepSearch",
+        "search_web": "SearchWeb",
+        "read_url_content": "ReadUrl",
+        "browser_subagent": "BrowserSubagent",
+        "ask_question": "AskQuestion",
+        "schedule": "Schedule",
+        "manage_task": "ManageTask",
+        "generate_image": "GenerateImage",
+    }
+
+    _TOOL_FILE_NAMES = (
+        "view_file", "ViewFile",
+        "write_to_file", "WriteFile",
+        "replace_file_content", "EditFile",
+        "multi_replace_file_content",
+    )
+    _RISKY_TOOLS = ("run_command", "RunCommand")
+
+    @classmethod
+    def get_default_think_presets(cls) -> list:
+        return [
+            {"value": "low", "text": "low", "description": "Fast responses with light reasoning"},
+            {"value": "medium", "text": "medium", "description": "Balanced speed and reasoning depth (standard)"},
+            {"value": "high", "text": "high", "description": "Deep reasoning for complex coding tasks"},
+        ]
+
+    @classmethod
+    def get_think_presets(cls, active_model: dict = None) -> list:
+        if active_model:
+            model_efforts = (
+                active_model.get("supportedReasoningEfforts")
+                or active_model.get("supportedEffortLevels")
+            )
+            if model_efforts:
+                return cls.normalize_think_efforts(model_efforts)
+            if active_model.get("supportsEffort"):
+                return cls.get_default_think_presets()
+            return []
+        return cls.get_default_think_presets()
+
+    @classmethod
+    def get_default_models(cls) -> list:
+        return [
+            {
+                "value": "gemini-3.8-flash",
+                "displayName": "Gemini 3.8 Flash",
+                "description": "Fast and versatile multimodal model with adjustable reasoning effort",
+                "supportedReasoningEfforts": ["low", "medium", "high"],
+                "defaultReasoningEffort": "medium",
+                "supportsEffort": True,
+            },
+            {
+                "value": "gemini-3.7-flash",
+                "displayName": "Gemini 3.7 Flash",
+                "description": "High-speed hybrid reasoning model",
+                "supportedReasoningEfforts": ["low", "medium", "high"],
+                "defaultReasoningEffort": "medium",
+                "supportsEffort": True,
+            },
+            {
+                "value": "gemini-3.6-flash",
+                "displayName": "Gemini 3.6 Flash",
+                "description": "Efficient lightweight model for fast coding tasks",
+                "supportedReasoningEfforts": ["low", "medium", "high"],
+                "defaultReasoningEffort": "medium",
+                "supportsEffort": True,
+            },
+            {
+                "value": "gemini-3.1-pro",
+                "displayName": "Gemini 3.1 Pro",
+                "description": "Advanced reasoning model for complex architecture and coding",
+                "supportedReasoningEfforts": ["low", "medium", "high"],
+                "defaultReasoningEffort": "high",
+                "supportsEffort": True,
+            },
+            {
+                "value": "claude-sonnet-4-6",
+                "displayName": "Claude Sonnet 4.6",
+                "description": "Anthropic Claude model with extended thinking capabilities",
+                "supportedReasoningEfforts": ["low", "medium", "high"],
+                "defaultReasoningEffort": "medium",
+                "supportsEffort": True,
+            },
+        ]
+
+    def __init__(self, session):
+        super().__init__(session)
+        if session and not getattr(session, "available_models", None):
+            self.set_available_models(self.get_default_models())
+
+    def _handle_typed_message(self, message):
+        if message.type == "thinking":
+            self.session.start_loading(text="thinking")
+            return
+
+        if message.type in ("text", "text_delta"):
+            self.session.start_loading()
+            if self.last_is_tool_call:
+                self.append_content("\n")
+                self.last_is_tool_call = False
+            content = message.content if isinstance(message.content, str) else ""
+            if content:
+                self.append_content(content)
+            return
+
+        if message.type == "tool_use":
+            self.session.start_loading()
+            if not self.last_is_tool_call:
+                self.append_content("\n")
+            self.last_is_tool_call = True
+            content_data = message.content if isinstance(message.content, dict) else {}
+            self.append_content(self._format_tool_block(content_data) + "\n")
+            self._record_tool_file_change(content_data)
+
+        elif message.type == "system":
+            content = message.content if isinstance(message.content, dict) else {}
+            session_id = content.get("session_id")
+            if session_id:
+                LOG.info(f"Antigravity session_id: {session_id}")
+                self.session.set_view_session_id(self.session.chat_view, session_id)
+
+        elif message.type in ("control_request", "tool_approval"):
+            content = message.content if isinstance(message.content, dict) else {}
+            if message.type == "control_request":
+                request = content.get("request", {})
+                tool_name = request.get("tool_name") or content.get("tool_name")
+                input_data = request.get("input", {}) or content.get("parameters") or {}
+                request_id = content.get("request_id")
+            else:
+                request_id = content.get("request_id")
+                tool_name = content.get("tool_name")
+                input_data = content.get("parameters") or {}
+
+            if request_id:
+                display_name = self._TOOL_DISPLAY_NAMES.get(
+                    tool_name, "".join(part.capitalize() for part in (tool_name or "").split("_"))
+                )
+                self.session.permission_requests[request_id] = (tool_name, input_data)
+                self.session.show_permission_phantom(request_id, display_name, input_data)
+
+        elif message.type == "plan_delta":
+            content = message.content if isinstance(message.content, str) else ""
+            if content:
+                self._plan_text += content
+
+        elif message.type == "error":
+            self.append_error(message.content)
+            self.session.stop_loading()
+
+        elif message.type == "models_update":
+            if hasattr(message, "content") and isinstance(message.content, dict):
+                models = message.content.get("models", [])
+                if models:
+                    self.set_available_models(models)
+
+        elif message.type in ("stop", "result"):
+            self.append_content("", flush=True)
+            self.session.stop_loading()
+            self.append_content("\n")
+            if self._plan_text:
+                plan_text = self._plan_text
+                self._plan_text = ""
+                self.append_content("\n")
+                self.append_content(plan_text)
+                self.append_content("\n", flush=True)
+                if (self.session.agent_thread
+                        and self.session.agent_thread.anthropic_config.get("plan_mode")):
+                    sublime.set_timeout(
+                        lambda pt=plan_text: self.session.show_implement_plan_button(pt),
+                        0,
+                    )
+            elif (self.session.agent_thread
+                  and self.session.agent_thread.anthropic_config.get("plan_mode")):
+                sublime.set_timeout(
+                    lambda: self.session.show_implement_plan_button(""),
+                    0,
+                )
+            sublime.set_timeout(self.session.show_file_changes_artifact, 0)
+
+    def _format_tool_block(self, block):
+        name = block.get("name") or "tool"
+        display_name = self._TOOL_DISPLAY_NAMES.get(
+            name, "".join(part.capitalize() for part in name.split("_"))
+        )
+        params = block.get("parameters") or {}
+        cwd = (self.session.agent_thread.cwd
+               if self.session.agent_thread else self.session.cwd) or ""
+
+        if name == "run_command":
+            cmd = params.get("CommandLine") or params.get("command") or ""
+            if cmd:
+                lines = cmd.rstrip().splitlines()
+                if len(lines) > 1:
+                    first_line = lines[0]
+                    indented_rest = "\n".join("    " + line for line in lines[1:])
+                    return f"⏺ {display_name} ({first_line})\n\n{indented_rest}\n"
+                return f"⏺ {display_name} ({lines[0]})"
+            return f"⏺ {display_name}"
+
+        if name == "view_file":
+            abs_p = params.get("AbsolutePath") or params.get("path") or ""
+            _, rel_p = _resolve_rel_path(abs_p, cwd)
+            start_line = params.get("StartLine")
+            end_line = params.get("EndLine")
+            if start_line is not None and end_line is not None:
+                return f"⏺ {display_name} {rel_p}#L{start_line}-L{end_line}"
+            elif start_line is not None:
+                return f"⏺ {display_name} {rel_p}#L{start_line}"
+            return f"⏺ {display_name} {rel_p}"
+
+        if name in ("write_to_file", "replace_file_content", "multi_replace_file_content"):
+            tgt = params.get("TargetFile") or params.get("path") or ""
+            _, rel_p = _resolve_rel_path(tgt, cwd)
+            return f"⏺ {display_name} {rel_p}"
+
+        if name == "list_dir":
+            dp = params.get("DirectoryPath") or params.get("path") or ""
+            _, rel_p = _resolve_rel_path(dp, cwd)
+            return f"⏺ {display_name} {rel_p}"
+
+        if name == "grep_search":
+            query = params.get("Query") or ""
+            sp = params.get("SearchPath") or ""
+            _, rel_p = _resolve_rel_path(sp, cwd)
+            return f"⏺ {display_name} ({query}) in {rel_p}"
+
+        if name == "search_web":
+            query = params.get("query") or ""
+            return f"⏺ {display_name} ({query})"
+
+        if name == "read_url_content":
+            url = params.get("Url") or ""
+            return f"⏺ {display_name} ({url})"
+
+        return f"⏺ {display_name}"
+
+    def _record_tool_file_change(self, block):
+        name = block.get("name")
+        params = block.get("parameters") or {}
+        cwd = (self.session.agent_thread.cwd
+               if self.session.agent_thread else self.session.cwd) or ""
+
+        if name == "write_to_file":
+            target = params.get("TargetFile") or ""
+            if target:
+                abs_p, rel_p = _resolve_rel_path(target, cwd)
+                content = params.get("CodeContent") or ""
+                lines = content.splitlines()
+                diff_text = ("@@ -0,0 +1,{} @@\n".format(len(lines))
+                             + "\n".join("+" + l for l in lines) + "\n")
+                self.session.record_file_change(abs_p, rel_p, diff_text)
+        elif name == "replace_file_content":
+            target = params.get("TargetFile") or ""
+            if target:
+                abs_p, rel_p = _resolve_rel_path(target, cwd)
+                old_str = params.get("TargetContent") or ""
+                new_str = params.get("ReplacementContent") or ""
+                start_line = params.get("StartLine")
+                diff_text = _make_edit_diff(old_str, new_str, rel_p, start_line)
+                self.session.record_file_change(abs_p, rel_p, diff_text)
+        elif name == "multi_replace_file_content":
+            target = params.get("TargetFile") or ""
+            if target:
+                abs_p, rel_p = _resolve_rel_path(target, cwd)
+                self.session.record_file_change(abs_p, rel_p, None)
+
+
 PROCESSOR_MAP = {
     "claude": ClaudeMessageProcessor,
     "codex": CodexMessageProcessor,
     "opencode": OpenCodeMessageProcessor,
     "pi": PiMessageProcessor,
+    "antigravity": AntigravityMessageProcessor,
 }
 
 

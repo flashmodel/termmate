@@ -13,6 +13,7 @@ from chatview.chatprocessor import (
     ClaudeMessageProcessor,
     CodexMessageProcessor,
     OpenCodeMessageProcessor,
+    AntigravityMessageProcessor,
     _parse_markdown_file_target,
     format_model_badge,
     format_model_display,
@@ -417,8 +418,146 @@ class TestThinkPresets(unittest.TestCase):
         self.assertIs(BaseChatMessageProcessor.for_provider("codex"), CodexMessageProcessor)
         self.assertIs(BaseChatMessageProcessor.for_provider("claude"), ClaudeMessageProcessor)
         self.assertIs(BaseChatMessageProcessor.for_provider("opencode"), OpenCodeMessageProcessor)
+        self.assertIs(BaseChatMessageProcessor.for_provider("antigravity"), AntigravityMessageProcessor)
         self.assertIs(BaseChatMessageProcessor.for_provider("unknown"), BaseChatMessageProcessor)
         self.assertIs(BaseChatMessageProcessor.for_provider(""), BaseChatMessageProcessor)
+
+    def test_antigravity_presets(self):
+        presets = BaseChatMessageProcessor.for_provider("antigravity").get_think_presets(None)
+        values = [p["value"] for p in presets]
+        self.assertEqual(values, ["low", "medium", "high"])
+        self.assertEqual(AntigravityMessageProcessor.get_think_presets(None), presets)
+
+    def test_antigravity_presets_with_model_efforts(self):
+        # Model with specific supportedReasoningEfforts
+        active_model = {
+            "value": "custom-model",
+            "supportedReasoningEfforts": ["low", "high"],
+        }
+        presets = AntigravityMessageProcessor.get_think_presets(active_model)
+        self.assertEqual([p["value"] for p in presets], ["low", "high"])
+
+        # Model with supportsEffort: True
+        effort_model = {
+            "value": "gemini-3.8-flash",
+            "supportsEffort": True,
+        }
+        presets_effort = AntigravityMessageProcessor.get_think_presets(effort_model)
+        self.assertEqual([p["value"] for p in presets_effort], ["low", "medium", "high"])
+
+        # Model with no reasoning effort support
+        no_effort_model = {
+            "value": "non-reasoning-model",
+            "supportsEffort": False,
+        }
+        self.assertEqual(AntigravityMessageProcessor.get_think_presets(no_effort_model), [])
+
+    def test_antigravity_default_models_structure(self):
+        models = AntigravityMessageProcessor.get_default_models()
+        self.assertTrue(len(models) >= 5)
+
+        model_values = [m["value"] for m in models]
+        self.assertIn("gemini-3.8-flash", model_values)
+        self.assertIn("gemini-3.7-flash", model_values)
+        self.assertIn("gemini-3.1-pro", model_values)
+        self.assertIn("claude-sonnet-4-6", model_values)
+
+        for m in models:
+            self.assertTrue(m.get("supportsEffort"))
+            self.assertEqual(m.get("supportedReasoningEfforts"), ["low", "medium", "high"])
+            self.assertIn(m.get("defaultReasoningEffort"), ("low", "medium", "high"))
+            # format_model_badge detects reasoning capabilities
+            self.assertEqual(format_model_badge(m), "Reasoning")
+            # normalize_model attaches "Reasoning" annotation
+            normalized = normalize_model(m)
+            self.assertEqual(normalized["annotation"], "Reasoning")
+
+    def test_antigravity_models_update_message(self):
+        session = SimpleNamespace(
+            agent_thread=SimpleNamespace(cwd="/workspace"),
+            cwd="/workspace",
+            available_models=[],
+        )
+        processor = AntigravityMessageProcessor(session)
+        models_payload = [
+            {
+                "value": "gemini-3.8-flash",
+                "displayName": "Gemini 3.8 Flash",
+                "supportedReasoningEfforts": ["low", "medium", "high"],
+                "defaultReasoningEffort": "medium",
+            }
+        ]
+        msg = SimpleNamespace(type="models_update", content={"models": models_payload})
+        processor.handle_message(msg)
+        self.assertEqual(len(session.available_models), 1)
+        self.assertEqual(session.available_models[0]["value"], "gemini-3.8-flash")
+        self.assertEqual(session.available_models[0]["annotation"], "Reasoning")
+
+    def test_antigravity_tool_formatting(self):
+        session = SimpleNamespace(agent_thread=SimpleNamespace(cwd="/workspace"), cwd="/workspace", available_models=[])
+        processor = AntigravityMessageProcessor(session)
+
+        # run_command
+        cmd_block = {"name": "run_command", "parameters": {"CommandLine": "git status"}}
+        self.assertEqual(processor._format_tool_block(cmd_block), "⏺ RunCommand (git status)")
+
+        # view_file
+        view_block = {"name": "view_file", "parameters": {"AbsolutePath": "/workspace/foo.py"}}
+        self.assertEqual(processor._format_tool_block(view_block), "⏺ ViewFile foo.py")
+
+        # write_to_file
+        write_block = {"name": "write_to_file", "parameters": {"TargetFile": "/workspace/bar.py"}}
+        self.assertEqual(processor._format_tool_block(write_block), "⏺ WriteFile bar.py")
+
+        # replace_file_content
+        edit_block = {"name": "replace_file_content", "parameters": {"TargetFile": "/workspace/bar.py"}}
+        self.assertEqual(processor._format_tool_block(edit_block), "⏺ EditFile bar.py")
+
+        # search_web
+        search_block = {"name": "search_web", "parameters": {"query": "gemini 3.8"}}
+        self.assertEqual(processor._format_tool_block(search_block), "⏺ SearchWeb (gemini 3.8)")
+
+    def test_antigravity_permission_request(self):
+        session = SimpleNamespace(
+            agent_thread=SimpleNamespace(cwd="/workspace"),
+            cwd="/workspace",
+            available_models=[],
+            permission_requests={},
+            show_permission_phantom=MagicMock(),
+        )
+        processor = AntigravityMessageProcessor(session)
+        msg = SimpleNamespace(
+            type="control_request",
+            content={
+                "request_id": "req-1",
+                "request": {
+                    "tool_name": "run_command",
+                    "input": {"CommandLine": "rm -rf /tmp/test"},
+                },
+            },
+        )
+        processor.handle_message(msg)
+        self.assertIn("req-1", session.permission_requests)
+        session.show_permission_phantom.assert_called_once_with(
+            "req-1", "RunCommand", {"CommandLine": "rm -rf /tmp/test"}
+        )
+
+    @patch("chatview.chatprocessor.sublime.set_timeout", side_effect=lambda fn, delay: fn())
+    def test_antigravity_plan_mode_trigger(self, _mock_timeout):
+        session = SimpleNamespace(
+            agent_thread=SimpleNamespace(cwd="/workspace", anthropic_config={"plan_mode": True}),
+            cwd="/workspace",
+            available_models=[],
+            show_implement_plan_button=MagicMock(),
+            show_file_changes_artifact=MagicMock(),
+            start_loading=MagicMock(),
+            stop_loading=MagicMock(),
+        )
+        processor = AntigravityMessageProcessor(session)
+        processor.append_content = MagicMock()
+        processor.handle_message(SimpleNamespace(type="plan_delta", content="Phase 1: Research"))
+        processor.handle_message(SimpleNamespace(type="stop", content={}))
+        session.show_implement_plan_button.assert_called_once_with("Phase 1: Research")
 
     def test_codex_with_advertised_efforts(self):
         active_model = {
