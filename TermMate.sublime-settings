@@ -64,6 +64,7 @@
     "codex_command": "",
     "pi_command": "",
     "opencode_command": "",
+    "antigravity_command": "",
 
     // Extra environment variables to inject into agent subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.
