@@ -370,6 +370,7 @@ class AgentThread(threading.Thread):
                 and self.anthropic_config.get("enable_file_checkpoint", True)
             ),
             think_level=self.anthropic_config.get("think_level"),
+            sandbox_mode=self.anthropic_config.get("sandbox_mode"),
         )
 
         agent_provider = self.anthropic_config.get("agent_provider", "claude")
@@ -860,6 +861,11 @@ class PermissionPanel:
         self.phantom_sets = {}  # Map of request_id -> PhantomSet
         self.diff_data = {}  # Map of request_id -> (old_text, new_text, name)
 
+    @property
+    def is_visible(self):
+        """True if any permission phantom is currently showing."""
+        return bool(self.phantom_sets)
+
     def show(self, request_id, tool_name, input_data, approve_mode=None):
         """Show a permission phantom for a tool request."""
         input_start = get_input_start(self.view)
@@ -890,10 +896,10 @@ class PermissionPanel:
                 .replace(">", "&gt;")
                 .replace('"', "&quot;"))
 
-    def _focus_plan_if_exists(self, request_id):
+    def _focus_plan_if_exists(self, request_id, plan_path=None):
         """Focus an existing plan view for this request and return True if found."""
         for v in self.window.views():
-            if v.settings().get("chatview_plan_request_id") == request_id:
+            if v.settings().get("chatview_plan_request_id") == request_id or (plan_path and v.file_name() == plan_path):
                 self.window.focus_view(v)
                 return True
         return False
@@ -920,19 +926,30 @@ class PermissionPanel:
             file_path = input_data.get("file_path", "unknown")
             name = os.path.basename(file_path)
             self.diff_data[request_id] = (old_text, new_text, name)
-            return f'📄 <a href="show_diff" class="file-link">{name}</a>'
+            return f'📄 <a href="show_diff" class="file-link">{self._html_escape(name)}</a>'
 
-        elif tool_name in ("ExitPlanMode", "CodexImplementPlan", "ImplementPlan"):
+        elif tool_name in ("ExitPlanMode", "CodexImplementPlan", "ImplementPlan", "AntigravityImplementPlan"):
             plan = input_data.get("plan", "")
-            first_line = plan.split("\n")[0] if plan else "Empty Plan"
-            self.diff_data[request_id] = ("", plan, "Implementation Plan")
+            plan_path = input_data.get("plan_path", "")
+            summary = input_data.get("summary", "")
+            first_line = summary or (plan.split("\n")[0] if plan else "Implementation Plan")
+            self.diff_data[request_id] = (plan_path, plan, "Implementation Plan")
 
             # Automatically open the plan in a new view in the background
-            sublime.set_timeout(lambda: self._open_plan(request_id, plan, "Implementation Plan", background=True), 0)
+            def _open():
+                if plan_path and os.path.isfile(plan_path):
+                    active_view = self.window.active_view()
+                    self.window.open_file(plan_path)
+                    if active_view:
+                        self.window.focus_view(active_view)
+                elif plan:
+                    self._open_plan(request_id, plan, "Implementation Plan", background=True)
+
+            sublime.set_timeout(_open, 0)
 
             return (
                 f'📄 <a href="show_plan" class="file-link">plan</a>\n\n'
-                f'{first_line}'
+                f'{self._html_escape(first_line)}'
             )
 
         elif tool_name == "Write":
@@ -947,7 +964,7 @@ class PermissionPanel:
                     LOG.error(f"Failed to read file for diff: {e}")
             name = os.path.basename(file_path) if file_path else "new_file"
             self.diff_data[request_id] = (old_text, new_text, name)
-            return f'📄 <a href="show_diff" class="file-link">{name}</a>'
+            return f'📄 <a href="show_diff" class="file-link">{self._html_escape(name)}</a>'
         elif tool_name == "command_execution":
             command = input_data.get("command", "")
             cwd = input_data.get("cwd", "")
@@ -991,7 +1008,7 @@ class PermissionPanel:
         if approve_mode in (ApproveMode.DEFAULT.value, ApproveMode.ALLOW_EDIT.value):
             allow_chat_btn = '<a href="allow_chat" class="btn btn-chat">Allow this chat</a>'
 
-        allow_btn_text = "Implement the Plan" if tool_name in ("ExitPlanMode", "CodexImplementPlan", "ImplementPlan") else "Allow"
+        allow_btn_text = "Implement the Plan" if tool_name in ("ExitPlanMode", "CodexImplementPlan", "ImplementPlan", "AntigravityImplementPlan") else "Allow"
 
         return f"""
         <body id="permission-{request_id}">
@@ -1086,8 +1103,11 @@ class PermissionPanel:
             return
         elif action == "show_plan":
             if request_id in self.diff_data:
-                _, plan, name = self.diff_data[request_id]
-                if not self._focus_plan_if_exists(request_id):
+                plan_path, plan, name = self.diff_data[request_id]
+                if plan_path and os.path.isfile(plan_path):
+                    self.window.open_file(plan_path)
+                    return
+                if not self._focus_plan_if_exists(request_id, plan_path=plan_path):
                     self._open_plan(request_id, plan, name)
             return
         elif action == "set_approve_mode":
@@ -1343,6 +1363,7 @@ class ChatSession:
             "session_id": session_id,
             "env": settings.get("env", {}),
             "debug_agent_message": settings.get("debug_agent_message", False),
+            "sandbox_mode": self._get_sandbox_mode(settings, agent_provider),
         }
 
         # Initialize background agent thread
@@ -1432,6 +1453,15 @@ class ChatSession:
                 disallowed_tools = disallowed_tools + ["AskUserQuestion"]
         return disallowed_tools
 
+    def _get_sandbox_mode(self, settings, agent_provider):
+        """Determine sandbox_mode preference for the given provider."""
+        sandbox_mode = self.window.settings().get(f"chatview_sandbox_mode_{agent_provider}")
+        if sandbox_mode is None:
+            sandbox_mode = self.window.settings().get("chatview_sandbox_mode")
+        if sandbox_mode is None:
+            sandbox_mode = settings.get("sandbox_mode", True)
+        return sandbox_mode
+
     def show_permission_phantom(self, request_id, tool_name, input_data):
         """Show a phantom asking for permission."""
         if tool_name == "AskUserQuestion":
@@ -1486,7 +1516,7 @@ class ChatSession:
         if request_id in self.permission_requests:
             tool_name, input_data = self.permission_requests[request_id]
 
-            if tool_name in ("CodexImplementPlan", "ImplementPlan"):
+            if tool_name in ("CodexImplementPlan", "ImplementPlan", "AntigravityImplementPlan"):
                 if action == "allow":
                     self.window.run_command("term_chat_implement_plan")
                 self.clear_permission_phantom(request_id)
@@ -1596,11 +1626,16 @@ class ChatSession:
         if self.agent_thread:
             self.agent_thread.stop()
 
-    def show_implement_plan_button(self, plan_text="", tool_name="CodexImplementPlan"):
+    def show_implement_plan_button(self, plan_text="", tool_name="CodexImplementPlan", plan_path=None, summary=""):
         """Show a phantom button to trigger plan implementation via PermissionPanel."""
         request_id = f"codex_plan_{id(self)}"
-        self.permission_requests[request_id] = (tool_name, {"plan": plan_text})
-        self.permission_panel.show(request_id, tool_name, {"plan": plan_text})
+        input_data = {"plan": plan_text}
+        if plan_path:
+            input_data["plan_path"] = plan_path
+        if summary:
+            input_data["summary"] = summary
+        self.permission_requests[request_id] = (tool_name, input_data)
+        self.permission_panel.show(request_id, tool_name, input_data)
 
     @property
     def plan_mode(self):
@@ -1645,13 +1680,25 @@ class ChatSession:
         extra_env = self.agent_thread.anthropic_config.get("env") if self.agent_thread else None
         self.artifact.record(abs_path, rel_path, diff_text, extra_env=extra_env)
 
+    def record_plan_artifact(self, abs_path, name, summary="", content="", can_execute=True, icon=None):
+        """Record a plan or user artifact so it is listed in the end-of-turn artifact."""
+        self.artifact.record_plan(abs_path, name, summary, content, can_execute=can_execute, icon=icon)
+
     def show_file_changes_artifact(self):
         """Append the collapsed file changes artifact for the finished turn."""
         self.artifact.show()
 
+    def is_artifact_execute_at(self, point):
+        """True if point is on an artifact [Execute] button."""
+        return self.artifact.is_execute_at(point)
+
+    def is_artifact_plan_at(self, point):
+        """True if point is on an artifact plan line."""
+        return self.artifact.is_plan_at(point)
+
     def open_artifact_diff_at(self, point):
-        """If point is on an artifact file name, open its diff view. Returns True if handled."""
-        return self.artifact.open_diff_at(point)
+        """If point is on an artifact (file name or plan), open its view or execute. Returns True if handled."""
+        return self.artifact.open_artifact_at(point)
 
     def add_prompt_highlight(self, region):
         """Add a gutter highlight and an end-of-line rewind button for a submitted prompt."""
@@ -1866,6 +1913,7 @@ class ChatSession:
             "approve_mode": self.window.settings().get(CHAT_APPROVE_MODE, ApproveMode.ALLOW_EDIT.value),
             "env": settings.get("env", {}),
             "debug_agent_message": settings.get("debug_agent_message", False),
+            "sandbox_mode": self._get_sandbox_mode(settings, new_agent_provider),
         }
 
         self._reset_markdown_formatter()
@@ -1927,6 +1975,7 @@ class ChatSession:
             "session_id": old_session_id,
             "env": settings.get("env", {}),
             "debug_agent_message": settings.get("debug_agent_message", False),
+            "sandbox_mode": self._get_sandbox_mode(settings, current_agent_provider),
         }
 
         cwd = get_best_dir(self.chat_view)
@@ -2011,7 +2060,7 @@ class ChatSession:
         for turn in (session_info or {}).get("turns", []):
             if turn.get("prompt"):
                 self._replay_prompt(turn["prompt"])
-                self.chat_view.run_command("term_chat_output_append", {"text": "\n\n"})
+                self.chat_view.run_command("term_chat_output_append", {"text": "\n"})
             if turn.get("response"):
                 formatter = self.markdown_formatter
                 response = formatter.format(
@@ -2389,11 +2438,12 @@ class ChatViewListener(sublime_plugin.EventListener):
             return None
 
         # Double-click on a tool call file line → open the file instead of selecting the word
-        # Also handles artifact file name lines → open the recorded diff view
+        # Also handles artifact file name lines → open the recorded diff view or plan
+        # Single-click on an artifact [Execute] button → execute immediately
         if (command_name == "drag_select" and args
-                and args.get("by") == "words"
                 and not args.get("extend", False)
                 and not args.get("additive", False)):
+            is_word_select = (args.get("by") == "words")
             window = view.window()
             if window and window.id() in chatview_clients:
                 session = chatview_clients[window.id()]
@@ -2404,14 +2454,18 @@ class ChatViewListener(sublime_plugin.EventListener):
                     else None
                 )
                 if click_point is not None:
-                    line_text = view.substr(view.line(click_point))
-                    if session.message_processor.open_tool_file(line_text, window, view=view, point=click_point):
-                        return ("noop", {})
-                    if session.message_processor.open_local_file_link(
-                            line_text, window, view, click_point):
-                        return ("noop", {})
-                    if session.open_artifact_diff_at(click_point):
-                        return ("noop", {})
+                    if session.is_artifact_execute_at(click_point):
+                        if session.open_artifact_diff_at(click_point):
+                            return ("noop", {})
+                    elif is_word_select:
+                        line_text = view.substr(view.line(click_point))
+                        if session.message_processor.open_tool_file(line_text, window, view=view, point=click_point):
+                            return ("noop", {})
+                        if session.message_processor.open_local_file_link(
+                                line_text, window, view, click_point):
+                            return ("noop", {})
+                        if session.open_artifact_diff_at(click_point):
+                            return ("noop", {})
 
         editable_start = input_editable_start(view)
 
@@ -3611,14 +3665,9 @@ class TermChatImplementPlanCommand(sublime_plugin.WindowCommand):
             session = chatview_clients[window_id]
             sublime.status_message("Implementing plan...")
 
-            # Get position before appending
-            input_start = get_input_start(session.chat_view, 0)
-            # Display implementation message in chat history
-            session.chat_view.run_command("term_chat_output_append", {"text": "\nimplement the plan\n\n"})
-
-            # Add gutter highlight mimicking user prompt
-            highlight_region = sublime.Region(input_start, input_start)
-            session.add_prompt_highlight(highlight_region)
+            # Display implementation prompt in chat history with gutter highlight
+            session._replay_prompt("Implement the plan.")
+            session.chat_view.run_command("term_chat_output_append", {"text": "\n"})
 
             # For Codex, we must explicitly exit Plan mode to execute.
             # We use proceed_plan=True to signal CodexAgent to switch mode to 'default' for this turn.

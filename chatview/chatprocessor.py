@@ -1591,8 +1591,151 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
 
     def __init__(self, session):
         super().__init__(session)
+        self._plan_path = None
+        self._plan_summary = ""
+        self._synced_artifact_mtimes = {}
         if session and not getattr(session, "available_models", None):
             self.set_available_models(self.get_default_models())
+
+    USER_ARTIFACT_SPECS = {
+        "implementation_plan.md": {"icon": "📋", "can_execute": True, "label": "Plan"},
+        "plan.md":                {"icon": "📋", "can_execute": True, "label": "Plan"},
+        "walkthrough.md":          {"icon": "📖", "can_execute": False, "label": "Walkthrough"},
+    }
+
+    @classmethod
+    def _is_user_artifact(cls, block):
+        name = block.get("name") or ""
+        if name not in ("write_to_file", "replace_file_content", "multi_replace_file_content"):
+            return False
+        params = block.get("parameters") or {}
+        metadata = params.get("ArtifactMetadata") or {}
+        target = params.get("TargetFile") or params.get("path") or ""
+        basename = os.path.basename(target).lower() if target else ""
+        if basename in cls.USER_ARTIFACT_SPECS:
+            return True
+        if metadata.get("RequestFeedback") is True or metadata.get("UserFacing") is True:
+            return True
+        low = target.lower()
+        if "implementation_plan.md" in low or "walkthrough.md" in low or "plan.md" in low:
+            return True
+        return False
+
+    _is_plan_artifact = _is_user_artifact
+
+    @staticmethod
+    def _extract_artifact_title(content):
+        """Extract a short title/summary from markdown content (e.g. first # Heading)."""
+        if not content:
+            return ""
+        for line in content.splitlines():
+            s = line.strip()
+            if s.startswith("#"):
+                clean = s.lstrip("#").strip()
+                if clean.startswith("[") and clean.endswith("]"):
+                    clean = clean[1:-1].strip()
+                if clean:
+                    return clean
+        return ""
+
+    @staticmethod
+    def _extract_plan_content(block):
+        params = block.get("parameters") or {}
+        code = params.get("CodeContent")
+        if code:
+            return code
+        replacement = params.get("ReplacementContent")
+        if replacement:
+            return replacement
+        target = params.get("TargetFile") or params.get("path") or ""
+        if target and os.path.isfile(target):
+            try:
+                with open(target, "r", encoding="utf-8", errors="replace") as f:
+                    return f.read()
+            except Exception:
+                pass
+        return ""
+
+    def _sync_user_artifacts(self, hint_path=None, content_fallback=None):
+        """Dual-trigger synchronization of user artifacts (implementation_plan.md, walkthrough.md)."""
+        s_id = None
+        if getattr(self.session, "agent_thread", None):
+            s_id = getattr(self.session.agent_thread, "session_id", None)
+        if not s_id and hasattr(self.session, "chat_view") and hasattr(self.session.chat_view, "settings"):
+            s_id = self.session.chat_view.settings().get("chat_session_id")
+
+        brain_dirs = []
+        if s_id:
+            for base in (
+                os.path.expanduser("~/.gemini/antigravity-cli/brain"),
+                os.path.expanduser("~/.gemini/antigravity-ide/brain"),
+                os.path.expanduser("~/.gemini/antigravity/brain"),
+            ):
+                d = os.path.join(base, s_id)
+                if os.path.isdir(d):
+                    brain_dirs.append(d)
+
+        paths_to_check = []
+        if hint_path:
+            paths_to_check.append(hint_path)
+
+        for bdir in brain_dirs:
+            for name in self.USER_ARTIFACT_SPECS:
+                fpath = os.path.join(bdir, name)
+                if fpath not in paths_to_check:
+                    paths_to_check.append(fpath)
+
+        for path in paths_to_check:
+            basename = os.path.basename(path).lower()
+            spec = self.USER_ARTIFACT_SPECS.get(basename)
+            if not spec:
+                if "implementation_plan" in basename or "plan" in basename:
+                    spec = self.USER_ARTIFACT_SPECS["implementation_plan.md"]
+                elif "walkthrough" in basename:
+                    spec = self.USER_ARTIFACT_SPECS["walkthrough.md"]
+                else:
+                    spec = {"icon": "📑", "can_execute": False, "label": "Artifact"}
+
+            mtime = 0
+            if os.path.isfile(path):
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    mtime = 0
+
+            last_mtime = self._synced_artifact_mtimes.get(path)
+            if last_mtime is not None and mtime > 0 and mtime <= last_mtime and path != hint_path:
+                continue
+
+            content = ""
+            if os.path.isfile(path):
+                try:
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                except Exception:
+                    content = ""
+            if not content and content_fallback and path == hint_path:
+                content = content_fallback
+
+            if content:
+                if mtime > 0:
+                    self._synced_artifact_mtimes[path] = mtime
+                summary = self._extract_artifact_title(content)
+                can_exec = spec.get("can_execute", False)
+                if can_exec:
+                    self._plan_path = path
+                    self._plan_summary = summary
+                    self._plan_text = ""
+                if hasattr(self.session, "record_plan_artifact"):
+                    self.session.record_plan_artifact(
+                        path,
+                        os.path.basename(path),
+                        summary=summary,
+                        content="",
+                        can_execute=can_exec,
+                        icon=spec.get("icon"),
+                    )
+
 
     def _handle_typed_message(self, message):
         if message.type == "thinking":
@@ -1615,6 +1758,11 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
                 self.append_content("\n")
             self.last_is_tool_call = True
             content_data = message.content if isinstance(message.content, dict) else {}
+            if self._is_user_artifact(content_data):
+                params = content_data.get("parameters") or {}
+                target = params.get("TargetFile") or params.get("path") or ""
+                code_fallback = params.get("CodeContent") or params.get("ReplacementContent")
+                self._sync_user_artifacts(hint_path=target, content_fallback=code_fallback)
             self.append_content(self._format_tool_block(content_data) + "\n")
             self._record_tool_file_change(content_data)
 
@@ -1663,22 +1811,30 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
             self.append_content("", flush=True)
             self.session.stop_loading()
             self.append_content("\n")
-            if self._plan_text:
-                plan_text = self._plan_text
-                self._plan_text = ""
-                self.append_content("\n")
-                self.append_content(plan_text)
-                self.append_content("\n", flush=True)
-                if (self.session.agent_thread
-                        and self.session.agent_thread.anthropic_config.get("plan_mode")):
-                    sublime.set_timeout(
-                        lambda pt=plan_text: self.session.show_implement_plan_button(pt),
-                        0,
-                    )
-            elif (self.session.agent_thread
-                  and self.session.agent_thread.anthropic_config.get("plan_mode")):
+            self.last_is_tool_call = False
+
+            # Dual-trigger final sync: scan and update any artifacts on disk
+            self._sync_user_artifacts()
+
+            plan_path = getattr(self, "_plan_path", None)
+            plan_summary = getattr(self, "_plan_summary", "") or (self._plan_text.split("\n")[0] if self._plan_text else "")
+            plan_text = self._plan_text
+            self._plan_text = ""
+            self._plan_path = None
+            self._plan_summary = ""
+
+            kwargs = {"tool_name": "AntigravityImplementPlan"}
+            if plan_path:
+                kwargs["plan_path"] = plan_path
+                if plan_summary:
+                    kwargs["summary"] = plan_summary
+
+            if (plan_path or plan_text) and (self.session.agent_thread
+                    and self.session.agent_thread.anthropic_config.get("plan_mode")):
                 sublime.set_timeout(
-                    lambda: self.session.show_implement_plan_button(""),
+                    lambda pt=plan_text, kw=kwargs: self.session.show_implement_plan_button(
+                        pt, **kw
+                    ),
                     0,
                 )
             sublime.set_timeout(self.session.show_file_changes_artifact, 0)
@@ -1691,6 +1847,17 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
         params = block.get("parameters") or {}
         cwd = (self.session.agent_thread.cwd
                if self.session.agent_thread else self.session.cwd) or ""
+
+        if self._is_user_artifact(block):
+            params = block.get("parameters") or {}
+            target = params.get("TargetFile") or params.get("path") or "artifact.md"
+            name = os.path.basename(target) or "artifact.md"
+            metadata = params.get("ArtifactMetadata") or {}
+            summary = metadata.get("Summary")
+            if summary:
+                first_summary = summary.strip().splitlines()[0]
+                return f"⏺ CreateArtifact {name} ({first_summary})"
+            return f"⏺ CreateArtifact {name}"
 
         if name == "run_command":
             cmd = params.get("CommandLine") or params.get("command") or ""
@@ -1741,6 +1908,8 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
         return f"⏺ {display_name}"
 
     def _record_tool_file_change(self, block):
+        if self._is_user_artifact(block):
+            return
         name = block.get("name")
         params = block.get("parameters") or {}
         cwd = (self.session.agent_thread.cwd

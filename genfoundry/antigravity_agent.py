@@ -139,9 +139,17 @@ class AntigravityAgent(BaseAgent):
 
     def set_plan_mode(self, plan_mode: bool) -> None:
         """Dynamically toggle plan mode."""
-        self.plan_mode = plan_mode
-        self.options.plan_mode = plan_mode
-        LOG.info(f"Antigravity plan_mode set to: {plan_mode}")
+        if self.plan_mode != plan_mode:
+            self.plan_mode = plan_mode
+            self.options.plan_mode = plan_mode
+            if self.process and self.process.returncode is None:
+                self._interrupted = True
+                try:
+                    self.process.terminate()
+                except Exception:
+                    pass
+            self.process = None
+            LOG.info(f"Antigravity plan_mode set to: {plan_mode}")
 
     def new_session(self) -> None:
         """Clear the current session ID for a fresh connection."""
@@ -158,11 +166,12 @@ class AntigravityAgent(BaseAgent):
 
     async def send_approval_response(self, request_id: str, response_data: Dict[str, Any]) -> None:
         """Send a permission/approval response to Antigravity CLI."""
-        await self._write_json({
-            "type": "permission_response",
+        payload = {
+            "event": "approval_response",
             "request_id": request_id,
             "response": response_data,
-        })
+        }
+        await self._write_json(payload)
 
     async def _spawn_process(self) -> None:
         """Spawn the Antigravity CLI subprocess and start stdout/stderr reader tasks."""
@@ -179,6 +188,13 @@ class AntigravityAgent(BaseAgent):
             except asyncio.CancelledError:
                 pass
 
+        # Drain any leftover messages from the previous process before starting new readers
+        while not self._message_queue.empty():
+            try:
+                self._message_queue.get_nowait()
+            except Exception:
+                break
+
         cmd = [
             self.cli_path,
             "--input-format", "stream-json",
@@ -187,15 +203,16 @@ class AntigravityAgent(BaseAgent):
 
         # Model selection
         if self.options.model:
-            cmd.extend(["--model", self.options.model])
+            model = self.options.model
+            if "/" in model:
+                model = model.split("/")[-1]
+            cmd.extend(["--model", model])
 
-        # Reasoning effort (low, medium, high)
+        # Reasoning effort
         effort = None
         if self.options.think_level:
             level = self.options.think_level.lower()
             if level in ("low", "medium", "high"):
-                effort = level
-            elif level not in ("auto", "default", "none", "off"):
                 effort = level
             elif level in ("auto", "default") and self.options.model:
                 effort = "high" if "pro" in self.options.model.lower() else "medium"
@@ -214,11 +231,16 @@ class AntigravityAgent(BaseAgent):
         # Tool permissions
         approve_mode = getattr(self.options, "approve_mode", "") or ""
         permission_mode = getattr(self.options, "permission_mode", "") or ""
-        if approve_mode == "accept-all" or permission_mode in ("bypass", "accept-all"):
+        # Auto-approve tool permissions in accept-all and allow-edit modes (including plan mode).
+        # In plan mode, CLI mode-level lock (--mode plan) ensures the agent only generates
+        # plans and does not modify project code, while allowing research tools (read_url, etc.)
+        # to execute non-interactively without headless auto-denial.
+        if approve_mode in ("accept-all", "allow-edit") or permission_mode in ("bypass", "accept-all"):
             cmd.append("--dangerously-skip-permissions")
 
         # Terminal sandbox
-        if getattr(self.options, "sandbox_mode", False):
+        sandbox = getattr(self.options, "sandbox_mode", False)
+        if sandbox and sandbox not in ("danger-full-access", "none", "off", "disabled", "false"):
             cmd.append("--sandbox")
 
         # Workspace directories
@@ -227,7 +249,7 @@ class AntigravityAgent(BaseAgent):
                 if d:
                     cmd.extend(["--add-dir", d])
 
-        # Plan mode
+        # Plan mode: CLI mode-level lock
         if self.plan_mode:
             cmd.extend(["--mode", "plan"])
 
@@ -281,25 +303,28 @@ class AntigravityAgent(BaseAgent):
     ) -> None:
         """Send a user prompt to the Antigravity CLI process on stdin."""
         if not self.is_connected:
-            raise RuntimeError("Client is not connected. Call connect() first.")
+            await self.connect()
+
+        if proceed_plan:
+            was_plan_mode = self.plan_mode
+            self.plan_mode = False
+            self.options.plan_mode = False
+            stripped = content.strip()
+            if stripped.startswith("/plan"):
+                content = stripped[len("/plan"):].strip() or "Implement the plan."
+            # Since --mode plan is a CLI mode-level lock, cleanly terminate the old process
+            # and drop any premature messages from it.
+            if was_plan_mode:
+                await self._terminate_subprocess()
 
         # If process was interrupted or exited, clean up and respawn with existing session_id
         if self._interrupted or not self.process or (self.process.returncode is not None and isinstance(self.process.returncode, int)):
-            if self.process and self.process.returncode is None:
-                try:
-                    self.process.kill()
-                    await self.process.wait()
-                except Exception:
-                    pass
+            if self.process:
+                await self._terminate_subprocess()
             self._interrupted = False
-            self.process = None
             if self._session_id:
                 self.options.session_id = self._session_id
             await self._spawn_process()
-
-        if proceed_plan:
-            self.plan_mode = False
-            self.options.plan_mode = False
 
         message = {
             "event": "user",
@@ -326,12 +351,13 @@ class AntigravityAgent(BaseAgent):
 
     async def _read_stdout(self) -> None:
         """Read and parse NDJSON messages from agy stdout."""
-        if not self.process or not self.process.stdout:
+        proc = self.process
+        if not proc or not proc.stdout:
             return
 
         try:
-            while self.is_connected:
-                line = await self.process.stdout.readline()
+            while self.is_connected and self.process is proc:
+                line = await proc.stdout.readline()
                 if not line:
                     break
 
@@ -353,12 +379,13 @@ class AntigravityAgent(BaseAgent):
 
     async def _read_stderr(self) -> None:
         """Read diagnostics from agy stderr."""
-        if not self.process or not self.process.stderr:
+        proc = self.process
+        if not proc or not proc.stderr:
             return
 
         try:
-            while self.is_connected:
-                line = await self.process.stderr.readline()
+            while self.is_connected and self.process is proc:
+                line = await proc.stderr.readline()
                 if not line:
                     break
 
@@ -486,10 +513,15 @@ class AntigravityAgent(BaseAgent):
                 err_msg = result.get("error") or "Antigravity agent execution failed."
                 response_text = result.get("response") or ""
                 has_response = bool(response_text.strip())
-                # Only suppress the interrupted error when there is response
-                if "stream was interrupted" in err_msg.lower() and has_response:
+                err_lower = err_msg.lower()
+                is_cancellation = (
+                    "context canceled" in err_lower
+                    or "stream was interrupted" in err_lower
+                    or self._interrupted
+                )
+                if is_cancellation:
                     LOG.info(
-                        f"Antigravity stream was interrupted after producing response: {err_msg}")
+                        f"Antigravity execution was interrupted or canceled: {err_msg}")
                 else:
                     messages.append(
                         Message("error", content=err_msg, msg_id=self._session_id, raw_data=result)
@@ -554,7 +586,10 @@ class AntigravityAgent(BaseAgent):
 
                     if self.process.returncode != 0 and not has_yielded_result:
                         err_text = self._extract_exit_error()
-                        yield Message("error", content=err_text)
+                        if "context canceled" in err_text.lower():
+                            LOG.info(f"Antigravity process exited with cancellation: {err_text}")
+                        else:
+                            yield Message("error", content=err_text)
                         yield Message("stop")
                     break
                 continue
@@ -591,48 +626,66 @@ class AntigravityAgent(BaseAgent):
         # Immediately enqueue stop message so UI stops loading animation
         await self._message_queue.put(Message("stop"))
 
+    async def _terminate_subprocess(self) -> None:
+        """Cleanly terminate and detach the current CLI process, reader tasks, and drop residual messages."""
+        if self._read_task and not self._read_task.done():
+            self._read_task.cancel()
+            try:
+                await self._read_task
+            except asyncio.CancelledError:
+                pass
+        self._read_task = None
+
+        if self._read_stderr_task and not self._read_stderr_task.done():
+            self._read_stderr_task.cancel()
+            try:
+                await self._read_stderr_task
+            except asyncio.CancelledError:
+                pass
+        self._read_stderr_task = None
+
+        proc = self.process
+        self.process = None
+
+        if proc:
+            if proc.stdin:
+                try:
+                    proc.stdin.close()
+                    if hasattr(proc.stdin, "wait_closed"):
+                        await proc.stdin.wait_closed()
+                except Exception:
+                    pass
+
+            if proc.returncode is None:
+                try:
+                    proc.terminate()
+                    wait_coro = proc.wait()
+                    if asyncio.iscoroutine(wait_coro):
+                        await asyncio.wait_for(wait_coro, timeout=1.0)
+                except Exception:
+                    try:
+                        proc.kill()
+                        kill_wait = proc.wait()
+                        if asyncio.iscoroutine(kill_wait):
+                            await kill_wait
+                    except Exception:
+                        pass
+
+        # Drain any residual messages (premature stop/result) from the terminated process
+        while not self._message_queue.empty():
+            try:
+                self._message_queue.get_nowait()
+            except Exception:
+                break
+
     async def disconnect(self) -> None:
         """Disconnect and cleanly shut down the subprocess."""
         if not self.is_connected:
             return
 
         self.is_connected = False
-
-        if self._read_task:
-            self._read_task.cancel()
-            try:
-                await self._read_task
-            except asyncio.CancelledError:
-                pass
-
-        if self._read_stderr_task:
-            self._read_stderr_task.cancel()
-            try:
-                await self._read_stderr_task
-            except asyncio.CancelledError:
-                pass
-
-        if self.process:
-            if self.process.stdin:
-                try:
-                    self.process.stdin.close()
-                    await self.process.stdin.wait_closed()
-                except Exception:
-                    pass
-
-            if self.process.returncode is None:
-                try:
-                    self.process.terminate()
-                    try:
-                        await asyncio.wait_for(self.process.wait(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        self.process.kill()
-                        await self.process.wait()
-                except ProcessLookupError:
-                    pass
-                except Exception as e:
-                    LOG.error(f"Error terminating agy process: {e}")
-            self.process = None
+        self._interrupted = True
+        await self._terminate_subprocess()
 
 
 async def query(

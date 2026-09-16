@@ -12,6 +12,10 @@
     // List of tools to completely disable for the agents.
     "disable_ask_user": true,
 
+    // Whether to run terminal commands in sandbox mode.
+    // When enabled, adds --sandbox to Antigravity CLI and configures sandbox permissions.
+    "sandbox_mode": true,
+
     // Whether to share all open workspace folders with the agent.
     // If true, the agent can access files in all folders currently open in the workspace.
     // If false, the agent only has access to the agent working directory(cwd).

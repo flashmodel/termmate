@@ -296,7 +296,7 @@ class CodexAgent(BaseAgent):
             "workspace-write": "workspace-write",
             "danger-full-access": "danger-full-access",
         }
-        if self.options.sandbox_mode:
+        if self.options.sandbox_mode and self.options.sandbox_mode not in (True, "true"):
             thread_params["sandbox"] = sandbox_map.get(self.options.sandbox_mode, "workspace-write")
         elif sys.platform == "win32":
             # On Windows without native sandbox, workspace-write gets downgraded to read-only by Codex.

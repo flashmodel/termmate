@@ -8,16 +8,22 @@ version: 2
 
 contexts:
   main:
-    - match: '^(⏺\s*(?:Read|Edit|Write|read|edit|write|fileChange)\s+)(\S+.*)$'
+    - match: '^(⏺\s*(?:Read|Edit|Write|read|edit|write|fileChange|ViewFile|EditFile|WriteFile)\s+)(\S+.*)$'
       captures:
         1: entity.name.function.chatview
         2: variable.function.chatview
     - match: '^(⏺\s*\S+)(.*)$'
       captures:
         1: entity.name.function.chatview
-    - match: '^▣ .*$'
-      scope: variable.parameter.chatview
+    - match: '^(▣\s*)((?:\d+\s+)?files?\s+(?:changed|changes).*)$'
+      captures:
+        1: variable.parameter.chatview
+        2: variable.parameter.chatview
       push: artifact_file_list
+    - match: '^(▣\s*)(\S.*)$'
+      captures:
+        1: variable.parameter.chatview
+        2: variable.function.chatview
     - match: '^■ .*$'
       scope: variable.parameter.chatview
     - include: scope:text.html.markdown#markdown

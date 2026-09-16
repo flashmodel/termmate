@@ -431,6 +431,20 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
         finally:
             await agent.disconnect()
 
+    async def test_thread_start_sandbox_parameter_boolean_true(self):
+        fake_proc = FakeProcess()
+        opts = AgentOptions(cli_path="/usr/bin/true", sandbox_mode=True)
+        agent = await self._create_agent(fake_proc, opts=opts)
+        try:
+            start_call = next((c for c in self._rpc_calls if c.get("method") == "thread/start"), None)
+            self.assertIsNotNone(start_call)
+            params = start_call.get("params", {})
+            self.assertIsInstance(params.get("sandbox"), str)
+            expected_sandbox = "danger-full-access" if sys.platform == "win32" else "workspace-write"
+            self.assertEqual(params.get("sandbox"), expected_sandbox)
+        finally:
+            await agent.disconnect()
+
     async def test_thread_start_think_level_and_turn_effort(self):
         fake_proc = FakeProcess()
         opts = AgentOptions(cli_path="/usr/bin/true", think_level="high")

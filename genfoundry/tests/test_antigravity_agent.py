@@ -134,6 +134,53 @@ class TestAntigravityAgentCommand(unittest.IsolatedAsyncioTestCase):
         args = await self._connect_with_mocks(agent)
         self.assertIn("--dangerously-skip-permissions", args)
 
+    async def test_connect_plan_mode_includes_dangerously_skip_permissions(self):
+        opts = AgentOptions(
+            cli_path="/mock/bin/agy",
+            cwd="/workspace",
+            approve_mode="accept-all",
+            plan_mode=True,
+        )
+        agent = AntigravityAgent(options=opts)
+        args = await self._connect_with_mocks(agent)
+        # In plan mode, --mode plan is passed as CLI mode-level lock
+        self.assertIn("--mode", args)
+        idx_mode = args.index("--mode")
+        self.assertEqual(args[idx_mode + 1], "plan")
+        # In plan mode with accept-all / allow-edit, dangerously-skip-permissions is also passed
+        self.assertIn("--dangerously-skip-permissions", args)
+
+    def test_set_plan_mode_toggles_state(self):
+        opts = AgentOptions(cli_path="/mock/bin/agy", cwd="/workspace", plan_mode=False)
+        agent = AntigravityAgent(options=opts)
+        agent.set_plan_mode(True)
+        self.assertTrue(agent.plan_mode)
+        self.assertTrue(agent.options.plan_mode)
+
+    async def test_connect_sandbox_mode_enabled(self):
+        opts = AgentOptions(cli_path="/mock/bin/agy", cwd="/workspace", sandbox_mode=True)
+        agent = AntigravityAgent(options=opts)
+        args = await self._connect_with_mocks(agent)
+        self.assertIn("--sandbox", args)
+
+    async def test_connect_sandbox_mode_string_mode(self):
+        opts = AgentOptions(cli_path="/mock/bin/agy", cwd="/workspace", sandbox_mode="workspace-write")
+        agent = AntigravityAgent(options=opts)
+        args = await self._connect_with_mocks(agent)
+        self.assertIn("--sandbox", args)
+
+    async def test_connect_sandbox_mode_disabled(self):
+        opts = AgentOptions(cli_path="/mock/bin/agy", cwd="/workspace", sandbox_mode=False)
+        agent = AntigravityAgent(options=opts)
+        args = await self._connect_with_mocks(agent)
+        self.assertNotIn("--sandbox", args)
+
+    async def test_connect_sandbox_mode_danger_full_access(self):
+        opts = AgentOptions(cli_path="/mock/bin/agy", cwd="/workspace", sandbox_mode="danger-full-access")
+        agent = AntigravityAgent(options=opts)
+        args = await self._connect_with_mocks(agent)
+        self.assertNotIn("--sandbox", args)
+
     async def test_connect_session_id_flag(self):
         opts = AgentOptions(
             cli_path="/mock/bin/agy",
@@ -267,10 +314,108 @@ class TestAntigravityAgentEvents(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0].type, "result")
         self.assertEqual(messages[0].content["status"], "SUCCESS")
 
+    async def test_result_event_context_canceled_suppresses_error_message(self):
+        event = {
+            "event": "result",
+            "result": {
+                "conversation_id": "conv-1",
+                "status": "ERROR",
+                "response": "",
+                "error": "context canceled",
+            },
+        }
+        await self.agent._handle_json_event(event)
+
+        messages = await self._messages()
+        # Should only yield the result message, not an error message
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].type, "result")
+
+    async def test_result_event_actual_error_emits_error_message(self):
+        event = {
+            "event": "result",
+            "result": {
+                "conversation_id": "conv-1",
+                "status": "ERROR",
+                "response": "",
+                "error": "Quota exceeded",
+            },
+        }
+        await self.agent._handle_json_event(event)
+
+        messages = await self._messages()
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0].type, "error")
+        self.assertEqual(messages[0].content, "Quota exceeded")
+        self.assertEqual(messages[1].type, "result")
+
+    async def test_set_plan_mode_marks_interrupted_and_terminates(self):
+        self.agent.plan_mode = False
+        mock_proc = MagicMock()
+        mock_proc.returncode = None
+        mock_proc.terminate = MagicMock()
+        self.agent.process = mock_proc
+        self.agent.is_connected = True
+
+        self.agent.set_plan_mode(True)
+        self.assertTrue(self.agent.plan_mode)
+        self.assertTrue(self.agent._interrupted)
+        mock_proc.terminate.assert_called_once()
+        self.assertIsNone(self.agent.process)
+        self.assertTrue(self.agent.is_connected)
+
+    async def test_disconnect_marks_interrupted(self):
+        self.agent.is_connected = True
+        self.agent._interrupted = False
+        await self.agent.disconnect()
+        self.assertTrue(self.agent._interrupted)
+        self.assertFalse(self.agent.is_connected)
+
+    async def test_send_message_plan_mode_sends_content(self):
+        self.agent.plan_mode = True
+        self.agent.options.plan_mode = True
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.write = MagicMock()
+        mock_proc.stdin.drain = AsyncMock()
+        mock_proc.returncode = None
+        self.agent.process = mock_proc
+
+        await self.agent.send_message("analyze code and create plan")
+        mock_proc.stdin.write.assert_called_once()
+        sent_line = mock_proc.stdin.write.call_args[0][0].decode("utf-8")
+        payload = json.loads(sent_line)
+        self.assertEqual(payload["message"]["content"], "analyze code and create plan")
+
     async def test_send_message_proceed_plan(self):
         self.agent.plan_mode = True
         self.agent.options.plan_mode = True
-        await self.agent.send_message("Proceed with plan", proceed_plan=True)
+        self.agent.options.approve_mode = "accept-all"
+
+        old_proc = MagicMock()
+        old_proc.returncode = None
+        self.agent.process = old_proc
+        await self.agent.message_queue.put(Message("stop"))
+
+        with patch.object(self.agent, "_spawn_process", new_callable=AsyncMock) as mock_spawn:
+            mock_proc = MagicMock()
+            mock_proc.stdin = MagicMock()
+            mock_proc.stdin.write = MagicMock()
+            mock_proc.stdin.drain = AsyncMock()
+            mock_proc.returncode = None
+            def _set_proc():
+                self.agent.process = mock_proc
+            mock_spawn.side_effect = _set_proc
+
+            await self.agent.send_message("/plan Proceed with plan", proceed_plan=True)
+            mock_spawn.assert_awaited_once()
+            old_proc.terminate.assert_called_once()
+            # Verified residual stop message was discarded
+            self.assertTrue(self.agent.message_queue.empty())
+            # Verified /plan prefix is stripped when proceeding
+            sent_line = mock_proc.stdin.write.call_args[0][0].decode("utf-8")
+            payload = json.loads(sent_line)
+            self.assertEqual(payload["message"]["content"], "Proceed with plan")
         self.assertFalse(self.agent.plan_mode)
         self.assertFalse(self.agent.options.plan_mode)
 

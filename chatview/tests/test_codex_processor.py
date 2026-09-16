@@ -557,7 +557,7 @@ class TestThinkPresets(unittest.TestCase):
         processor.append_content = MagicMock()
         processor.handle_message(SimpleNamespace(type="plan_delta", content="Phase 1: Research"))
         processor.handle_message(SimpleNamespace(type="stop", content={}))
-        session.show_implement_plan_button.assert_called_once_with("Phase 1: Research")
+        session.show_implement_plan_button.assert_called_once_with("Phase 1: Research", tool_name="AntigravityImplementPlan")
 
     def test_codex_with_advertised_efforts(self):
         active_model = {
