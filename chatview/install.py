@@ -6,10 +6,18 @@ import threading
 
 import sublime
 
-from ..genfoundry.claude_agent import find_claude_cli
-from ..genfoundry.codex_agent import find_codex_cli
-from ..genfoundry.pi_agent import find_pi_cli
-from ..genfoundry.opencode_agent import find_opencode_cli
+try:
+    from ..genfoundry.claude_agent import find_claude_cli
+    from ..genfoundry.codex_agent import find_codex_cli
+    from ..genfoundry.pi_agent import find_pi_cli
+    from ..genfoundry.opencode_agent import find_opencode_cli
+    from ..genfoundry.acp_client import find_gemini_cli
+except (ImportError, ValueError):
+    from genfoundry.claude_agent import find_claude_cli
+    from genfoundry.codex_agent import find_codex_cli
+    from genfoundry.pi_agent import find_pi_cli
+    from genfoundry.opencode_agent import find_opencode_cli
+    from genfoundry.acp_client import find_gemini_cli
 from .chatpanel import LoadingAnimation
 
 AGENT_CLI_NAME = {"claude": "claude", "codex": "codex", "pi": "pi", "opencode": "opencode"}
@@ -40,18 +48,59 @@ def _opencode_installed_cli():
     return None
 
 
+def normalize_acp_agents(raw):
+    """Normalize acp_agents setting (list or dict) to an ordered dict of {name: config}."""
+    result = {}
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                name = item.get("name")
+                if name:
+                    entry = dict(item)
+                    entry.setdefault("command", name)
+                    result[name] = entry
+            elif isinstance(item, str):
+                result[item] = {"name": item, "command": item}
+    elif isinstance(raw, dict):
+        for name, item in raw.items():
+            if isinstance(item, dict):
+                entry = dict(item)
+                entry.setdefault("name", name)
+                entry.setdefault("command", name)
+                result[name] = entry
+            elif isinstance(item, str):
+                result[name] = {"name": name, "command": item}
+    return result
+
+
 def find_existing_cli(agent, settings=None):
     if settings is not None:
         custom = settings.get(f"{agent}_command")
         if custom and shutil.which(custom):
             return shutil.which(custom)
+        acp_agents = normalize_acp_agents(settings.get("acp_agents", []))
+        if agent in acp_agents:
+            cfg = acp_agents[agent]
+            cmd = cfg.get("command") or agent
+            if cmd:
+                resolved = shutil.which(cmd)
+                if resolved:
+                    return resolved
+                if agent == "gemini" or cmd == "gemini":
+                    found = find_gemini_cli()
+                    if found:
+                        return found
     # The official installer writes here. Prefer it over an older npm,
     # Homebrew, or system installation that happens to appear first in PATH.
     if agent == "opencode":
         official = _opencode_installed_cli()
         if official:
             return official
-    return shutil.which(AGENT_CLI_NAME[agent]) or AGENT_FIND_FN[agent]()
+    if agent == "gemini":
+        return shutil.which("gemini") or find_gemini_cli()
+    if agent in AGENT_CLI_NAME and agent in AGENT_FIND_FN:
+        return shutil.which(AGENT_CLI_NAME[agent]) or AGENT_FIND_FN[agent]()
+    return shutil.which(agent)
 
 
 def get_agent_install_info(agent):
@@ -306,3 +355,18 @@ def get_agent_list_items(settings):
         status = f"installed: {existing}" if existing else location
         items.append(sublime.ListInputItem(AGENT_LABEL[agent], agent, annotation=status))
     return items
+
+
+def get_available_agents(settings):
+    """Returns a list of available agents with native agents first and ACP clients at the end."""
+    agents = [agent for agent in AGENT_FIND_FN if find_existing_cli(agent, settings)]
+    raw = settings.get("acp_agents", []) if settings else []
+    acp_agents = normalize_acp_agents(raw)
+    acp_candidates = list(acp_agents.keys())
+    if "gemini" not in acp_candidates:
+        acp_candidates.append("gemini")
+    for name in acp_candidates:
+        if name not in agents and find_existing_cli(name, settings):
+            agents.append(name)
+    return agents
+

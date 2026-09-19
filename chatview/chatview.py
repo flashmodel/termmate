@@ -10,7 +10,7 @@ import sublime_plugin
 
 from . import utils as plugin
 from ..genfoundry import (
-    ClaudeCodeAgent, CodexAgent, PiAgent, OpenCodeAgent, AgentOptions, AssistantMessage, TextBlock,
+    ClaudeCodeAgent, CodexAgent, PiAgent, OpenCodeAgent, AcpClient, AgentOptions, AssistantMessage, TextBlock,
     PermissionResultAllow, PermissionResultDeny, list_sessions_for_cwd, list_codex_sessions,
     list_pi_sessions, list_opencode_sessions, get_opencode_session_info)
 from ..genfoundry.claude_agent import get_claude_session_tail
@@ -19,7 +19,7 @@ from ..genfoundry.pi_agent import get_pi_session_tail
 from .chatprocessor import (
     BaseChatMessageProcessor,
     ClaudeMessageProcessor, CodexMessageProcessor, PiMessageProcessor,
-    OpenCodeMessageProcessor,
+    OpenCodeMessageProcessor, AcpMessageProcessor,
 )
 from .chatpanel import (
     LoadingAnimation, NoticePhantom, RewindConfirmPanel, StatusHint,
@@ -28,13 +28,8 @@ from .chatpanel import (
 from .md_render import MarkdownFormatter
 from .chatrender import extract_diff_fold_ranges
 from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
-from .install import run_install, find_existing_cli, get_agent_list_items
+from .install import run_install, find_existing_cli, get_agent_list_items, get_available_agents, normalize_acp_agents
 from .autocomplete import AutoComplete
-
-def get_available_agents(settings):
-    """Returns a list of available agents."""
-    from .install import AGENT_FIND_FN
-    return [agent for agent in AGENT_FIND_FN if find_existing_cli(agent, settings)]
 
 # Constants for gutter highlights
 PROMPT_HIGHLIGHT_KEY = "chatview_prompt_highlight"
@@ -372,16 +367,30 @@ class AgentThread(threading.Thread):
         )
 
         agent_provider = self.anthropic_config.get("agent_provider", "claude")
+        acp_agents = self.anthropic_config.get("acp_agents", {})
         if agent_provider == "codex":
             AgentClass = CodexAgent
+            agent = AgentClass(options)
         elif agent_provider == "pi":
             AgentClass = PiAgent
+            agent = AgentClass(options)
         elif agent_provider == "opencode":
             AgentClass = OpenCodeAgent
-        else:
+            agent = AgentClass(options)
+        elif agent_provider == "claude":
             AgentClass = ClaudeCodeAgent
-
-        agent = AgentClass(options)
+            agent = AgentClass(options)
+        else:
+            acp_agents = normalize_acp_agents(self.anthropic_config.get("acp_agents", []))
+            cfg = acp_agents.get(agent_provider, {})
+            custom_cmd = cfg.get("command") or agent_provider
+            custom_args = cfg.get("args")
+            agent = AcpClient(
+                options,
+                command=self.cli_path or custom_cmd or agent_provider,
+                args=custom_args,
+                agent_name=agent_provider,
+            )
         self.agent = agent
         try:
             await agent.connect()
@@ -513,7 +522,7 @@ class AgentThread(threading.Thread):
 
     async def _send_permission_response(self, request_id, response_data, is_extension_ui=False):
         """Internal async method to send a permission response."""
-        if isinstance(self.agent, (CodexAgent, OpenCodeAgent)):
+        if isinstance(self.agent, (CodexAgent, OpenCodeAgent, AcpClient)):
             # Server-backed agents route through their approval handlers.
             await self.agent.send_approval_response(request_id, response_data)
         elif isinstance(self.agent, PiAgent) or is_extension_ui:
@@ -1326,6 +1335,7 @@ class ChatSession:
             "session_id": session_id,
             "env": settings.get("env", {}),
             "debug_agent_message": settings.get("debug_agent_message", False),
+            "acp_agents": settings.get("acp_agents", {}),
         }
 
         # Initialize background agent thread
@@ -1847,6 +1857,7 @@ class ChatSession:
             "approve_mode": self.window.settings().get(CHAT_APPROVE_MODE, ApproveMode.ALLOW_EDIT.value),
             "env": settings.get("env", {}),
             "debug_agent_message": settings.get("debug_agent_message", False),
+            "acp_agents": settings.get("acp_agents", {}),
         }
 
         self._reset_markdown_formatter()
@@ -1906,6 +1917,7 @@ class ChatSession:
             "session_id": old_session_id,
             "env": settings.get("env", {}),
             "debug_agent_message": settings.get("debug_agent_message", False),
+            "acp_agents": settings.get("acp_agents", {}),
         }
 
         cwd = get_best_dir(self.chat_view)
@@ -3198,19 +3210,30 @@ class TermChatAgentProviderInputHandler(sublime_plugin.ListInputHandler):
         return "agent"
 
     def list_items(self):
-        labels = {
+        native_labels = {
             "claude": "claude: (Claude Code CLI by Anthropic)",
             "codex":  "codex: (Codex CLI by OpenAI)",
-            "pi":     "pi: (Pi Coding Agent by Earendil)",
             "opencode": "opencode: (OpenCode by Anomaly)",
+            "pi":     "pi: (Pi Coding Agent by Earendil)",
         }
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
         items = []
-        for agent in ("claude", "codex", "opencode", "pi"):
-            if agent not in self.available_agents:
-                continue
-            path = find_existing_cli(agent, settings) or ""
-            items.append(sublime.ListInputItem(labels[agent], agent, annotation=path))
+        acp_agents = normalize_acp_agents(settings.get("acp_agents", []))
+
+        # Native agents first
+        for agent, label in native_labels.items():
+            if agent in self.available_agents:
+                path = find_existing_cli(agent, settings) or ""
+                items.append(sublime.ListInputItem(label, agent, annotation=path))
+
+        # ACP clients directly at the end of the list
+        for agent in self.available_agents:
+            if agent not in native_labels:
+                path = find_existing_cli(agent, settings) or ""
+                cfg = acp_agents.get(agent, {})
+                label_text = cfg.get("display_name") or cfg.get("label")
+                lbl = f"{agent}: ({label_text})" if label_text else f"{agent}: (ACP Client)"
+                items.append(sublime.ListInputItem(lbl, agent, annotation=path))
 
         if not items:
             items.append(sublime.ListInputItem("No agent CLI found", ""))

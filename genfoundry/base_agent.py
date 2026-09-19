@@ -94,6 +94,7 @@ class AgentOptions:
         debug_agent_message: bool = False,
         enable_file_checkpoint: bool = False,
         think_level: Optional[str] = None,
+        cli_args: Optional[List[str]] = None,
     ):
         import os
         self.cwd = cwd or os.getcwd()
@@ -114,6 +115,7 @@ class AgentOptions:
         self.debug_agent_message = debug_agent_message
         self.enable_file_checkpoint = enable_file_checkpoint
         self.think_level = think_level
+        self.cli_args = cli_args or []
 
 
 class BaseAgent(abc.ABC):

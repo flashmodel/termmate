@@ -65,6 +65,25 @@
     "pi_command": "",
     "opencode_command": "",
 
+    // ACP (Agent Client Protocol) Agents Configuration.
+    // List of external agents communicating over JSON-RPC 2.0 stdio.
+    // Native agents (claude, codex, opencode, pi) appear first; ACP clients appear at the end in the order defined below.
+    // If omitted, "gemini" is auto-detected if installed on your system.
+    // Example:
+    // "acp_agents": [
+    //   {
+    //     "name": "gemini",
+    //     "command": "gemini",
+    //     "args": ["--acp"]
+    //   },
+    //   {
+    //     "name": "myagent",
+    //     "command": "my-agent-cli",
+    //     "args": ["--stdio"]
+    //   }
+    // ],
+    "acp_agents": [],
+
     // Extra environment variables to inject into agent subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.
     // Example:

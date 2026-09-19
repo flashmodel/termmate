@@ -19,6 +19,10 @@ from .opencode_agent import (
     list_opencode_sessions,
     get_opencode_session_info,
 )
+from .acp_client import (
+    AcpClient,
+    find_gemini_cli,
+)
 
 __all__ = [
     "BaseAgent",
@@ -46,4 +50,6 @@ __all__ = [
     "find_opencode_cli",
     "list_opencode_sessions",
     "get_opencode_session_info",
+    "AcpClient",
+    "find_gemini_cli",
 ]
