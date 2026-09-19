@@ -10,16 +10,17 @@ import sublime_plugin
 
 from . import utils as plugin
 from ..genfoundry import (
-    ClaudeCodeAgent, CodexAgent, PiAgent, OpenCodeAgent, AgentOptions, AssistantMessage, TextBlock,
+    ClaudeCodeAgent, CodexAgent, PiAgent, OpenCodeAgent, AntigravityAgent, AgentOptions, AssistantMessage, TextBlock,
     PermissionResultAllow, PermissionResultDeny, list_sessions_for_cwd, list_codex_sessions,
-    list_pi_sessions, list_opencode_sessions, get_opencode_session_info)
+    list_pi_sessions, list_opencode_sessions, get_opencode_session_info,
+    list_antigravity_sessions, get_antigravity_session_tail)
 from ..genfoundry.claude_agent import get_claude_session_tail
 from ..genfoundry.codex_agent import get_codex_session_info
 from ..genfoundry.pi_agent import get_pi_session_tail
 from .chatprocessor import (
     BaseChatMessageProcessor,
     ClaudeMessageProcessor, CodexMessageProcessor, PiMessageProcessor,
-    OpenCodeMessageProcessor,
+    OpenCodeMessageProcessor, AntigravityMessageProcessor,
 )
 from .chatpanel import (
     LoadingAnimation, NoticePhantom, RewindConfirmPanel, StatusHint,
@@ -378,6 +379,8 @@ class AgentThread(threading.Thread):
             AgentClass = PiAgent
         elif agent_provider == "opencode":
             AgentClass = OpenCodeAgent
+        elif agent_provider == "antigravity":
+            AgentClass = AntigravityAgent
         else:
             AgentClass = ClaudeCodeAgent
 
@@ -496,6 +499,8 @@ class AgentThread(threading.Thread):
                 LOG.info("OpenCode agent switched to a fresh session")
             else:
                 # Other providers reset by replacing their live connection.
+                if hasattr(self.agent, "new_session"):
+                    self.agent.new_session()
                 await self.agent.disconnect()
                 LOG.info("Agent disconnected for reset")
                 await self.agent.connect()
@@ -516,6 +521,9 @@ class AgentThread(threading.Thread):
         if isinstance(self.agent, (CodexAgent, OpenCodeAgent)):
             # Server-backed agents route through their approval handlers.
             await self.agent.send_approval_response(request_id, response_data)
+        elif isinstance(self.agent, AntigravityAgent):
+            if hasattr(self.agent, "send_approval_response"):
+                await self.agent.send_approval_response(request_id, response_data)
         elif isinstance(self.agent, PiAgent) or is_extension_ui:
             # Pi agent only supports extension_ui_request/response protocol
             # (no control_request/response). Also used for explicit extension UI responses.
@@ -620,6 +628,9 @@ class AgentThread(threading.Thread):
                     self.loop
                 )
                 LOG.info(f"Updated Claude plan_mode to: {plan_mode} (perm: {mode})")
+            elif isinstance(self.agent, AntigravityAgent):
+                self.agent.set_plan_mode(plan_mode)
+                LOG.info(f"Updated Antigravity plan_mode to: {plan_mode}")
 
         if "model" in kwargs:
             model = kwargs["model"]
@@ -641,6 +652,9 @@ class AgentThread(threading.Thread):
                     self.loop
                 )
                 LOG.info(f"Updated Pi model to: {model}")
+            elif isinstance(self.agent, AntigravityAgent):
+                self.agent.set_model(model)
+                LOG.info(f"Updated Antigravity model to: {model}")
 
         if "think_level" in kwargs:
             think_level = kwargs["think_level"]
@@ -653,6 +667,9 @@ class AgentThread(threading.Thread):
                     self.loop
                 )
                 LOG.info(f"Updated Claude think_level to: {think_level}")
+            elif isinstance(self.agent, AntigravityAgent):
+                self.agent.set_think_level(think_level)
+                LOG.info(f"Updated Antigravity think_level to: {think_level}")
             elif hasattr(self.agent, "set_think_level"):
                 res = self.agent.set_think_level(think_level)
                 if asyncio.iscoroutine(res):
@@ -1290,7 +1307,7 @@ class ChatSession:
 
         if not self.available_agents:
             self.chat_view.run_command("term_chat_output_append", {
-                "text": f"\n\n⚠️ Error: No agent CLI found.\nPlease install Claude Code, Codex, Pi, or OpenCode; alternatively configure its command or OpenCode server URL in {PACKAGE_NAME} settings.\n\n"
+                "text": f"\n\n⚠️ Error: No agent CLI found.\nPlease install Claude Code, Codex, Pi, OpenCode, or Antigravity; alternatively configure its command or OpenCode server URL in {PACKAGE_NAME} settings.\n\n"
             })
             self.window.run_command("term_chat_install_agent")
             return
@@ -1835,11 +1852,13 @@ class ChatSession:
 
         cli_path = settings.get(f"{new_agent_provider}_command") or None
         model = self.window.settings().get(f"chatview_model_{new_agent_provider}") or None
+        think_level = self.window.settings().get(f"chatview_think_level_{new_agent_provider}") or None
 
         disallowed_tools = self._get_disallowed_tools(settings)
 
         anthropic_config = {
             "model": model,
+            "think_level": think_level,
             "plan_mode": self.window.settings().get(CHAT_PLAN_MODE) == PlanMode.PLANNING.value,
             "allowed_tools": settings.get("allowed_tools"),
             "disallowed_tools": disallowed_tools,
@@ -1890,6 +1909,7 @@ class ChatSession:
 
         cli_path = settings.get(f"{current_agent_provider}_command") or None
         model = self.window.settings().get(f"chatview_model_{current_agent_provider}") or None
+        think_level = self.window.settings().get(f"chatview_think_level_{current_agent_provider}") or None
 
         if plan_mode is None:
             plan_mode = self.plan_mode
@@ -1898,6 +1918,7 @@ class ChatSession:
 
         anthropic_config = {
             "model": model,
+            "think_level": think_level,
             "plan_mode": plan_mode == PlanMode.PLANNING,
             "allowed_tools": settings.get("allowed_tools"),
             "disallowed_tools": disallowed_tools,
@@ -1975,6 +1996,9 @@ class ChatSession:
                 cli_path=settings.get("opencode_command") or None,
                 history_limit=history_limit,
             )
+
+        if agent == "antigravity":
+            return get_antigravity_session_tail(session_id, cwd, history_limit)
 
         return None
 
@@ -2965,6 +2989,9 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
                 cli_path=settings.get("opencode_command") or None,
             )
             placeholder = "Resume previous OpenCode session"
+        elif agent == "antigravity":
+            sessions = list_antigravity_sessions(cwd)
+            placeholder = "Resume previous Antigravity session"
         else:
             sessions = list_sessions_for_cwd(cwd)
             placeholder = "Resume previous Claude session"
@@ -3020,7 +3047,7 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
     def is_enabled(self):
         session = chatview_clients.get(self.window.id())
         agent = self._get_agent(session)
-        return agent in ("claude", "codex", "pi", "opencode")
+        return agent in ("claude", "codex", "pi", "opencode", "antigravity")
 
 
 class TermChatInterruptCommand(sublime_plugin.WindowCommand):
@@ -3203,10 +3230,11 @@ class TermChatAgentProviderInputHandler(sublime_plugin.ListInputHandler):
             "codex":  "codex: (Codex CLI by OpenAI)",
             "pi":     "pi: (Pi Coding Agent by Earendil)",
             "opencode": "opencode: (OpenCode by Anomaly)",
+            "antigravity": "antigravity: (Google Antigravity CLI)",
         }
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
         items = []
-        for agent in ("claude", "codex", "opencode", "pi"):
+        for agent in ("claude", "codex", "opencode", "pi", "antigravity"):
             if agent not in self.available_agents:
                 continue
             path = find_existing_cli(agent, settings) or ""
@@ -3522,6 +3550,8 @@ class TermChatSetApproveModeCommand(sublime_plugin.WindowCommand):
                 # requests are evaluated against the latest mode in
                 # show_permission_phantom(), so no reconnect is needed.
                 LOG.info("Updated OpenCode approve mode without reconnecting")
+            elif agent == "antigravity":
+                LOG.info("Updated Antigravity approve mode without reconnecting")
 
     def input(self, args):
         if "mode" not in args:
