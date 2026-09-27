@@ -1515,10 +1515,12 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
     }
 
     _TOOL_FILE_NAMES = (
+        "Read", "Edit", "Write",
         "view_file", "ViewFile",
         "write_to_file", "WriteFile",
         "replace_file_content", "EditFile",
         "multi_replace_file_content",
+        "sed_file",
     )
     _RISKY_TOOLS = ("run_command", "RunCommand")
 
@@ -1920,9 +1922,12 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
             if target:
                 abs_p, rel_p = _resolve_rel_path(target, cwd)
                 content = params.get("CodeContent") or ""
-                lines = content.splitlines()
-                diff_text = ("@@ -0,0 +1,{} @@\n".format(len(lines))
-                             + "\n".join("+" + l for l in lines) + "\n")
+                lines = content.splitlines() if content else []
+                if lines:
+                    diff_text = ("@@ -0,0 +1,{} @@\n".format(len(lines))
+                                 + "\n".join("+" + l for l in lines) + "\n")
+                else:
+                    diff_text = None
                 self.session.record_file_change(abs_p, rel_p, diff_text)
         elif name == "replace_file_content":
             target = params.get("TargetFile") or ""
@@ -1933,8 +1938,8 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
                 start_line = params.get("StartLine")
                 diff_text = _make_edit_diff(old_str, new_str, rel_p, start_line)
                 self.session.record_file_change(abs_p, rel_p, diff_text)
-        elif name == "multi_replace_file_content":
-            target = params.get("TargetFile") or ""
+        elif name in ("multi_replace_file_content", "sed_file"):
+            target = params.get("TargetFile") or params.get("path") or ""
             if target:
                 abs_p, rel_p = _resolve_rel_path(target, cwd)
                 self.session.record_file_change(abs_p, rel_p, None)

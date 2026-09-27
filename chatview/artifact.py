@@ -104,10 +104,11 @@ class FileChangesArtifact:
         entry = self.file_changes.setdefault(
             abs_path, {"rel_path": rel_path, "diffs": [], "add": 0, "del": 0})
         if diff_text:
-            entry["diffs"].append(diff_text)
             a, d = self._count_diff_lines(diff_text)
-            entry["add"] += a
-            entry["del"] += d
+            if a or d:
+                entry["diffs"].append(diff_text)
+                entry["add"] += a
+                entry["del"] += d
         if abs_path not in self.pending_changed_files:
             self.pending_changed_files.append(abs_path)
 
@@ -271,7 +272,8 @@ class FileChangesArtifact:
             return
 
         for v in self.window.views():
-            if v.settings().get("chatview_plan_path") == abs_path or (abs_path and v.file_name() == abs_path):
+            if (v.settings().get("chatview_plan_path") == abs_path
+                    or (abs_path and v.file_name() == abs_path)):
                 self.window.focus_view(v)
                 return
 
@@ -287,16 +289,17 @@ class FileChangesArtifact:
         v.set_read_only(True)
 
     def _open_diff(self, abs_path, rel_path, diffs):
-        """Open a read-only diff view for the given turn's diffs, or open the source file if no diffs recorded."""
+        """Open read-only diff view for diffs, or open source file if no diffs recorded."""
         if not any(d and d.strip() for d in (diffs or [])):
             target = diffview._resolve_file_path(self.window, rel_path, abs_path)
-            if target:
+            if target and os.path.isfile(target):
                 self.window.open_file(target)
             elif abs_path:
                 self.window.open_file(abs_path)
             else:
                 sublime.status_message("Source file not found: " + rel_path)
             return
+
         parts = ["diff a/{0} b/{0}\n--- a/{0}\n+++ b/{0}\n".format(rel_path)]
         for d in diffs:
             parts.append(d if d.endswith("\n") else d + "\n")
