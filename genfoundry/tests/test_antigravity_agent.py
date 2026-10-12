@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from genfoundry.antigravity_agent import (
     AntigravityAgent,
+    PLAN_MODE_SYSTEM_PROMPT,
     find_antigravity_cli,
     list_antigravity_sessions,
     get_antigravity_session_tail,
@@ -49,6 +50,8 @@ class TestAntigravityAgentCommand(unittest.IsolatedAsyncioTestCase):
         fake_proc.stdin.drain = AsyncMock()
         fake_proc.stdout = AsyncMock()
         fake_proc.stderr = AsyncMock()
+        fake_proc.terminate = MagicMock()
+        fake_proc.kill = MagicMock()
         fake_proc.returncode = None
         return fake_proc
 
@@ -134,7 +137,7 @@ class TestAntigravityAgentCommand(unittest.IsolatedAsyncioTestCase):
         args = await self._connect_with_mocks(agent)
         self.assertIn("--dangerously-skip-permissions", args)
 
-    async def test_connect_plan_mode_includes_dangerously_skip_permissions(self):
+    async def test_connect_plan_mode_omits_dangerously_skip_permissions(self):
         opts = AgentOptions(
             cli_path="/mock/bin/agy",
             cwd="/workspace",
@@ -147,8 +150,9 @@ class TestAntigravityAgentCommand(unittest.IsolatedAsyncioTestCase):
         self.assertIn("--mode", args)
         idx_mode = args.index("--mode")
         self.assertEqual(args[idx_mode + 1], "plan")
-        # In plan mode with accept-all / allow-edit, dangerously-skip-permissions is also passed
-        self.assertIn("--dangerously-skip-permissions", args)
+        # In plan mode, omit dangerously-skip-permissions so stop hook review policy
+        # does not auto-approve artifact feedback requests and start executing
+        self.assertNotIn("--dangerously-skip-permissions", args)
 
     def test_set_plan_mode_toggles_state(self):
         opts = AgentOptions(cli_path="/mock/bin/agy", cwd="/workspace", plan_mode=False)
@@ -392,7 +396,7 @@ class TestAntigravityAgentEvents(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.agent._interrupted)
         self.assertFalse(self.agent.is_connected)
 
-    async def test_send_message_plan_mode_sends_content(self):
+    async def test_send_message_plan_mode_injects_system_prompt(self):
         self.agent.plan_mode = True
         self.agent.options.plan_mode = True
         mock_proc = MagicMock()
@@ -406,7 +410,42 @@ class TestAntigravityAgentEvents(unittest.IsolatedAsyncioTestCase):
         mock_proc.stdin.write.assert_called_once()
         sent_line = mock_proc.stdin.write.call_args[0][0].decode("utf-8")
         payload = json.loads(sent_line)
-        self.assertEqual(payload["message"]["content"], "analyze code and create plan")
+        expected = f"{PLAN_MODE_SYSTEM_PROMPT}\n\nanalyze code and create plan"
+        self.assertEqual(payload["message"]["content"], expected)
+
+    async def test_send_message_fast_mode_does_not_inject_plan_directive(self):
+        self.agent.plan_mode = False
+        self.agent.options.plan_mode = False
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.write = MagicMock()
+        mock_proc.stdin.drain = AsyncMock()
+        mock_proc.returncode = None
+        self.agent.process = mock_proc
+
+        await self.agent.send_message("write a python script")
+        mock_proc.stdin.write.assert_called_once()
+        sent_line = mock_proc.stdin.write.call_args[0][0].decode("utf-8")
+        payload = json.loads(sent_line)
+        self.assertEqual(payload["message"]["content"], "write a python script")
+
+    async def test_send_message_injects_options_system_prompt(self):
+        self.agent.plan_mode = False
+        self.agent.options.plan_mode = False
+        self.agent.options.system_prompt = "Custom instructions for agent."
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.write = MagicMock()
+        mock_proc.stdin.drain = AsyncMock()
+        mock_proc.returncode = None
+        self.agent.process = mock_proc
+
+        await self.agent.send_message("hello")
+        mock_proc.stdin.write.assert_called_once()
+        sent_line = mock_proc.stdin.write.call_args[0][0].decode("utf-8")
+        payload = json.loads(sent_line)
+        expected = "Custom instructions for agent.\n\nhello"
+        self.assertEqual(payload["message"]["content"], expected)
 
     async def test_send_message_proceed_plan(self):
         self.agent.plan_mode = True

@@ -90,7 +90,14 @@ def find_antigravity_cli() -> Optional[str]:
             LOG.info(f"Found Antigravity CLI at default location: {path_str}")
             return path_str
 
-    return None
+PLAN_MODE_SYSTEM_PROMPT = (
+    "<system_instructions>\n"
+    "[PLANNING MODE]\n"
+    "You can explore the codebase and write a comprehensive, step-by-step implementation plan. "
+    "Strictly do NOT start implementing it.\n"
+    "You must NOT write, edit, create, move any workspace files.\n"
+    "</system_instructions>"
+)
 
 
 class AntigravityAgent(BaseAgent):
@@ -320,13 +327,15 @@ class AntigravityAgent(BaseAgent):
         # Tool permissions
         approve_mode = getattr(self.options, "approve_mode", "") or ""
         permission_mode = getattr(self.options, "permission_mode", "") or ""
-        # Auto-approve tool permissions in accept-all and allow-edit modes (including plan mode).
-        # In plan mode, CLI mode-level lock (--mode plan) ensures the agent only generates
-        # plans and does not modify project code, while allowing research tools (read_url, etc.)
-        # to execute non-interactively without headless auto-denial.
+        # In plan mode, omit --dangerously-skip-permissions to avoid triggering
+        # Antigravity CLI's stop hook review policy, which auto-approves plan
+        # feedback and prematurely executes steps without user confirmation.
         if (
-            approve_mode in ("accept-all", "allow-edit")
-            or permission_mode in ("bypass", "accept-all")
+            not self.plan_mode
+            and (
+                approve_mode in ("accept-all", "allow-edit")
+                or permission_mode in ("bypass", "accept-all")
+            )
         ):
             cmd.append("--dangerously-skip-permissions")
 
@@ -408,6 +417,15 @@ class AntigravityAgent(BaseAgent):
             stripped = content.strip()
             if stripped.startswith("/plan"):
                 content = stripped[len("/plan"):].strip() or "Implement the plan."
+            if PLAN_MODE_SYSTEM_PROMPT in content:
+                content = content.replace(PLAN_MODE_SYSTEM_PROMPT, "").strip()
+            if "<system_instructions>" in content and "[PLANNING MODE]" in content:
+                content = re.sub(
+                    r"<system_instructions>\s*\[PLANNING MODE\].*?</system_instructions>\s*",
+                    "",
+                    content,
+                    flags=re.DOTALL,
+                ).strip()
             # Since --mode plan is a CLI mode-level lock, cleanly terminate the old process
             # and drop any premature messages from it.
             if was_plan_mode:
@@ -431,10 +449,28 @@ class AntigravityAgent(BaseAgent):
             await self._spawn_process()
 
         self._turn_has_result = False
+        payload_content = content
+        prefixes = []
+        if self.plan_mode and not proceed_plan:
+            if (
+                PLAN_MODE_SYSTEM_PROMPT not in payload_content
+                and "[PLANNING MODE]" not in payload_content
+            ):
+                prefixes.append(PLAN_MODE_SYSTEM_PROMPT)
+        if self.options.system_prompt and self.options.system_prompt not in payload_content:
+            prefixes.append(self.options.system_prompt)
+        if prefixes:
+            prefix_text = "\n\n".join(prefixes)
+            payload_content = (
+                f"{prefix_text}\n\n{payload_content}"
+                if payload_content
+                else prefix_text
+            )
+
         message = {
             "event": "user",
             "message": {
-                "content": content,
+                "content": payload_content,
             },
         }
         await self._write_json(message)
