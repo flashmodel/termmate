@@ -1613,11 +1613,9 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
 
     def _sync_user_artifacts(self, hint_path=None, content_fallback=None):
         """Dual-trigger synchronization of user artifacts (implementation_plan.md, walkthrough.md)."""
-        s_id = None
-        if getattr(self.session, "agent_thread", None):
-            s_id = getattr(self.session.agent_thread, "session_id", None)
+        s_id = getattr(getattr(self.session, "agent_thread", None), "session_id", None)
         if not s_id and hasattr(self.session, "chat_view") and hasattr(self.session.chat_view, "settings"):
-            s_id = self.session.chat_view.settings().get("chat_session_id")
+            s_id = self.session.chat_view.settings().get("chatview_session_id")
 
         brain_dirs = []
         if s_id:

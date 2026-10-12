@@ -917,6 +917,38 @@ def _clean_antigravity_prompt(content: str) -> str:
     return " ".join(text.split())
 
 
+def _is_abs_path(path: str) -> bool:
+    """Return True if path looks like an absolute path on POSIX or Windows."""
+    return bool(
+        isinstance(path, str)
+        and (os.path.isabs(path) or re.match(r"^([a-zA-Z]:[\\/]|/)", path))
+    )
+
+
+def _is_valid_workspace_path(path: str, base_dir: str) -> bool:
+    """Return True if path is an absolute path outside internal ~/.gemini base_dir."""
+    if not _is_abs_path(path):
+        return False
+    p = path.replace("\\", "/").rstrip("/")
+    b = (base_dir or "").replace("\\", "/").rstrip("/")
+    return not (b and (p == b or p.startswith(b + "/")))
+
+
+def _dir_from_path(path: str) -> str:
+    """Return containing directory if path is a file, or path itself if directory."""
+    if not path or os.path.isdir(path):
+        return path or ""
+    d = os.path.dirname(path)
+    if not d and "\\" in path:
+        d = path.rsplit("\\", 1)[0]
+    return d or path
+
+
+_WS_CWD_RE = re.compile(
+    r"(?:Command Working Directory:\s*|Active Workspaces:\s*[\r\n]+-\s*)([^\r\n]+)"
+)
+
+
 def list_antigravity_sessions(cwd: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     List past Antigravity conversations from ~/.gemini/antigravity-cli/brain and history.jsonl.
@@ -959,7 +991,9 @@ def list_antigravity_sessions(cwd: Optional[str] = None) -> List[Dict[str, Any]]
         except Exception:
             pass
 
-    # 3. Preload workspace mappings from history.jsonl
+    history_entries: List[Dict[str, Any]] = []
+
+    # 3. Preload workspace mappings and entries from history.jsonl
     if os.path.isfile(history_file):
         try:
             with open(history_file, "r", encoding="utf-8", errors="replace") as f:
@@ -971,10 +1005,12 @@ def list_antigravity_sessions(cwd: Optional[str] = None) -> List[Dict[str, Any]]
                         entry = json.loads(line)
                     except Exception:
                         continue
-                    cid = entry.get("conversationId")
-                    ws = entry.get("workspace")
-                    if cid and ws and cid not in ws_by_id:
-                        ws_by_id[cid] = ws
+                    if isinstance(entry, dict):
+                        history_entries.append(entry)
+                        cid = entry.get("conversationId")
+                        ws = entry.get("workspace")
+                        if cid and ws and cid not in ws_by_id:
+                            ws_by_id[cid] = ws
         except Exception:
             pass
 
@@ -1039,22 +1075,24 @@ def list_antigravity_sessions(cwd: Optional[str] = None) -> List[Dict[str, Any]]
                                             val = args.get(k)
                                             if val and isinstance(val, str):
                                                 val = val.strip("\"'")
-                                                if os.path.isabs(val) and not val.startswith(base_dir):
+                                                if _is_valid_workspace_path(val, base_dir):
                                                     ws = val
                                                     break
                                         if not ws:
                                             val = args.get("AbsolutePath")
                                             if val and isinstance(val, str):
                                                 val = val.strip("\"'")
-                                                if os.path.isabs(val) and not val.startswith(base_dir):
-                                                    ws = val if os.path.isdir(val) else os.path.dirname(val)
+                                                if _is_valid_workspace_path(val, base_dir):
+                                                    ws = _dir_from_path(val)
                                     if ws:
                                         break
 
                                 if not ws:
-                                    m = re.search(r"(/Users/[^\s\n\r\"'>]+)\s*->", content)
+                                    m = _WS_CWD_RE.search(content)
                                     if m:
-                                        ws = m.group(1)
+                                        val = m.group(1).strip().strip("\"'")
+                                        if _is_valid_workspace_path(val, base_dir):
+                                            ws = val
 
                             # Break early once we have both summary and workspace
                             if idx > 30 and (summary or cmd_fallback) and ws:
@@ -1073,44 +1111,31 @@ def list_antigravity_sessions(cwd: Optional[str] = None) -> List[Dict[str, Any]]
             LOG.warning(f"Failed to scan antigravity brain dir: {e}")
 
     # 5. Merge any sessions recorded only in history.jsonl
-    if os.path.isfile(history_file):
-        try:
-            with open(history_file, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except Exception:
-                        continue
+    for entry in history_entries:
+        cid = entry.get("conversationId")
+        if not cid:
+            continue
 
-                    cid = entry.get("conversationId")
-                    if not cid:
-                        continue
+        ws = entry.get("workspace")
+        timestamp_ms = entry.get("timestamp") or 0
+        mtime = float(timestamp_ms) / 1000.0 if timestamp_ms else 0.0
+        display = entry.get("display") or ""
+        cleaned = _clean_antigravity_prompt(display)
 
-                    ws = entry.get("workspace")
-                    timestamp_ms = entry.get("timestamp") or 0
-                    mtime = float(timestamp_ms) / 1000.0 if timestamp_ms else 0.0
-                    display = entry.get("display") or ""
-                    cleaned = _clean_antigravity_prompt(display)
-
-                    if cid in sessions_by_id:
-                        curr = sessions_by_id[cid]
-                        if not curr.get("workspace") and ws:
-                            curr["workspace"] = ws
-                        if not curr.get("summary") and cleaned and not cleaned.startswith("/"):
-                            curr["summary"] = cleaned
-                    else:
-                        is_slash = cleaned.startswith("/")
-                        sessions_by_id[cid] = {
-                            "session_id": cid,
-                            "summary": "" if is_slash else cleaned,
-                            "mtime": mtime,
-                            "workspace": ws,
-                        }
-        except Exception as e:
-            LOG.warning(f"Failed to read antigravity history: {e}")
+        if cid in sessions_by_id:
+            curr = sessions_by_id[cid]
+            if not curr.get("workspace") and ws:
+                curr["workspace"] = ws
+            if not curr.get("summary") and cleaned and not cleaned.startswith("/"):
+                curr["summary"] = cleaned
+        else:
+            is_slash = cleaned.startswith("/")
+            sessions_by_id[cid] = {
+                "session_id": cid,
+                "summary": "" if is_slash else cleaned,
+                "mtime": mtime,
+                "workspace": ws,
+            }
 
     # 6. Filter by cwd if requested
     results = []
