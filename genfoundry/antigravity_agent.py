@@ -643,9 +643,26 @@ class AntigravityAgent(BaseAgent):
                     or "stream was interrupted" in err_lower
                     or self._interrupted
                 )
+                is_trailing_conn_err = bool(
+                    has_response
+                    and any(
+                        term in err_lower
+                        for term in (
+                            "eof",
+                            "closed network connection",
+                            "connection reset",
+                            "broken pipe",
+                        )
+                    )
+                )
                 if is_cancellation:
                     LOG.info(
-                        f"Antigravity execution was interrupted or canceled: {err_msg}")
+                        f"Antigravity execution was interrupted or canceled: {err_msg}"
+                    )
+                elif is_trailing_conn_err:
+                    LOG.info(
+                        f"Antigravity trailing socket error suppressed (response present): {err_msg}"
+                    )
                 else:
                     messages.append(
                         Message("error", content=err_msg, msg_id=self._session_id, raw_data=result)
