@@ -368,8 +368,9 @@ class TestAntigravityAgentEvents(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0].content, "Quota exceeded")
         self.assertEqual(messages[1].type, "result")
 
-    async def test_set_plan_mode_marks_interrupted_and_terminates(self):
+    def test_set_plan_mode_marks_restart_pending_without_terminating(self):
         self.agent.plan_mode = False
+        self.agent.options.plan_mode = False
         mock_proc = MagicMock()
         mock_proc.returncode = None
         mock_proc.terminate = MagicMock()
@@ -378,9 +379,10 @@ class TestAntigravityAgentEvents(unittest.IsolatedAsyncioTestCase):
 
         self.agent.set_plan_mode(True)
         self.assertTrue(self.agent.plan_mode)
-        self.assertTrue(self.agent._interrupted)
-        mock_proc.terminate.assert_called_once()
-        self.assertIsNone(self.agent.process)
+        self.assertTrue(self.agent.options.plan_mode)
+        self.assertTrue(self.agent._restart_pending)
+        mock_proc.terminate.assert_not_called()
+        self.assertIsNotNone(self.agent.process)
         self.assertTrue(self.agent.is_connected)
 
     async def test_disconnect_marks_interrupted(self):
@@ -742,6 +744,8 @@ class TestAntigravityModelLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.agent._session_id)
         self.assertIsNone(self.agent.options.session_id)
         self.assertTrue(self.agent._restart_pending)
+        self.mock_proc.terminate.assert_not_called()
+        self.assertIsNotNone(self.agent.process)
 
     def test_parse_models_output(self):
         raw = (

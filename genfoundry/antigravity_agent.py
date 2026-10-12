@@ -145,13 +145,6 @@ class AntigravityAgent(BaseAgent):
             self.plan_mode = plan_mode
             self.options.plan_mode = plan_mode
             self._restart_pending = True
-            if self.process and self.process.returncode is None:
-                self._interrupted = True
-                try:
-                    self.process.terminate()
-                except Exception:
-                    pass
-                self.process = None
             LOG.info(f"Antigravity plan_mode set to: {plan_mode}")
 
     def new_session(self) -> None:
@@ -159,12 +152,7 @@ class AntigravityAgent(BaseAgent):
         self._session_id = None
         self.options.session_id = None
         self._restart_pending = True
-        if self.process and self.process.returncode is None:
-            try:
-                self.process.terminate()
-            except Exception:
-                pass
-            self.process = None
+        LOG.info("Antigravity pending fresh session scheduled on next turn")
 
     @classmethod
     def _parse_models_output(cls, text: str) -> List[Dict[str, Any]]:
