@@ -139,7 +139,7 @@ def get_agent_install_info(agent):
             )
         return (
             display,
-            "curl -fsSL https://antigravity.google/install.sh | bash",
+            "curl -fsSL https://antigravity.google/cli/install.sh | bash",
             True,
             {"PATH": local_bin + os.pathsep + os.environ.get("PATH", "")},
         )

@@ -3,11 +3,11 @@
 [![Sublime Forum](https://img.shields.io/badge/Sublime_Forum-Discussion-FF9800?logo=sublimetext&logoColor=white)](https://forum.sublimetext.com/t/using-agentic-coding-in-st-with-codex-claude-cli/78323)
 [![Package Control](https://img.shields.io/badge/Package_Control-TermMate-389826?logo=sublimetext&logoColor=white)](https://packagecontrol.io/packages/TermMate)
 
-**Claude Code, OpenAI Codex, OpenCode, and Pi coding agents for Sublime Text**
+**Claude Code, OpenAI Codex, Google Antigravity, OpenCode, and Pi coding agents for Sublime Text**
 
 ![TermMate Screenshot](screenshot.png)
 
-TermMate is a professional AI coding agent for Sublime Text that supports multi-agent providers, including **Claude Code**, **Codex**, **[OpenCode](https://opencode.ai)**, and **[Pi Agent](https://pi.dev)**. It builds a seamless native agentic interface directly within your editor for autonomous task execution, codebase exploration, and smart refactoring. Instead of using conventional webview, TermMate provides editor-native, REPL-inspired chat interface with modern editor features such as goto-navigation, auto-complete, folding, file links.
+TermMate is a professional AI coding agent for Sublime Text that supports multi-agent providers, including **Claude Code**, **Codex**, **[Google Antigravity](https://antigravity.google)**, **[OpenCode](https://opencode.ai)**, and **[Pi Agent](https://pi.dev)**. It builds a seamless native agentic interface directly within your editor for autonomous task execution, codebase exploration, and smart refactoring. Instead of using conventional webview, TermMate provides editor-native, REPL-inspired chat interface with modern editor features such as goto-navigation, auto-complete, folding, file links.
 
 See TermMate agentic coding features — **[live demo here →](https://termmate.app/sublime/)**
 
@@ -30,7 +30,7 @@ Install TermMate via [Package Control](https://packagecontrol.io/packages/TermMa
 
 ### 2. Install Agent CLI
 
-If Claude Code, Codex, OpenCode, or Pi Agent is already installed and authenticated, **skip this step**. TermMate automatically detects existing CLI installations and uses their current authentication — no extra setup needed.
+If Claude Code, Codex, Google Antigravity, OpenCode, or Pi Agent is already installed and authenticated, **skip this step**. TermMate automatically detects existing CLI installations and uses their current authentication — no extra setup needed.
 
 Otherwise, the easiest way is to install directly from within Sublime Text: open the Command Palette, type `TermMate: Install Agent`, and select the agent you want. TermMate will run the installation in dedicated panel and notify you when it's complete. CLIs are installed to `~/.local/bin` on macOS/Linux and `%APPDATA%\npm` on Windows.
 
@@ -44,6 +44,11 @@ curl -fsSL https://claude.ai/install.sh | bash
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
 # Codex (Windows PowerShell)
 powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+
+# Google Antigravity (macOS/Linux)
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+# Google Antigravity (Windows PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://antigravity.google/cli/install.ps1 | iex"
 
 # OpenCode (macOS/Linux)
 curl -fsSL https://opencode.ai/install | bash
@@ -67,6 +72,9 @@ Authenticate the agents via your terminal, or skip the CLI login by setting API 
 
 # Codex
 codex login
+
+# Google Antigravity
+agy login
 
 # OpenCode
 /connect
@@ -158,17 +166,19 @@ Control how much the agent can do without asking you first: `TermMate: Approve M
 
 ### Switch Agent
 
-Use `TermMate: Switch Agent` to swap between Claude, Codex, OpenCode, and Pi Agent at any time.
+Use `TermMate: Switch Agent` to swap between Claude, Codex, Antigravity, OpenCode, and Pi Agent at any time.
 
 ### Select Model
 
 Use `TermMate: Select Model` to pick a specific LLM model per agent (e.g. `claude-opus-4-5` vs `claude-sonnet-4-5`). For models supporting thinking or reasoning, TermMate will prompt you to select the effort level (or adjust it via `TermMate: Reasoning Effort`).
 
-## Artifact
+## Artifacts
 
-### file changes artifact
+TermMate artifact panel tracks generated files, diffs, and structured documents produced by agents, presenting them as interactive artifacts right inside the chat view.
 
-The artifact panel shows generated files and file changes produced during the conversation. When the agent edits code, a summary appears in the panel listing every modified file along with the number of lines added and removed.
+### 1. File Changes Artifacts
+
+When an agent creates or modifies files, TermMate displays a summary of affected files along with line addition and deletion:
 
 ```
 ▣ 2 files changed
@@ -176,7 +186,16 @@ The artifact panel shows generated files and file changes produced during the co
     src/bar.py  +5 -1
 ```
 
-Click a file entry to jump directly to the file in the editor. Artifacts are folded by default. Click the `▶` arrow in the gutter to expand and view the full diff inline.
+Double-Click a file entry to jump directly to the file and review the unified diff in the editor. Artifacts are folded by default. Click the `▶` arrow in the gutter to expand and view the full diff inline.
+
+### 2. Plan & Walkthrough Artifacts (Antigravity)
+
+For Google Antigravity, planning documents and execution summaries are tracked as persistent artifacts:
+
+- Plan (`implementation_plan.md`): Step-by-step implementation plan. In Plan Mode, click the **`[Implement Plan]`** button in chat to approve and start execution.
+- Walkthrough (`walkthrough.md`): Post-task summary of modified files and verification results.
+
+Double-Click any artifact link in chat to open it in Sublime Text. Documents are preserved in the session directory (`~/.gemini/antigravity-cli/brain/`).
 
 ## Session Management: Clear, Resume & Rewind
 
@@ -230,7 +249,8 @@ While TermMate automatically detects most agent CLI installation paths, you may 
     "claude_command": "/path/to/your/custom/claude",
     "codex_command": "/path/to/your/custom/codex",
     "opencode_command": "/path/to/your/custom/opencode",
-    "pi_command": "/path/to/your/custom/pi"
+    "pi_command": "/path/to/your/custom/pi",
+    "antigravity_command": "/path/to/your/custom/agy"
 }
 ```
 
