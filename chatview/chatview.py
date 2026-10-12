@@ -498,6 +498,9 @@ class AgentThread(threading.Thread):
                 # the HTTP/SSE connection and message receiver alive.
                 await self.agent.new_session()
                 LOG.info("OpenCode agent switched to a fresh session")
+            elif isinstance(self.agent, AntigravityAgent):
+                self.agent.new_session()
+                LOG.info("Antigravity agent switched to a fresh session")
             else:
                 # Other providers reset by replacing their live connection.
                 if hasattr(self.agent, "new_session"):

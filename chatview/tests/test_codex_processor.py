@@ -452,25 +452,17 @@ class TestThinkPresets(unittest.TestCase):
         }
         self.assertEqual(AntigravityMessageProcessor.get_think_presets(no_effort_model), [])
 
-    def test_antigravity_default_models_structure(self):
-        models = AntigravityMessageProcessor.get_default_models()
-        self.assertTrue(len(models) >= 5)
-
-        model_values = [m["value"] for m in models]
-        self.assertIn("gemini-3.8-flash", model_values)
-        self.assertIn("gemini-3.7-flash", model_values)
-        self.assertIn("gemini-3.1-pro", model_values)
-        self.assertIn("claude-sonnet-4-6", model_values)
-
-        for m in models:
-            self.assertTrue(m.get("supportsEffort"))
-            self.assertEqual(m.get("supportedReasoningEfforts"), ["low", "medium", "high"])
-            self.assertIn(m.get("defaultReasoningEffort"), ("low", "medium", "high"))
-            # format_model_badge detects reasoning capabilities
-            self.assertEqual(format_model_badge(m), "Reasoning")
-            # normalize_model attaches "Reasoning" annotation
-            normalized = normalize_model(m)
-            self.assertEqual(normalized["annotation"], "Reasoning")
+    def test_antigravity_model_capability_normalization(self):
+        sample_model = {
+            "value": "gemini-3.8-flash",
+            "displayName": "Gemini 3.8 Flash",
+            "supportedReasoningEfforts": ["low", "medium", "high"],
+            "defaultReasoningEffort": "medium",
+            "supportsEffort": True,
+        }
+        self.assertEqual(format_model_badge(sample_model), "Reasoning")
+        normalized = normalize_model(sample_model)
+        self.assertEqual(normalized["annotation"], "Reasoning")
 
     def test_antigravity_models_update_message(self):
         session = SimpleNamespace(

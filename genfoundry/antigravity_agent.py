@@ -111,50 +111,146 @@ class AntigravityAgent(BaseAgent):
         self.plan_mode: bool = getattr(self.options, "plan_mode", False)
         self._stderr_lines: List[str] = []
         self._interrupted: bool = False
+        self._restart_pending: bool = False
+        self._turn_has_result: bool = False
+        self.available_models: List[Dict[str, Any]] = []
 
         # Resolve executable path
         if self.options.cli_path:
             self.cli_path = shutil.which(self.options.cli_path) or self.options.cli_path
         else:
-            self.cli_path = (
-                shutil.which("agy")
-                or shutil.which("antigravity")
-                or find_antigravity_cli()
-                or "agy"
-            )
+            self.cli_path = find_antigravity_cli() or "agy"
         if not self.cli_path:
             raise FileNotFoundError(
                 "Antigravity CLI ('agy') not found in PATH or standard installation locations."
             )
 
     def set_model(self, model: str) -> None:
-        """Dynamically switch the model; takes effect on the next turn or reconnection."""
-        self.options.model = model
-        LOG.info(f"Antigravity model switched to: {model}")
+        """Dynamically switch the model; takes effect on next turn or restart."""
+        if self.options.model != model:
+            self.options.model = model
+            self._restart_pending = True
+            LOG.info(f"Antigravity pending model switched to: {model}")
 
     def set_think_level(self, level: str) -> None:
-        """Dynamically switch reasoning effort (low, medium, high)."""
-        self.options.think_level = level
-        LOG.info(f"Antigravity reasoning effort switched to: {level}")
+        """Dynamically switch reasoning effort (low, medium, high); takes effect on next turn."""
+        if self.options.think_level != level:
+            self.options.think_level = level
+            self._restart_pending = True
+            LOG.info(f"Antigravity pending reasoning effort switched to: {level}")
 
     def set_plan_mode(self, plan_mode: bool) -> None:
         """Dynamically toggle plan mode."""
         if self.plan_mode != plan_mode:
             self.plan_mode = plan_mode
             self.options.plan_mode = plan_mode
+            self._restart_pending = True
             if self.process and self.process.returncode is None:
                 self._interrupted = True
                 try:
                     self.process.terminate()
                 except Exception:
                     pass
-            self.process = None
+                self.process = None
             LOG.info(f"Antigravity plan_mode set to: {plan_mode}")
 
     def new_session(self) -> None:
         """Clear the current session ID for a fresh connection."""
         self._session_id = None
         self.options.session_id = None
+        self._restart_pending = True
+        if self.process and self.process.returncode is None:
+            try:
+                self.process.terminate()
+            except Exception:
+                pass
+            self.process = None
+
+    @classmethod
+    def _parse_models_output(cls, text: str) -> List[Dict[str, Any]]:
+        """Parse raw output from `agy models` command."""
+        models: Dict[str, Dict[str, Any]] = {}
+        for line in (text or "").splitlines():
+            line = re.sub(r"^.*Fetching available models\.\.\.", "", line).strip()
+            m = re.match(r"^([a-zA-Z0-9._-]+)\s+(.+)$", line)
+            if not m or line.startswith(("ERROR:", "Failed to")):
+                continue
+
+            raw_id, display_name = m.group(1), m.group(2).strip()
+            effort_m = re.search(r"-(high|medium|low|xhigh|max)$", raw_id)
+            effort = effort_m.group(1) if effort_m else None
+            base_id = raw_id[:-len(effort)-1] if effort else raw_id
+            clean_name = re.sub(
+                r"\s*\((High|Medium|Low|XHigh|Max)\)$", "", display_name, flags=re.I
+            ).strip()
+
+            item = models.setdefault(base_id, {
+                "modelId": base_id,
+                "value": base_id,
+                "name": clean_name,
+                "displayName": clean_name,
+                "description": "",
+                "supportsEffort": bool(effort),
+                "supportedReasoningEfforts": [],
+            })
+            if effort and effort not in item["supportedReasoningEfforts"]:
+                item["supportedReasoningEfforts"].append(effort)
+
+        return list(models.values())
+
+    def _model_supports_effort(self, model_id: Optional[str]) -> bool:
+        """Check if the given model supports the reasoning effort flag."""
+        if not model_id or model_id == "default":
+            return False
+        clean_id = re.sub(r"-(high|medium|low|xhigh|max)$", "", model_id)
+        for m in self.available_models:
+            if m.get("value") in (model_id, clean_id) or m.get("modelId") in (model_id, clean_id):
+                return bool(m.get("supportsEffort"))
+        return any(k in clean_id.lower() for k in ("gemini", "claude", "sonnet", "opus", "gpt"))
+
+    async def _fetch_models(self) -> None:
+        """Asynchronously fetch available models from `agy models`."""
+        cli = self.cli_path or find_antigravity_cli()
+        if not cli:
+            return
+
+        env = os.environ.copy()
+        cli_dir = os.path.dirname(cli) if os.path.isabs(cli) else ""
+        if cli_dir:
+            env["PATH"] = cli_dir + os.pathsep + env.get("PATH", "")
+        local_bin = os.path.join(os.path.expanduser("~"), ".local", "bin")
+        if local_bin not in env.get("PATH", ""):
+            env["PATH"] = local_bin + os.pathsep + env.get("PATH", "")
+        if self.options.extra_env:
+            env.update(self.options.extra_env)
+
+        creationflags = 0
+        if sys.platform == "win32":
+            import subprocess
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+        try:
+            cmd = [cli, "models"]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                creationflags=creationflags,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            if proc.returncode == 0 and stdout:
+                parsed = self._parse_models_output(
+                    stdout.decode("utf-8", errors="replace")
+                )
+                if parsed:
+                    self.available_models = parsed
+                    LOG.info(f"Loaded {len(parsed)} models from '{cli} models'")
+                    await self._message_queue.put(
+                        Message("models_update", content={"models": parsed})
+                    )
+        except Exception as e:
+            LOG.debug(f"Failed to fetch models from {cli}: {e}")
 
     async def _write_json(self, data: Dict[str, Any]) -> None:
         """Write an NDJSON dictionary line to the subprocess stdin."""
@@ -202,25 +298,30 @@ class AntigravityAgent(BaseAgent):
         ]
 
         # Model selection
-        if self.options.model:
-            model = self.options.model
+        model = self.options.model
+        if model:
             if "/" in model:
                 model = model.split("/")[-1]
+            effort_suffix_match = re.search(r'-(high|medium|low|xhigh|max)$', model)
+            if effort_suffix_match:
+                effort = effort_suffix_match.group(1)
+                model = model[:-len(effort)-1]
+                if not self.options.think_level:
+                    self.options.think_level = effort
             cmd.extend(["--model", model])
 
         # Reasoning effort
         effort = None
         if self.options.think_level:
             level = self.options.think_level.lower()
-            if level in ("low", "medium", "high"):
+            if level in ("low", "medium", "high", "xhigh", "max"):
                 effort = level
-            elif level in ("auto", "default") and self.options.model:
-                effort = "high" if "pro" in self.options.model.lower() else "medium"
-        elif self.options.model:
-            # Models like gemini-3.8-flash require --effort (low, medium, high)
-            effort = "high" if "pro" in self.options.model.lower() else "medium"
+            elif level in ("auto", "default") and model and self._model_supports_effort(model):
+                effort = "high" if "pro" in model.lower() else "medium"
+        elif model and self._model_supports_effort(model):
+            effort = "high" if "pro" in model.lower() else "medium"
 
-        if effort:
+        if effort and (not model or self._model_supports_effort(model)):
             cmd.extend(["--effort", effort])
 
         # Session / conversation resumption
@@ -235,7 +336,10 @@ class AntigravityAgent(BaseAgent):
         # In plan mode, CLI mode-level lock (--mode plan) ensures the agent only generates
         # plans and does not modify project code, while allowing research tools (read_url, etc.)
         # to execute non-interactively without headless auto-denial.
-        if approve_mode in ("accept-all", "allow-edit") or permission_mode in ("bypass", "accept-all"):
+        if (
+            approve_mode in ("accept-all", "allow-edit")
+            or permission_mode in ("bypass", "accept-all")
+        ):
             cmd.append("--dangerously-skip-permissions")
 
         # Terminal sandbox
@@ -291,6 +395,10 @@ class AntigravityAgent(BaseAgent):
 
         await self._spawn_process()
         self.is_connected = True
+        self._restart_pending = False
+
+        if not self.available_models:
+            asyncio.create_task(self._fetch_models())
 
         if prompt:
             await self.send_message(prompt)
@@ -315,17 +423,26 @@ class AntigravityAgent(BaseAgent):
             # Since --mode plan is a CLI mode-level lock, cleanly terminate the old process
             # and drop any premature messages from it.
             if was_plan_mode:
+                self._restart_pending = True
                 await self._terminate_subprocess()
 
-        # If process was interrupted or exited, clean up and respawn with existing session_id
-        if self._interrupted or not self.process or (self.process.returncode is not None and isinstance(self.process.returncode, int)):
+        # If process was interrupted, restart was pending, or process exited, clean up and respawn
+        is_dead = (
+            self.process.returncode is not None
+            and isinstance(self.process.returncode, int)
+            if self.process
+            else True
+        )
+        if self._interrupted or self._restart_pending or not self.process or is_dead:
             if self.process:
                 await self._terminate_subprocess()
             self._interrupted = False
+            self._restart_pending = False
             if self._session_id:
                 self.options.session_id = self._session_id
             await self._spawn_process()
 
+        self._turn_has_result = False
         message = {
             "event": "user",
             "message": {
@@ -513,6 +630,7 @@ class AntigravityAgent(BaseAgent):
                     )
 
         elif event_type == "result":
+            self._turn_has_result = True
             result = data.get("result") or data
             status = result.get("status")
             if status == "ERROR":
@@ -559,41 +677,46 @@ class AntigravityAgent(BaseAgent):
         if not self.is_connected:
             raise RuntimeError("Client is not connected. Call connect() first.")
 
-        has_yielded_result = False
         while self.is_connected:
             try:
                 message = await asyncio.wait_for(
                     self._message_queue.get(),
                     timeout=0.1,
                 )
-                if self._interrupted and message.type in ("tool_use", "thinking", "text_delta", "text"):
+                if self._interrupted and message.type in (
+                    "tool_use", "thinking", "text_delta", "text"
+                ):
                     continue
-                if message.type in ("stop", "result"):
-                    has_yielded_result = True
                 yield message
             except asyncio.TimeoutError:
                 if self.process and self.process.returncode is not None:
                     # Drain remaining queue before handling exit
                     while not self._message_queue.empty():
                         msg = self._message_queue.get_nowait()
-                        # If interrupted, drop trailing tool_use, text, thinking from the dying process
-                        if self._interrupted and msg.type in ("tool_use", "thinking", "text_delta", "text"):
+                        # If interrupted, drop trailing tool_use, text, thinking from the dying proc
+                        if self._interrupted and msg.type in (
+                            "tool_use", "thinking", "text_delta", "text"
+                        ):
                             continue
-                        if msg.type in ("stop", "result"):
-                            has_yielded_result = True
                         yield msg
 
                     if self._interrupted:
-                        # Clean up interrupted process reference, reset flag, and guarantee stop message
+                        # Clean up process reference, reset flag, and guarantee stop message
                         self._interrupted = False
                         self.process = None
                         yield Message("stop")
                         continue
 
-                    if self.process.returncode != 0 and not has_yielded_result:
+                    if self._restart_pending:
+                        self.process = None
+                        continue
+
+                    if self.process.returncode != 0 and not self._turn_has_result:
                         err_text = self._extract_exit_error()
                         if "context canceled" in err_text.lower():
-                            LOG.info(f"Antigravity process exited with cancellation: {err_text}")
+                            LOG.info(
+                                f"Antigravity process exited with cancellation: {err_text}"
+                            )
                         else:
                             yield Message("error", content=err_text)
                         yield Message("stop")
@@ -691,6 +814,7 @@ class AntigravityAgent(BaseAgent):
 
         self.is_connected = False
         self._interrupted = True
+        self._restart_pending = False
         await self._terminate_subprocess()
 
 

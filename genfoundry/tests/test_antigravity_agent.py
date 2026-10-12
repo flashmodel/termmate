@@ -711,5 +711,139 @@ class TestAntigravitySessions(unittest.TestCase):
                 self.assertEqual(tail["summary"], "Tagged question")
 
 
+class TestAntigravityModelLifecycle(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.opts = AgentOptions(cli_path="/mock/bin/agy", cwd="/workspace")
+        self.agent = AntigravityAgent(options=self.opts)
+        self.agent.is_connected = True
+        self.mock_proc = AsyncMock()
+        self.mock_proc.terminate = MagicMock()
+        self.mock_proc.stdin = MagicMock()
+        self.mock_proc.stdin.drain = AsyncMock()
+        self.mock_proc.returncode = None
+        self.agent.process = self.mock_proc
+
+    def test_set_model_marks_restart_pending(self):
+        self.assertFalse(self.agent._restart_pending)
+        self.agent.set_model("claude-sonnet-5-5")
+        self.assertEqual(self.agent.options.model, "claude-sonnet-5-5")
+        self.assertTrue(self.agent._restart_pending)
+
+    def test_set_think_level_marks_restart_pending(self):
+        self.assertFalse(self.agent._restart_pending)
+        self.agent.set_think_level("high")
+        self.assertEqual(self.agent.options.think_level, "high")
+        self.assertTrue(self.agent._restart_pending)
+
+    def test_new_session_clears_session_and_marks_restart_pending(self):
+        self.agent._session_id = "test-session-123"
+        self.agent.options.session_id = "test-session-123"
+        self.agent.new_session()
+        self.assertIsNone(self.agent._session_id)
+        self.assertIsNone(self.agent.options.session_id)
+        self.assertTrue(self.agent._restart_pending)
+
+    def test_parse_models_output(self):
+        raw = (
+            "⠋ Fetching available models...gemini-3.8-flash-high     Gemini 3.8 Flash (High)\n"
+            "gemini-3.8-flash-medium   Gemini 3.8 Flash (Medium)\n"
+            "gemini-3.8-flash-low      Gemini 3.8 Flash (Low)\n"
+            "claude-sonnet-5-5-high    Claude Sonnet 5.5 (High)\n"
+            "custom-tool-model         Custom Tool Model\n"
+        )
+        parsed = AntigravityAgent._parse_models_output(raw)
+        self.assertEqual(len(parsed), 3)
+
+        flash = next((m for m in parsed if m["modelId"] == "gemini-3.8-flash"), None)
+        self.assertIsNotNone(flash)
+        self.assertTrue(flash["supportsEffort"])
+        self.assertEqual(
+            flash["supportedReasoningEfforts"], ["high", "medium", "low"]
+        )
+        self.assertEqual(flash["displayName"], "Gemini 3.8 Flash")
+
+        sonnet = next((m for m in parsed if m["modelId"] == "claude-sonnet-5-5"), None)
+        self.assertIsNotNone(sonnet)
+        self.assertTrue(sonnet["supportsEffort"])
+        self.assertEqual(sonnet["supportedReasoningEfforts"], ["high"])
+
+        custom = next((m for m in parsed if m["modelId"] == "custom-tool-model"), None)
+        self.assertIsNotNone(custom)
+        self.assertFalse(custom["supportsEffort"])
+
+    def test_model_supports_effort(self):
+        self.agent.available_models = [
+            {"modelId": "model-with-effort", "supportsEffort": True},
+            {"modelId": "model-without-effort", "supportsEffort": False},
+        ]
+        self.assertTrue(self.agent._model_supports_effort("model-with-effort"))
+        self.assertFalse(self.agent._model_supports_effort("model-without-effort"))
+        # Cleaned suffix
+        self.assertTrue(self.agent._model_supports_effort("model-with-effort-high"))
+        # Fallback heuristic
+        self.assertTrue(self.agent._model_supports_effort("gemini-3.8-flash"))
+        self.assertTrue(self.agent._model_supports_effort("claude-sonnet-5-5"))
+        self.assertFalse(self.agent._model_supports_effort("default"))
+        self.assertFalse(self.agent._model_supports_effort(None))
+
+    async def test_spawn_process_strips_effort_suffix(self):
+        opts = AgentOptions(
+            cli_path="/mock/bin/agy",
+            cwd="/workspace",
+            model="gemini-3.8-flash-high",
+            think_level=None,
+        )
+        agent = AntigravityAgent(options=opts)
+        fake_proc = AsyncMock()
+        fake_proc.returncode = None
+        with patch("asyncio.create_subprocess_exec", return_value=fake_proc) as mock_exec, \
+             patch.object(agent, "_read_stdout", new_callable=AsyncMock), \
+             patch.object(agent, "_read_stderr", new_callable=AsyncMock):
+            await agent._spawn_process()
+            cmd = mock_exec.call_args[0]
+            self.assertIn("--model", cmd)
+            idx_m = cmd.index("--model")
+            self.assertEqual(cmd[idx_m + 1], "gemini-3.8-flash")
+            self.assertIn("--effort", cmd)
+            idx_e = cmd.index("--effort")
+            self.assertEqual(cmd[idx_e + 1], "high")
+
+    async def test_spawn_process_overrides_effort_from_think_level(self):
+        opts = AgentOptions(
+            cli_path="/mock/bin/agy",
+            cwd="/workspace",
+            model="gemini-3.8-flash-high",
+            think_level="low",
+        )
+        agent = AntigravityAgent(options=opts)
+        fake_proc = AsyncMock()
+        fake_proc.returncode = None
+        with patch("asyncio.create_subprocess_exec", return_value=fake_proc) as mock_exec, \
+             patch.object(agent, "_read_stdout", new_callable=AsyncMock), \
+             patch.object(agent, "_read_stderr", new_callable=AsyncMock):
+            await agent._spawn_process()
+            cmd = mock_exec.call_args[0]
+            idx_e = cmd.index("--effort")
+            self.assertEqual(cmd[idx_e + 1], "low")
+
+    async def test_fetch_models_updates_available_models_and_emits_message(self):
+        mock_output = b"gemini-3.8-flash-high Gemini 3.8 Flash (High)\n"
+        fake_proc = AsyncMock()
+        fake_proc.returncode = 0
+        fake_proc.communicate = AsyncMock(return_value=(mock_output, b""))
+
+        with patch("asyncio.create_subprocess_exec", return_value=fake_proc):
+            await self.agent._fetch_models()
+
+        self.assertEqual(len(self.agent.available_models), 1)
+        self.assertEqual(
+            self.agent.available_models[0]["modelId"], "gemini-3.8-flash"
+        )
+        self.assertFalse(self.agent.message_queue.empty())
+        msg = await self.agent.message_queue.get()
+        self.assertEqual(msg.type, "models_update")
+        self.assertEqual(len(msg.content["models"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

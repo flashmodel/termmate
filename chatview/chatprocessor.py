@@ -1545,60 +1545,12 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
                 return cls.get_default_think_presets()
             return []
         return cls.get_default_think_presets()
-
-    @classmethod
-    def get_default_models(cls) -> list:
-        return [
-            {
-                "value": "gemini-3.8-flash",
-                "displayName": "Gemini 3.8 Flash",
-                "description": "Fast and versatile multimodal model with adjustable reasoning effort",
-                "supportedReasoningEfforts": ["low", "medium", "high"],
-                "defaultReasoningEffort": "medium",
-                "supportsEffort": True,
-            },
-            {
-                "value": "gemini-3.7-flash",
-                "displayName": "Gemini 3.7 Flash",
-                "description": "High-speed hybrid reasoning model",
-                "supportedReasoningEfforts": ["low", "medium", "high"],
-                "defaultReasoningEffort": "medium",
-                "supportsEffort": True,
-            },
-            {
-                "value": "gemini-3.6-flash",
-                "displayName": "Gemini 3.6 Flash",
-                "description": "Efficient lightweight model for fast coding tasks",
-                "supportedReasoningEfforts": ["low", "medium", "high"],
-                "defaultReasoningEffort": "medium",
-                "supportsEffort": True,
-            },
-            {
-                "value": "gemini-3.1-pro",
-                "displayName": "Gemini 3.1 Pro",
-                "description": "Advanced reasoning model for complex architecture and coding",
-                "supportedReasoningEfforts": ["low", "medium", "high"],
-                "defaultReasoningEffort": "high",
-                "supportsEffort": True,
-            },
-            {
-                "value": "claude-sonnet-4-6",
-                "displayName": "Claude Sonnet 4.6",
-                "description": "Anthropic Claude model with extended thinking capabilities",
-                "supportedReasoningEfforts": ["low", "medium", "high"],
-                "defaultReasoningEffort": "medium",
-                "supportsEffort": True,
-            },
-        ]
-
     def __init__(self, session):
         super().__init__(session)
         self._plan_path = None
         self._plan_summary = ""
         self._synced_artifact_mtimes = {}
         self._pending_tool_params = {}
-        if session and not getattr(session, "available_models", None):
-            self.set_available_models(self.get_default_models())
 
     USER_ARTIFACT_SPECS = {
         "implementation_plan.md": {"icon": "📋", "can_execute": True, "label": "Plan"},
