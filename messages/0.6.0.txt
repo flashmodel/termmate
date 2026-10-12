@@ -1,0 +1,12 @@
+TermMate 0.6.0
+==============
+
+- Google Antigravity Agent Provider Support
+  TermMate now supports Google Antigravity (agy) alongside Claude Code,
+  Codex, OpenCode, and Pi Agent. Install via "TermMate: Install Agent"
+  then log in with "agy login".
+
+- Plan & Walkthrough Artifacts
+  Persistent planning documents (implementation_plan.md) and execution
+  summaries (walkthrough.md) from the Antigravity session brain are
+  automatically tracked with double-click links to open in Sublime Text.
