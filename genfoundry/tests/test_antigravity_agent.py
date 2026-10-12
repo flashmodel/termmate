@@ -296,10 +296,29 @@ class TestAntigravityAgentEvents(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0].type, "tool_use")
         self.assertEqual(messages[0].content["name"], "run_command")
         self.assertEqual(messages[0].content["id"], "call_1")
+        self.assertEqual(messages[0].content["state"], "ACTIVE")
 
         self.assertEqual(messages[1].type, "tool_use")
         self.assertEqual(messages[1].content["id"], "call_1")
         self.assertEqual(messages[1].content["output"], "file1.txt\nfile2.txt")
+        self.assertEqual(messages[1].content["state"], "DONE")
+
+    async def test_tool_event_with_json_string_params(self):
+        event = {
+            "event": "step_update",
+            "step_index": 3,
+            "step_type": "tool",
+            "state": "ACTIVE",
+            "tool_call": {
+                "id": "call_2",
+                "name": "run_command",
+                "args": '{"CommandLine": "echo test"}',
+            },
+        }
+        await self.agent._handle_json_event(event)
+        messages = await self._messages()
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].content["parameters"], {"CommandLine": "echo test"})
 
     async def test_result_event(self):
         event = {

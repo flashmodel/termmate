@@ -1596,6 +1596,7 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
         self._plan_path = None
         self._plan_summary = ""
         self._synced_artifact_mtimes = {}
+        self._pending_tool_params = {}
         if session and not getattr(session, "available_models", None):
             self.set_available_models(self.get_default_models())
 
@@ -1756,16 +1757,35 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
 
         if message.type == "tool_use":
             self.session.start_loading()
+            content_data = message.content if isinstance(message.content, dict) else {}
+            state = content_data.get("state")
+            if not state and isinstance(message.raw_data, dict):
+                state = message.raw_data.get("state")
+
+            tool_id = str(content_data.get("id") or getattr(message, "msg_id", "") or "")
+
+            if state == "ACTIVE":
+                if tool_id and content_data.get("parameters"):
+                    self._pending_tool_params[tool_id] = content_data["parameters"]
+                return
+
+            if tool_id and not content_data.get("parameters"):
+                cached = self._pending_tool_params.pop(tool_id, None)
+                if cached:
+                    content_data["parameters"] = cached
+            elif tool_id:
+                self._pending_tool_params.pop(tool_id, None)
+
             if not self.last_is_tool_call:
                 self.append_content("\n")
             self.last_is_tool_call = True
-            content_data = message.content if isinstance(message.content, dict) else {}
+            self.append_content(self._format_tool_block(content_data) + "\n")
+
             if self._is_user_artifact(content_data):
                 params = content_data.get("parameters") or {}
                 target = params.get("TargetFile") or params.get("path") or ""
                 code_fallback = params.get("CodeContent") or params.get("ReplacementContent")
                 self._sync_user_artifacts(hint_path=target, content_fallback=code_fallback)
-            self.append_content(self._format_tool_block(content_data) + "\n")
             self._record_tool_file_change(content_data)
 
         elif message.type == "system":
@@ -1814,6 +1834,7 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
             self.session.stop_loading()
             self.append_content("\n")
             self.last_is_tool_call = False
+            self._pending_tool_params.clear()
 
             # Dual-trigger final sync: scan and update any artifacts on disk
             self._sync_user_artifacts()
@@ -1911,6 +1932,8 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
 
     def _record_tool_file_change(self, block):
         if self._is_user_artifact(block):
+            return
+        if block.get("error"):
             return
         name = block.get("name")
         params = block.get("parameters") or {}

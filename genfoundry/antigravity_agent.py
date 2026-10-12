@@ -463,6 +463,11 @@ class AntigravityAgent(BaseAgent):
                     or tool_info.get("parameters")
                     or {}
                 )
+                if isinstance(params, str):
+                    try:
+                        params = json.loads(params)
+                    except Exception:
+                        pass
                 output = (
                     tool_result.get("output")
                     or tool_info.get("output")
@@ -483,6 +488,7 @@ class AntigravityAgent(BaseAgent):
                             "output": output,
                             "error": error,
                             "tool_info": tool_info,
+                            "state": state,
                         },
                         msg_id=msg_id,
                         raw_data=step_update,
