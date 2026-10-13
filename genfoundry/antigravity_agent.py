@@ -93,9 +93,10 @@ def find_antigravity_cli() -> Optional[str]:
 PLAN_MODE_SYSTEM_PROMPT = (
     "<system_instructions>\n"
     "[PLANNING MODE]\n"
-    "You can explore the codebase and write a comprehensive, step-by-step implementation plan. "
-    "Strictly do NOT start implementing it.\n"
-    "You must NOT write, edit, create, move any workspace files.\n"
+    "You can explore the codebase and write an implementation plan. "
+    "Do NOT proceed to implement the plan.\n"
+    "Do NOT edit workspace files or run commands; "
+    "STOP calling tools after writing the plan artifact.\n"
     "</system_instructions>"
 )
 

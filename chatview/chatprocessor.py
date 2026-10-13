@@ -1633,6 +1633,14 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
             paths_to_check.append(hint_path)
 
         for bdir in brain_dirs:
+            try:
+                for fname in os.listdir(bdir):
+                    if fname.lower().endswith(".md"):
+                        fpath = os.path.join(bdir, fname)
+                        if fpath not in paths_to_check:
+                            paths_to_check.append(fpath)
+            except OSError:
+                pass
             for name in self.USER_ARTIFACT_SPECS:
                 fpath = os.path.join(bdir, name)
                 if fpath not in paths_to_check:
