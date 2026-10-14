@@ -132,7 +132,12 @@ class BaseAgent(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def send_message(self, content: str, parent_tool_use_id: Optional[str] = None, proceed_plan: bool = False) -> None:
+    async def send_message(
+        self,
+        content: str,
+        parent_tool_use_id: Optional[str] = None,
+        proceed_plan: bool = False,
+    ) -> None:
         """Send a message/prompt to the Agent"""
         pass
 

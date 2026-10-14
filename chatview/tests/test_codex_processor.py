@@ -329,6 +329,27 @@ class TestOpenCodeMessageProcessor(unittest.TestCase):
 
         self.assertEqual(output, "⏺ command (python3 -m unittest)")
 
+    def test_tool_after_text_without_newline_ensures_blank_line(self):
+        appended = []
+        self.session.append_markdown = lambda text, flush=False: appended.append(text)
+        self.processor.handle_message(Message("text", "Let's use the edit tool."))
+        self.processor.handle_message(Message("tool_use", {"name": "edit"}))
+        self.assertEqual(appended, ["Let's use the edit tool.", "\n\n", "⏺ edit\n"])
+
+    def test_tool_after_text_with_one_newline_adds_single_newline(self):
+        appended = []
+        self.session.append_markdown = lambda text, flush=False: appended.append(text)
+        self.processor.handle_message(Message("text", "Let's use the edit tool.\n"))
+        self.processor.handle_message(Message("tool_use", {"name": "edit"}))
+        self.assertEqual(appended, ["Let's use the edit tool.\n", "\n", "⏺ edit\n"])
+
+    def test_tool_after_text_with_two_newlines_adds_no_extra_newline(self):
+        appended = []
+        self.session.append_markdown = lambda text, flush=False: appended.append(text)
+        self.processor.handle_message(Message("text", "Let's use the edit tool.\n\n"))
+        self.processor.handle_message(Message("tool_use", {"name": "edit"}))
+        self.assertEqual(appended, ["Let's use the edit tool.\n\n", "⏺ edit\n"])
+
 
 class TestModelFormatting(unittest.TestCase):
 

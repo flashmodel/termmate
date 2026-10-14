@@ -467,6 +467,9 @@ class AgentThread(threading.Thread):
                     new_session_id = await self.agent.rewind(user_message_id)
                 except Exception as e:
                     LOG.error(f"[rewind] agent.rewind failed: {e}", exc_info=True)
+                    sublime.set_timeout(
+                        lambda: self.on_message(("error", f"Rewind failed: {str(e)}")), 0
+                    )
             if on_done:
                 sublime.set_timeout(lambda: on_done(new_session_id), 0)
 
@@ -1990,7 +1993,9 @@ class ChatSession:
                 session_info = self._fetch_session_info(current_agent_provider, old_session_id, cwd)
                 self._append_resume_history(current_agent_provider, old_session_id, session_info)
             else:
-                self.chat_view.run_command("term_chat_output_append", {"text": f"\n\n[reconnecting agent...]\n\n"})
+                self.chat_view.run_command(
+                    "term_chat_output_append", {"text": "\n\n[reconnecting agent...]\n\n"}
+                )
 
     def _replay_prompt(self, prompt_text):
         """Append a previously-submitted prompt with gutter highlight, as if the user had just sent it."""

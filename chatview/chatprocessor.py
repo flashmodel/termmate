@@ -980,6 +980,10 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
     _TOOL_FILE_NAMES = ("fileChange", "read", "write", "edit", "apply_patch")
     _RISKY_TOOLS = ("Bash",)
 
+    def __init__(self, session):
+        super().__init__(session)
+        self._text_trailing_newlines = 1
+
     def _handle_typed_message(self, message):
         # Unlike Codex, OpenCode's adapter emits only streaming text and does
         # not repeat the completed assistant message.  Render deltas directly.
@@ -989,17 +993,28 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
 
         if message.type == "text":
             self.session.start_loading()
-            if self.last_is_tool_call:
-                self.append_content("\n")
-                self.last_is_tool_call = False
             content = message.content if isinstance(message.content, str) else ""
-            if content:
-                self.append_content(content)
+            if not content:
+                return
+            if self.last_is_tool_call:
+                if not content.startswith(("\n", "\r\n")):
+                    self.append_content("\n")
+                self.last_is_tool_call = False
+            self.append_content(content)
+            raw = content.replace("\r", "")
+            trailing = len(raw) - len(raw.rstrip("\n"))
+            if trailing == len(raw):
+                self._text_trailing_newlines = min(2, self._text_trailing_newlines + trailing)
+            else:
+                self._text_trailing_newlines = min(2, trailing)
             return
         if message.type == "tool_use":
             if not self.last_is_tool_call:
-                self.append_content("\n")
+                needed = max(0, 2 - self._text_trailing_newlines)
+                if needed > 0:
+                    self.append_content("\n" * needed)
             self.last_is_tool_call = True
+            self._text_trailing_newlines = 0
             self.append_content(self._format_tool_block(message.content) + "\n")
             if message.content.get("name") == "fileChange":
                 self._record_file_changes(message.content)
@@ -1031,6 +1046,8 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
                 self._plan_text += content
         elif message.type == "turn_started":
             self._active_turn_id = None
+            self.last_is_tool_call = False
+            self._text_trailing_newlines = 1
             self.session.start_loading()
         elif message.type == "user_message_id":
             content = message.content if isinstance(message.content, dict) else {}
@@ -1042,6 +1059,8 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
             self.append_content("", flush=True)
             self.session.stop_loading()
             self.append_content("\n")
+            self.last_is_tool_call = False
+            self._text_trailing_newlines = 1
             if self._plan_text:
                 plan_text = self._plan_text
                 self._plan_text = ""

@@ -9,13 +9,25 @@ from .base_agent import (
     PermissionResultDeny,
     ToolPermissionContext,
 )
-from .claude_agent import ClaudeCodeAgent, query as claude_query, list_sessions_for_cwd, get_claude_session_tail
-from .codex_agent import CodexAgent, query as codex_query, list_codex_sessions, get_codex_session_info
+from .claude_agent import (
+    ClaudeCodeAgent,
+    query as claude_query,
+    list_sessions_for_cwd,
+    get_claude_session_tail,
+)
+from .codex_agent import (
+    CodexAgent,
+    query as codex_query,
+    list_codex_sessions,
+    get_codex_session_info,
+)
 from .pi_agent import PiAgent, query as pi_query, list_pi_sessions
 from .opencode_agent import (
     OpenCodeAgent,
     query as opencode_query,
     find_opencode_cli,
+    find_opencode_v2_service,
+    probe_opencode_service,
     list_opencode_sessions,
     get_opencode_session_info,
 )
@@ -51,6 +63,8 @@ __all__ = [
     "OpenCodeAgent",
     "opencode_query",
     "find_opencode_cli",
+    "find_opencode_v2_service",
+    "probe_opencode_service",
     "list_opencode_sessions",
     "get_opencode_session_info",
     "AntigravityAgent",
