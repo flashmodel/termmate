@@ -1682,6 +1682,9 @@ class OpenCodeAgent(BaseAgent):
             return
 
     async def _finish_turn(self) -> None:
+        # _finish_turn can be triggered either by the SSE event stream
+        # (session.execution.succeeded / session.execution.interrupted) or by the interrupt
+        # fallback timeout task.
         if not self._turn_active:
             return
         if self._awaiting_user_message_id:
@@ -1883,6 +1886,18 @@ class OpenCodeAgent(BaseAgent):
         )
         tool_name = _TOOL_NAMES.get(permission_type.lower(), permission_type)
         input_data = dict(permission.get("metadata") or {})
+
+        # Extract structured input from linked tool call or permission resources
+        source_id = str((permission.get("source") or {}).get("id") or "")
+        cached_input = self._tool_calls.get(source_id, {}).get("input")
+        if isinstance(cached_input, dict):
+            input_data.update(cached_input)
+        elif permission.get("resources"):
+            res = permission["resources"]
+            val = "\n".join(str(r) for r in res) if isinstance(res, list) else str(res)
+            is_cmd = permission_type.lower() in ("shell", "bash", "command")
+            input_data.setdefault("command" if is_cmd else "file_path", val)
+
         patterns = permission.get("patterns") or permission.get("pattern")
         input_data.update({
             "title": permission.get("title", ""),
@@ -2227,18 +2242,27 @@ class OpenCodeAgent(BaseAgent):
         await self.send_message(text, proceed_plan=proceed_plan)
 
     async def interrupt(self) -> None:
-        if self._is_connected and self._session_id:
-            sid = quote(self._session_id, safe="")
-            if self.version >= 2:
-                # [OpenCode v2] Interrupt active execution turn
-                await self._http("POST", f"/api/session/{sid}/interrupt", body={})
-            else:
-                # [OpenCode v1] Abort active turn
-                await self._http("POST", f"/session/{sid}/abort", body={})
-            self._turn_active = False
-            self._turn_plan_mode = False
-            self._awaiting_user_message_id = False
-            self._turn_done.set()
+        if not (self._is_connected and self._session_id):
+            return
+
+        sid = quote(self._session_id, safe="")
+        path = (
+            f"/api/session/{sid}/interrupt"
+            if self.version >= 2
+            else f"/session/{sid}/abort"
+        )
+        try:
+            await self._http("POST", path, body={}, timeout=5.0)
+        except Exception as e:
+            LOG.warning(f"OpenCode interrupt HTTP failed ({e}); forcing turn finish")
+            await self._finish_turn()
+            return
+
+        async def _fallback():
+            await asyncio.sleep(5.0)
+            await self._finish_turn()
+
+        asyncio.create_task(_fallback())
 
     async def new_session(self) -> str:
         """Create and switch to a fresh session without reconnecting the client."""

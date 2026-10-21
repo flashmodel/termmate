@@ -969,7 +969,7 @@ class PermissionPanel:
             name = os.path.basename(file_path) if file_path else "new_file"
             self.diff_data[request_id] = (old_text, new_text, name)
             return f'📄 <a href="show_diff" class="file-link">{self._html_escape(name)}</a>'
-        elif tool_name == "command_execution":
+        elif tool_name in ("command_execution", "Bash", "bash"):
             command = input_data.get("command", "")
             cwd = input_data.get("cwd", "")
             display = self._html_escape(command)
