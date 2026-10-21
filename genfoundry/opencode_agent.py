@@ -1325,9 +1325,9 @@ class OpenCodeAgent(BaseAgent):
         if isinstance(value, dict):
             if value.get("error"):
                 raise RuntimeError(OpenCodeAgent._error_text(value["error"]))
-            if "data" in value and set(value).issubset(
-                {"data", "error", "cursor", "total", "next_cursor"}
-            ):
+            if "data" in value and set(value).issubset({
+                "data", "error", "cursor", "total", "next_cursor", "location", "version"
+            }):
                 return value.get("data")
         return value
 
@@ -2023,7 +2023,7 @@ class OpenCodeAgent(BaseAgent):
                     )
                 )
                 for item in items:
-                    if not isinstance(item, dict):
+                    if not isinstance(item, dict) or item.get("enabled") is False:
                         continue
                     provider_id = item.get("providerID")
                     model_id = item.get("id") or item.get("modelID")
@@ -2805,30 +2805,13 @@ def list_opencode_sessions(
     """Return OpenCode sessions for a workspace, newest first."""
     try:
         with _SyncOpenCodeServer(cwd, extra_env, cli_path) as server:
-            sessions = None
+            path = "/session" if getattr(server, "version", 2) == 1 else "/api/session"
             try:
                 sessions = _sync_request(
-                    server.url, "/api/session", cwd, extra_env, server.password
+                    server.url, path, cwd, extra_env, server.password
                 )
             except Exception:
                 sessions = None
-            if not isinstance(sessions, list):
-                if (
-                    isinstance(sessions, dict)
-                    and "data" in sessions
-                    and isinstance(sessions["data"], list)
-                ):
-                    sessions = sessions["data"]
-                else:
-                    sessions = _sync_request(
-                        server.url, "/session", cwd, extra_env, server.password
-                    )
-            if (
-                isinstance(sessions, dict)
-                and "data" in sessions
-                and isinstance(sessions["data"], list)
-            ):
-                sessions = sessions["data"]
 
             result = []
             for session in sessions if isinstance(sessions, list) else []:

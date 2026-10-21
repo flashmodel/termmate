@@ -985,8 +985,9 @@ class TestOpenCodeV2Turns(unittest.IsolatedAsyncioTestCase):
         await agent.interrupt()
 
         agent._http.assert_awaited_once_with(
-            "POST", "/api/session/ses_v2/interrupt", body={}
+            "POST", "/api/session/ses_v2/interrupt", body={}, timeout=5.0
         )
+        await agent._finish_turn()
         self.assertFalse(agent._turn_active)
 
     async def test_v2_rewind_routes(self):
@@ -1091,25 +1092,21 @@ class TestOpenCodeSessionsAndResumption(unittest.TestCase):
         self.assertEqual(sessions[1]["session_id"], "ses_v2_1")
         self.assertEqual(sessions[1]["mtime"], 1700000000.0)
 
-    def test_list_opencode_sessions_v1_fallback(self):
-        mock_server = SimpleNamespace(url="http://127.0.0.1:50000", password="")
+    def test_list_opencode_sessions_v1(self):
+        mock_server = SimpleNamespace(url="http://127.0.0.1:50000", password="", version=1)
         v1_sessions = [
             {"id": "ses_v1", "title": "V1 Session", "time": {"updated": 1600000000000}},
         ]
 
-        def fake_request(base_url, path, cwd, extra_env, password=None):
-            if path == "/api/session":
-                return None
-            if path == "/session":
-                return v1_sessions
-            return None
-
         with patch("genfoundry.opencode_agent._SyncOpenCodeServer") as mock_cls:
             mock_cls.return_value.__enter__.return_value = mock_server
             with patch(
-                "genfoundry.opencode_agent._sync_request", side_effect=fake_request
-            ):
+                "genfoundry.opencode_agent._sync_request", return_value=v1_sessions
+            ) as mock_req:
                 sessions = list_opencode_sessions(cwd="/workspace")
+                mock_req.assert_called_once_with(
+                    "http://127.0.0.1:50000", "/session", "/workspace", None, ""
+                )
 
         self.assertEqual(len(sessions), 1)
         self.assertEqual(sessions[0]["session_id"], "ses_v1")
