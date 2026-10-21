@@ -466,9 +466,10 @@ class AgentThread(threading.Thread):
                 try:
                     new_session_id = await self.agent.rewind(user_message_id)
                 except Exception as e:
-                    LOG.error(f"[rewind] agent.rewind failed: {e}", exc_info=True)
+                    error_msg = str(e)
+                    LOG.error(f"[rewind] agent.rewind failed: {error_msg}")
                     sublime.set_timeout(
-                        lambda: self.on_message(("error", f"Rewind failed: {str(e)}")), 0
+                        lambda: self.on_message(("error", f"Rewind failed: {error_msg}")), 0
                     )
             if on_done:
                 sublime.set_timeout(lambda: on_done(new_session_id), 0)
@@ -518,9 +519,10 @@ class AgentThread(threading.Thread):
                 lambda: self.on_message(("reset_complete", "Session reset successfully")), 0
             )
         except Exception as e:
-            LOG.error(f"Error resetting agent: {e}")
+            error_msg = str(e)
+            LOG.error(f"Error resetting agent: {error_msg}")
             sublime.set_timeout(
-                lambda: self.on_message(("error", f"Failed to reset session: {str(e)}")), 0
+                lambda: self.on_message(("error", f"Failed to reset session: {error_msg}")), 0
             )
 
     async def _send_permission_response(self, request_id, response_data, is_extension_ui=False):

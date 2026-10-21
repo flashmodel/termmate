@@ -72,7 +72,7 @@
 
     // Idle grace period in seconds before shutting down the background OpenCode server
     // when all chat views are closed. Set to 0 for immediate shutdown, or -1 to keep running.
-    "opencode_idle_timeout": 300,
+    "opencode_idle_timeout": 180,
 
     // Extra environment variables to inject into agent subprocesses.
     // Useful for setting API keys, or any other per-user env configuration.

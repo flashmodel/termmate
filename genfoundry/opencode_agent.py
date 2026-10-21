@@ -98,15 +98,7 @@ def detect_opencode_version(cli_path: Optional[str] = None) -> Optional[int]:
 
 def get_termmate_opencode_state_dir() -> str:
     """Return the private XDG_STATE_HOME directory used by TermMate for OpenCode."""
-    base = None
-    try:
-        import sublime
-        if hasattr(sublime, "cache_path"):
-            base = sublime.cache_path()
-    except Exception:
-        base = None
-    if not base:
-        base = os.path.join(tempfile.gettempdir(), "termmate_cache")
+    base = os.path.join(tempfile.gettempdir(), "termmate_cache")
     state_dir = os.path.join(base, "TermMate", "opencode_state")
     try:
         os.makedirs(state_dir, exist_ok=True)
@@ -234,16 +226,15 @@ def probe_opencode_service(
 
 
 _ACTIVE_OPENCODE_SERVER: Optional[Dict[str, Any]] = None
-_ACTIVE_SERVER_LOCK = threading.RLock()
 _ACTIVE_CLIENTS: set = set()
 _IDLE_SHUTDOWN_TIMER: Optional[threading.Timer] = None
-_DEFAULT_IDLE_SHUTDOWN_DELAY = 300.0
+_DEFAULT_IDLE_SHUTDOWN_DELAY = 180.0
 _SUBLIME_SERVER_PROCESS: Optional[subprocess.Popen] = None
 _SUBLIME_SERVER_JOB_HANDLE: Optional[int] = None
 
 
 def get_opencode_idle_timeout() -> float:
-    """Return idle shutdown delay in seconds from settings, or default 300s."""
+    """Return idle shutdown delay in seconds from settings, or default 180s."""
     try:
         import sublime
         settings = sublime.load_settings("TermMate.sublime-settings")
@@ -258,13 +249,13 @@ def get_opencode_idle_timeout() -> float:
 def cancel_idle_shutdown_timer() -> None:
     """Cancel any pending OpenCode idle shutdown timer."""
     global _IDLE_SHUTDOWN_TIMER
-    with _ACTIVE_SERVER_LOCK:
-        if _IDLE_SHUTDOWN_TIMER is not None:
-            try:
-                _IDLE_SHUTDOWN_TIMER.cancel()
-            except Exception:
-                pass
-            _IDLE_SHUTDOWN_TIMER = None
+    timer = _IDLE_SHUTDOWN_TIMER
+    _IDLE_SHUTDOWN_TIMER = None
+    if timer is not None:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
 
 
 def schedule_idle_shutdown_timer(
@@ -272,35 +263,35 @@ def schedule_idle_shutdown_timer(
 ) -> None:
     """Schedule OpenCode idle shutdown if no clients are active."""
     global _IDLE_SHUTDOWN_TIMER
-    with _ACTIVE_SERVER_LOCK:
-        cancel_idle_shutdown_timer()
+    cancel_idle_shutdown_timer()
+    if _ACTIVE_CLIENTS:
+        return
+
+    timeout = get_opencode_idle_timeout() if delay is None else delay
+    if timeout < 0:
+        return
+    if timeout == 0:
+        stop_sublime_opencode_server(cli_path)
+        return
+
+    def _on_idle():
         if _ACTIVE_CLIENTS:
             return
+        LOG.info("OpenCode server idle for %.0fs; stopping server", timeout)
+        stop_sublime_opencode_server(cli_path)
 
-        timeout = get_opencode_idle_timeout() if delay is None else delay
-        if timeout < 0:
-            return
-        if timeout == 0:
-            stop_sublime_opencode_server(cli_path)
-            return
-
-        def _on_idle():
-            with _ACTIVE_SERVER_LOCK:
-                if not _ACTIVE_CLIENTS:
-                    LOG.info("OpenCode server idle for %.0fs; stopping server", timeout)
-                    stop_sublime_opencode_server(cli_path)
-
-        _IDLE_SHUTDOWN_TIMER = threading.Timer(timeout, _on_idle)
-        _IDLE_SHUTDOWN_TIMER.daemon = True
-        _IDLE_SHUTDOWN_TIMER.start()
-        LOG.debug("Scheduled OpenCode idle shutdown in %.0fs", timeout)
+    timer = threading.Timer(timeout, _on_idle)
+    timer.daemon = True
+    _IDLE_SHUTDOWN_TIMER = timer
+    timer.start()
+    LOG.debug("Scheduled OpenCode idle shutdown in %.0fs", timeout)
 
 
 def get_active_opencode_server() -> Optional[Dict[str, Any]]:
     """Return the active in-process OpenCode server endpoint, if any."""
-    with _ACTIVE_SERVER_LOCK:
-        if _ACTIVE_OPENCODE_SERVER:
-            return dict(_ACTIVE_OPENCODE_SERVER)
+    active = _ACTIVE_OPENCODE_SERVER
+    if active:
+        return dict(active)
     return None
 
 
@@ -311,15 +302,14 @@ def set_active_opencode_server(
 ) -> None:
     """Record or clear the active in-process OpenCode server endpoint."""
     global _ACTIVE_OPENCODE_SERVER
-    with _ACTIVE_SERVER_LOCK:
-        if url:
-            _ACTIVE_OPENCODE_SERVER = {
-                "url": url.rstrip("/"),
-                "password": password or "",
-                "version": version,
-            }
-        else:
-            _ACTIVE_OPENCODE_SERVER = None
+    if url:
+        _ACTIVE_OPENCODE_SERVER = {
+            "url": url.rstrip("/"),
+            "password": password or "",
+            "version": version,
+        }
+    else:
+        _ACTIVE_OPENCODE_SERVER = None
 
 
 def _poll_opencode_service(
@@ -359,12 +349,9 @@ def ensure_opencode_v2_service(
     if not cli or detect_opencode_version(cli) == 1:
         return None
 
-    # 3. Spawn 'opencode serve --service' under pipe watchdog (Unix) or Job Object (Win32)
-    with _ACTIVE_SERVER_LOCK:
-        svc = _poll_opencode_service(env)
-        if svc:
-            return svc
-
+    # 3. Spawn 'opencode serve --service' if not already starting
+    existing_proc = _SUBLIME_SERVER_PROCESS
+    if existing_proc is None or existing_proc.poll() is not None:
         cmd = [cli, "serve", "--service"]
         kwargs: Dict[str, Any] = {}
         job_handle = None
@@ -435,28 +422,28 @@ def get_sublime_opencode_server(
 ) -> Optional[Dict[str, Any]]:
     """Get or start the Sublime Text private OpenCode server singleton.
 
-    Thread-safe. Checks in-memory cache first, then private service.json,
+    Checks in-memory cache first, then private service.json,
     then starts the private daemon via ensure_opencode_v2_service.
     """
     global _ACTIVE_OPENCODE_SERVER
-    with _ACTIVE_SERVER_LOCK:
-        active = _ACTIVE_OPENCODE_SERVER
-        if active and probe_opencode_service(active["url"], active.get("password")):
-            return dict(active)
+    active = _ACTIVE_OPENCODE_SERVER
+    if active and probe_opencode_service(active["url"], active.get("password")):
+        return dict(active)
 
-        env = dict(extra_env or {})
-        env["XDG_STATE_HOME"] = get_termmate_opencode_state_dir()
+    env = dict(extra_env or {})
+    env["XDG_STATE_HOME"] = get_termmate_opencode_state_dir()
 
-        svc = ensure_opencode_v2_service(cli_path, env)
-        if svc:
-            _ACTIVE_OPENCODE_SERVER = {
-                "url": svc["url"].rstrip("/"),
-                "password": svc.get("password") or "",
-                "version": 2,
-            }
-            return dict(_ACTIVE_OPENCODE_SERVER)
+    svc = ensure_opencode_v2_service(cli_path, env)
+    if svc:
+        info = {
+            "url": svc["url"].rstrip("/"),
+            "password": svc.get("password") or "",
+            "version": 2,
+        }
+        _ACTIVE_OPENCODE_SERVER = info
+        return dict(info)
 
-        return None
+    return None
 
 
 def stop_sublime_opencode_server(
@@ -464,13 +451,10 @@ def stop_sublime_opencode_server(
 ) -> None:
     """Stop the Sublime Text private OpenCode server singleton and clean up."""
     global _SUBLIME_SERVER_PROCESS, _SUBLIME_SERVER_JOB_HANDLE
-    with _ACTIVE_SERVER_LOCK:
-        cancel_idle_shutdown_timer()
-        _ACTIVE_CLIENTS.clear()
-        proc = _SUBLIME_SERVER_PROCESS
-        _SUBLIME_SERVER_PROCESS = None
-        job_handle = _SUBLIME_SERVER_JOB_HANDLE
-        _SUBLIME_SERVER_JOB_HANDLE = None
+    cancel_idle_shutdown_timer()
+    _ACTIVE_CLIENTS.clear()
+    proc, _SUBLIME_SERVER_PROCESS = _SUBLIME_SERVER_PROCESS, None
+    job_handle, _SUBLIME_SERVER_JOB_HANDLE = _SUBLIME_SERVER_JOB_HANDLE, None
 
     set_active_opencode_server(None)
 
@@ -1009,9 +993,8 @@ class OpenCodeAgent(BaseAgent):
             self.server_url, self._server_password, version=self.version
         )
 
-        with _ACTIVE_SERVER_LOCK:
-            cancel_idle_shutdown_timer()
-            _ACTIVE_CLIENTS.add(self)
+        cancel_idle_shutdown_timer()
+        _ACTIVE_CLIENTS.add(self)
 
         try:
             await self._finish_connect(env, prompt)
@@ -2317,8 +2300,7 @@ class OpenCodeAgent(BaseAgent):
                 if err.status == 500:
                     raise RuntimeError(
                         "OpenCode snapshot file restore failed (HTTP 500). "
-                        "OpenCode requires Git >= 2.25 for '--pathspec-from-file'. "
-                        "Please upgrade Git via 'brew install git'."
+                        "OpenCode requires a newer version of Git."
                     ) from err
                 raise
             await self._http(
@@ -2447,10 +2429,9 @@ class OpenCodeAgent(BaseAgent):
     async def disconnect(self) -> None:
         if self._server_process is not None:
             set_active_opencode_server(None)
-        with _ACTIVE_SERVER_LOCK:
-            _ACTIVE_CLIENTS.discard(self)
-            if not _ACTIVE_CLIENTS and self.version >= 2:
-                schedule_idle_shutdown_timer(self.cli_path)
+        _ACTIVE_CLIENTS.discard(self)
+        if not _ACTIVE_CLIENTS and self.version >= 2:
+            schedule_idle_shutdown_timer(self.cli_path)
 
         self._is_connected = False
         self._turn_active = False
