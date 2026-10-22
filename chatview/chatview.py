@@ -1417,7 +1417,8 @@ class ChatSession:
         """Format and append Markdown content to the chat view."""
         if self.pending_response_separator and text:
             self.pending_response_separator = False
-            text = f"{AGENT_SEPARATOR}\n\n{text}"
+            clean = text.lstrip("\r\n")
+            text = f"{AGENT_SEPARATOR}\n\n{clean}" if clean else f"{AGENT_SEPARATOR}\n\n"
         formatted_text = self.markdown_formatter.format(text, flush=flush)
         html_tables = self.markdown_formatter.take_html_tables()
         if formatted_text:
