@@ -62,6 +62,7 @@ CHAT_VIEW_NAME = "Chat View"
 CHAT_STATUS_KEY = "termmate.agent_model"
 PACKAGE_NAME = "TermMate"
 PROMPT_PREFIX = "\n❯ "  # transcript prefix for submitted prompts; the live input line uses InputPromptMarker instead
+AGENT_SEPARATOR = "⋅⋅⋅"
 PREFERENCES_CHANGE_KEY = "termmate_chatview_preferences"
 
 
@@ -1317,6 +1318,7 @@ class ChatSession:
         self.prompt_regions = [] # List of (Region, uuid, phantom_index) for submitted prompts
         self.prompt_button_phantoms = [] # List of PhantomSet, parallel to prompt_regions
         self.session_allow_all = False
+        self.pending_response_separator = False
         # Only persist session_id after the first user message
         self.has_sent_message = bool(session_id)
 
@@ -1413,6 +1415,9 @@ class ChatSession:
 
     def append_markdown(self, text, flush=False):
         """Format and append Markdown content to the chat view."""
+        if self.pending_response_separator and text:
+            self.pending_response_separator = False
+            text = f"{AGENT_SEPARATOR}\n\n{text}"
         formatted_text = self.markdown_formatter.format(text, flush=flush)
         html_tables = self.markdown_formatter.take_html_tables()
         if formatted_text:
@@ -1674,11 +1679,13 @@ class ChatSession:
         s_id = self.agent_thread.session_id
         if s_id:
             self.chat_view.settings().set(CHAT_SESSION_ID, s_id)
+        self.pending_response_separator = True
         self.agent_thread.send(user_input)
 
     def steer(self, text, proceed_plan=False):
         """Send steering message to agent."""
         if self.agent_thread:
+            self.pending_response_separator = True
             self.agent_thread.steer(text, proceed_plan=proceed_plan)
 
     def record_file_change(self, abs_path, rel_path, diff_text):
@@ -2068,7 +2075,10 @@ class ChatSession:
         for turn in (session_info or {}).get("turns", []):
             if turn.get("prompt"):
                 self._replay_prompt(turn["prompt"])
-                self.chat_view.run_command("term_chat_output_append", {"text": "\n"})
+                if turn.get("response"):
+                    self.chat_view.run_command(
+                        "term_chat_output_append", {"text": f"\n{AGENT_SEPARATOR}\n\n"}
+                    )
             if turn.get("response"):
                 formatter = self.markdown_formatter
                 response = formatter.format(

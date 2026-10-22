@@ -8,6 +8,29 @@ version: 2
 
 contexts:
   main:
+    # 1. Agent response separator indicator (matches Markdown thematic break --- scoping)
+    - match: '^(⋅⋅⋅)\s*$'
+      scope: meta.separator.thematic-break.markdown
+      captures:
+        1: punctuation.definition.thematic-break.markdown punctuation.definition.separator.markdown
+      embed: agent_content
+      escape: '^(?=(?:⋅⋅⋅|❯ ))'
+      escape_captures:
+        0: meta.separator.thematic-break.markdown
+
+    # 2. User prompt marker (isolated prompt scope via embed + escape)
+    - match: '^(❯ )'
+      scope: punctuation.definition.prompt.chatview
+      embed: user_prompt_content
+      escape: '^(?=(?:⋅⋅⋅|❯ ))'
+
+    # 3. Initial/fallback content (welcome banner, cwd, etc.)
+    - include: agent_content
+
+  user_prompt_content:
+    - include: scope:text.html.markdown#markdown
+
+  agent_content:
     - match: '^(⏺\s*(?:Read|Edit|Write|read|edit|write|fileChange|ViewFile|EditFile|WriteFile)\s+)(\S+.*)$'
       captures:
         1: entity.name.function.chatview
