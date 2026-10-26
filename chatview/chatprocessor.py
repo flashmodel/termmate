@@ -308,6 +308,7 @@ class BaseChatMessageProcessor:
         self.last_is_tool_call = False
         self._plan_text = ""
         self._tool_file_re = _make_tool_file_re(self._TOOL_FILE_NAMES) if self._TOOL_FILE_NAMES else None
+        self._ends_with_newline = True
 
     def format_model_badge(self, m: dict) -> str:
         """Format a compact reasoning/thinking badge based strictly on structured capabilities."""
@@ -384,6 +385,12 @@ class BaseChatMessageProcessor:
             return
 
         if hasattr(message, "type"):
+            if message.type == "token_usage":
+                if hasattr(self.session, "set_token_usage"):
+                    self.session.set_token_usage(message.content)
+                return
+            if message.type == "turn_started":
+                self._ends_with_newline = True
             self._handle_typed_message(message)
 
     def _handle_typed_message(self, message):
@@ -403,7 +410,17 @@ class BaseChatMessageProcessor:
 
     def append_content(self, text, flush=False):
         """Append Markdown content through the chat session."""
+        if text:
+            raw = text.replace("\r", "")
+            if raw:
+                self._ends_with_newline = raw.endswith("\n")
         self.session.append_markdown(text, flush=flush)
+
+    def ensure_trailing_newline(self):
+        """Ensure the chat content ends with a newline, without adding extra blank lines."""
+        if not self._ends_with_newline:
+            self.append_content("\n")
+            self._ends_with_newline = True
 
     def append_error(self, error_msg):
         """Append error message to chat view."""
@@ -595,9 +612,9 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
         elif message.type == "result":
             # Flush markdown formatter buffer
             self.append_content("", flush=True)
+            self.ensure_trailing_newline()
             # Stop loading on turn completion (heuristic)
             self.session.stop_loading()
-            self.append_content("\n")
             # Show collapsed file-changes artifact after the turn output settles
             sublime.set_timeout(self.session.show_file_changes_artifact, 0)
 
@@ -816,9 +833,9 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
         elif message.type == "result":
             # Flush markdown formatter buffer
             self.append_content("", flush=True)
+            self.ensure_trailing_newline()
             # Stop loading on turn completion (heuristic)
             self.session.stop_loading()
-            self.append_content("\n")
 
         elif message.type == "plan_delta":
             # Codex plan mode: accumulate <proposed_plan> content
@@ -840,8 +857,8 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
         elif message.type == "stop":
             # Codex agent sends "stop" when its process completes
             self.append_content("", flush=True)
+            self.ensure_trailing_newline()
             self.session.stop_loading()
-            self.append_content("\n")
             # If Codex plan mode produced a plan, open it in a new view
             if self._plan_text:
                 plan_text = self._plan_text
@@ -1057,8 +1074,8 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
                 self.session.update_last_prompt_uuid(str(message_id))
         elif message.type == "stop":
             self.append_content("", flush=True)
+            self.ensure_trailing_newline()
             self.session.stop_loading()
-            self.append_content("\n")
             self.last_is_tool_call = False
             self._text_trailing_newlines = 1
             if self._plan_text:
@@ -1375,9 +1392,9 @@ class PiMessageProcessor(BaseChatMessageProcessor):
         elif message.type == "result":
             # Flush markdown formatter buffer
             self.append_content("", flush=True)
+            self.ensure_trailing_newline()
             # Stop loading on turn completion (heuristic)
             self.session.stop_loading()
-            self.append_content("\n")
             # Show collapsed file-changes artifact after the turn output settles
             sublime.set_timeout(self.session.show_file_changes_artifact, 0)
 
@@ -1814,8 +1831,8 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
 
         elif message.type in ("stop", "result"):
             self.append_content("", flush=True)
+            self.ensure_trailing_newline()
             self.session.stop_loading()
-            self.append_content("\n")
             self.last_is_tool_call = False
             self._pending_tool_params.clear()
 

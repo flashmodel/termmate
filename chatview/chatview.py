@@ -25,8 +25,9 @@ from .chatprocessor import (
 )
 from .chatpanel import (
     LoadingAnimation, NoticePhantom, RewindConfirmPanel, StatusHint,
-    TablePhantomManager,
+    TablePhantomManager, TokenSummaryPhantom,
 )
+
 from .md_render import MarkdownFormatter
 from .chatrender import extract_diff_fold_ranges
 from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
@@ -1301,6 +1302,11 @@ class ChatSession:
             self.chat_view,
             lambda: get_input_start(self.chat_view),
         )
+        self.token_usage = None
+        self.token_summary_phantom = TokenSummaryPhantom(
+            self.chat_view,
+            lambda: get_input_start(self.chat_view),
+        )
         self.model_phantom = ModelPanel(self.chat_view, self.window)
         self.input_marker = InputPromptMarker(self.chat_view)
         if self.chat_view.settings().has(CHAT_INPUT_START):
@@ -1319,8 +1325,8 @@ class ChatSession:
         self.prompt_button_phantoms = [] # List of PhantomSet, parallel to prompt_regions
         self.session_allow_all = False
         self.pending_response_separator = False
-        # Only persist session_id after the first user message
-        self.has_sent_message = bool(session_id)
+        # Only persist session_id and show post-turn phantoms after the first user message
+        self.has_sent_message = False
 
         # End-of-turn file changes artifact (records edit diffs, renders file list)
         self.artifact = FileChangesArtifact(self.chat_view, self.window, get_input_start)
@@ -1606,9 +1612,16 @@ class ChatSession:
         """Handle messages received from the agent thread."""
         self.message_processor.handle_message(message)
 
+    def set_token_usage(self, usage: dict):
+        """Record token metrics; if currently idle, display phantom."""
+        self.token_usage = usage
+        if self.has_sent_message and not self.loading_animation.is_loading:
+            self.token_summary_phantom.show(usage)
+
     def start_loading(self, text=None):
         """Start the loading animation."""
         def start():
+            self.token_summary_phantom.clear()
             self.loading_animation.start(self.loading_region, text)
             self.model_phantom.set_running(True)
 
@@ -1618,6 +1631,8 @@ class ChatSession:
         def stop():
             self.loading_animation.stop()
             self.model_phantom.set_running(False)
+            if self.has_sent_message and self.token_usage:
+                self.token_summary_phantom.show(self.token_usage)
 
         sublime.set_timeout(stop, 0)
 
@@ -1629,6 +1644,7 @@ class ChatSession:
     def stop(self):
         self.loading_animation.stop()
         self.notice_phantom.clear()
+        self.token_summary_phantom.clear()
         self.model_phantom.set_running(False)
         self.model_phantom.clear()
         self.input_marker.clear()
@@ -1667,6 +1683,7 @@ class ChatSession:
     def send_input(self, user_input, region=None):
         """Start animation and send to agent."""
         self.rewind_confirm_panel.clear()
+        self.token_summary_phantom.clear()
         if not self.agent_thread:
             self.chat_view.run_command("term_chat_output_append",
                 {"text": f"\n\n⚠️ Error: No agent CLI found.\n\n"})
@@ -1686,7 +1703,9 @@ class ChatSession:
 
     def steer(self, text, proceed_plan=False):
         """Send steering message to agent."""
+        self.token_summary_phantom.clear()
         if self.agent_thread:
+            self.has_sent_message = True
             self.pending_response_separator = True
             self._reset_markdown_formatter()
             self.agent_thread.steer(text, proceed_plan=proceed_plan)
@@ -1703,6 +1722,8 @@ class ChatSession:
     def show_file_changes_artifact(self):
         """Append the collapsed file changes artifact for the finished turn."""
         self.artifact.show()
+        if self.has_sent_message and self.token_usage:
+            self.token_summary_phantom.show(self.token_usage)
 
     def is_artifact_execute_at(self, point):
         """True if point is on an artifact [Execute] button."""
@@ -1848,6 +1869,8 @@ class ChatSession:
 
         self.artifact.truncate(cut_point)
         self.table_phantoms.truncate(cut_point)
+        self.token_summary_phantom.clear()
+
 
         rewind_text = self.chat_view.substr(region)
 
@@ -1874,6 +1897,8 @@ class ChatSession:
 
         # Stop any ongoing loading animation
         self.stop_loading()
+        self.token_usage = None
+        self.token_summary_phantom.clear()
         self.clear_prompt_highlights()
         self.artifact.clear()
         self.session_allow_all = False
@@ -1894,6 +1919,8 @@ class ChatSession:
     def switch_agent(self, new_agent_provider):
         """Stop the current agent thread and start a new one with the given provider."""
         self.stop_loading()
+        self.token_usage = None
+        self.token_summary_phantom.clear()
         self.session_allow_all = False
         self.has_sent_message = False
         # Clear stale models and session_id from previous agent
@@ -3103,7 +3130,7 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
             active_session = chatview_clients.get(window_id)
             if active_session is not None:
                 active_session.chat_view.settings().set(CHAT_SESSION_ID, chosen_id)
-                active_session.has_sent_message = True
+                active_session.has_sent_message = False
                 active_session.reload_agent(session_id_override=chosen_id, quiet=False)
             else:
                 self.window.run_command("term_chat_cli")
@@ -3114,7 +3141,7 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
                         LOG.warning("[resume] chat view not ready after term_chat_cli")
                         return
                     new_session.chat_view.settings().set(CHAT_SESSION_ID, chosen_id)
-                    new_session.has_sent_message = True
+                    new_session.has_sent_message = False
                     new_session.reload_agent(session_id_override=chosen_id, quiet=False)
 
                 sublime.set_timeout(_resume_after_open, 0)

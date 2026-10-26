@@ -81,6 +81,8 @@ class ClaudeCodeAgent(BaseAgent):
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._session_id: Optional[str] = None
         self._permission_callback = self.options.can_use_tool
+        self._last_thinking_tokens: int = 0
+        self._current_block_thinking: int = 0
 
         # Find claude executable
         cli_command = self.options.cli_path or "claude"
@@ -539,7 +541,107 @@ class ClaudeCodeAgent(BaseAgent):
         except Exception as e:
             pass  # Silently ignore stderr errors
 
+    def _extract_token_usage(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Extract and normalize token usage from a Claude result message."""
+        if data.get("type") != "result":
+            return None
+
+        usage = data.get("usage")
+        total_usage = data.get("total_usage")
+        model_usage = data.get("modelUsage") or data.get("model_usage")
+        cost = data.get("cost_usd") or data.get("total_cost_usd")
+
+        if not usage and not total_usage and not model_usage:
+            return None
+
+        def _normalize(u: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+            if not u:
+                return {
+                    "inputTokens": 0,
+                    "outputTokens": 0,
+                    "cachedInputTokens": 0,
+                    "totalTokens": 0,
+                }
+            raw_in = u.get("input_tokens") or u.get("inputTokens") or 0
+            out_tok = u.get("output_tokens") or u.get("outputTokens") or 0
+            cache_read = (
+                u.get("cache_read_input_tokens")
+                or u.get("cachedInputTokens")
+                or u.get("cacheReadInputTokens")
+                or u.get("cache_read_tokens")
+                or 0
+            )
+            cache_create = (
+                u.get("cache_creation_input_tokens")
+                or u.get("cacheCreationInputTokens")
+                or 0
+            )
+            cached_tok = cache_read + cache_create
+            total_in = raw_in + cached_tok
+            total_tok = u.get("total_tokens") or u.get("totalTokens") or (total_in + out_tok)
+            return {
+                "inputTokens": total_in,
+                "outputTokens": out_tok,
+                "cachedInputTokens": cached_tok,
+                "totalTokens": total_tok,
+            }
+
+        last_usage = _normalize(usage)
+        thinking_tokens = getattr(self, "_last_thinking_tokens", 0)
+        if thinking_tokens > 0:
+            last_usage["reasoningOutputTokens"] = thinking_tokens
+            self._last_thinking_tokens = 0
+            self._current_block_thinking = 0
+
+        context_window = 0
+        if model_usage and isinstance(model_usage, dict):
+            tot_in = 0
+            tot_out = 0
+            tot_cached = 0
+            for m in model_usage.values():
+                if not isinstance(m, dict):
+                    continue
+                c_read = (
+                    m.get("cacheReadInputTokens")
+                    or m.get("cachedInputTokens")
+                    or m.get("cache_read_input_tokens")
+                    or 0
+                )
+                c_create = (
+                    m.get("cacheCreationInputTokens")
+                    or m.get("cache_creation_input_tokens")
+                    or 0
+                )
+                c = c_read + c_create
+                raw_inp = m.get("inputTokens") or m.get("input_tokens") or 0
+                inp = raw_inp + c
+                tot_in += inp
+                tot_out += (m.get("outputTokens") or m.get("output_tokens") or 0)
+                tot_cached += c
+                cw = m.get("contextWindow") or 0
+                if cw > context_window:
+                    context_window = cw
+
+            total_dict = {
+                "inputTokens": tot_in,
+                "outputTokens": tot_out,
+                "cachedInputTokens": tot_cached,
+                "totalTokens": tot_in + tot_out,
+            }
+        else:
+            total_dict = _normalize(total_usage)
+
+        res: Dict[str, Any] = {
+            "last": last_usage,
+            "total": total_dict,
+            "costUsd": cost,
+        }
+        if context_window > 0:
+            res["modelContextWindow"] = context_window
+        return res
+
     def _parse_message(self, data: Dict[str, Any]) -> Optional[Message]:
+
         """Parse raw JSON data into a Message object"""
         msg_type = data.get("type", "unknown")
         msg_id = data.get("id") or data.get("uuid")
@@ -548,6 +650,22 @@ class ClaudeCodeAgent(BaseAgent):
         if msg_type == "system" and data.get("subtype") == "init":
             self._session_id = data.get("session_id")
             return Message(msg_type, content=data, msg_id=msg_id)
+
+        # Track thinking tokens from system notifications
+        if msg_type == "system" and data.get("subtype") == "thinking_tokens":
+            delta = data.get("estimated_tokens_delta")
+            est = data.get("estimated_tokens") or 0
+            if delta is not None and delta > 0:
+                self._last_thinking_tokens += delta
+            else:
+                prev_block = getattr(self, "_current_block_thinking", 0)
+                if est < prev_block:
+                    self._current_block_thinking = est
+                    self._last_thinking_tokens += est
+                else:
+                    self._last_thinking_tokens += (est - prev_block)
+                    self._current_block_thinking = est
+            return None
 
         # Handle control_request message for permission callbacks
         if msg_type == "control_request":
@@ -589,6 +707,11 @@ class ClaudeCodeAgent(BaseAgent):
 
         # Handle result message (final status)
         if msg_type == "result":
+            token_usage = self._extract_token_usage(data)
+            if token_usage:
+                self._message_queue.put_nowait(
+                    Message(MessageType.TOKEN_USAGE.value, content=token_usage)
+                )
             return Message(msg_type, content=data.get("result"), msg_id=msg_id)
 
         # Handle control_response message

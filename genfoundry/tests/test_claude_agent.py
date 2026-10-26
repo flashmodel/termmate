@@ -106,5 +106,181 @@ class TestClaudeThinkLevel(unittest.IsolatedAsyncioTestCase):
                     })
 
 
+class TestClaudeAgentTokenUsageExtraction(unittest.TestCase):
+    """Test ClaudeCodeAgent token usage extraction and parsing."""
+
+    def setUp(self):
+        with patch("genfoundry.claude_agent.find_claude_cli", return_value="/mock/claude"):
+            self.agent = ClaudeCodeAgent(AgentOptions(cwd="/tmp"))
+
+    def test_extract_token_usage_non_result(self):
+        self.assertIsNone(self.agent._extract_token_usage({"type": "assistant"}))
+
+    def test_extract_token_usage_empty_usage(self):
+        self.assertIsNone(self.agent._extract_token_usage({"type": "result"}))
+
+    def test_extract_token_usage_success(self):
+        data = {
+            "type": "result",
+            "usage": {
+                "input_tokens": 1200,
+                "output_tokens": 150,
+                "cache_read_input_tokens": 800,
+                "cache_creation_input_tokens": 200,
+            },
+            "total_usage": {
+                "input_tokens": 5000,
+                "output_tokens": 600,
+                "cache_read_input_tokens": 3000,
+            },
+            "cost_usd": 0.0123,
+        }
+        res = self.agent._extract_token_usage(data)
+        self.assertIsNotNone(res)
+        # 1200 uncached + 800 read + 200 create = 2200 total input tokens
+        self.assertEqual(res["last"]["inputTokens"], 2200)
+        self.assertEqual(res["last"]["outputTokens"], 150)
+        self.assertEqual(res["last"]["cachedInputTokens"], 1000)
+        self.assertEqual(res["last"]["totalTokens"], 2350)
+        # 5000 uncached + 3000 read = 8000 total input tokens
+        self.assertEqual(res["total"]["inputTokens"], 8000)
+        self.assertEqual(res["total"]["outputTokens"], 600)
+        self.assertEqual(res["total"]["cachedInputTokens"], 3000)
+        self.assertEqual(res["total"]["totalTokens"], 8600)
+        self.assertEqual(res["costUsd"], 0.0123)
+
+    def test_extract_token_usage_input_greater_than_cached(self):
+        """Verify that uncached tokens > cached tokens are still correctly summed."""
+        data = {
+            "type": "result",
+            "usage": {
+                "input_tokens": 5000,
+                "output_tokens": 200,
+                "cache_read_input_tokens": 1000,
+            },
+        }
+        res = self.agent._extract_token_usage(data)
+        self.assertIsNotNone(res)
+        # 5000 + 1000 = 6000
+        self.assertEqual(res["last"]["inputTokens"], 6000)
+        self.assertEqual(res["last"]["cachedInputTokens"], 1000)
+        self.assertEqual(res["last"]["totalTokens"], 6200)
+
+    def test_extract_token_usage_with_model_usage(self):
+        data = {
+            "type": "result",
+            "usage": {
+                "input_tokens": 135,
+                "output_tokens": 6475,
+                "cache_read_input_tokens": 91038,
+                "cache_creation_input_tokens": 34509,
+            },
+            "modelUsage": {
+                "claude-haiku-4-5-20251001": {
+                    "inputTokens": 627,
+                    "outputTokens": 2028,
+                    "cacheReadInputTokens": 127540,
+                    "cacheCreationInputTokens": 17163,
+                    "contextWindow": 200000,
+                },
+                "claude-fable-5": {
+                    "inputTokens": 135,
+                    "outputTokens": 6475,
+                    "cacheReadInputTokens": 91038,
+                    "cacheCreationInputTokens": 34509,
+                    "contextWindow": 1000000,
+                },
+            },
+            "total_cost_usd": 1.462,
+        }
+        res = self.agent._extract_token_usage(data)
+        self.assertIsNotNone(res)
+        # last: 135 + 91038 + 34509 = 125682 in, 6475 out
+        self.assertEqual(res["last"]["inputTokens"], 125682)
+        self.assertEqual(res["last"]["outputTokens"], 6475)
+        self.assertEqual(res["last"]["cachedInputTokens"], 125547)
+        # total across haiku (145330 in, 2028 out) + fable (125682 in, 6475 out)
+        # in: 145330 + 125682 = 271012, out: 2028 + 6475 = 8503
+        self.assertEqual(res["total"]["inputTokens"], 271012)
+        self.assertEqual(res["total"]["outputTokens"], 8503)
+        self.assertEqual(res["total"]["cachedInputTokens"], 270250)
+        self.assertEqual(res["total"]["totalTokens"], 279515)
+        self.assertEqual(res["modelContextWindow"], 1000000)
+
+    def test_thinking_tokens_captured_on_result(self):
+        sys_msg = {
+            "type": "system",
+            "subtype": "thinking_tokens",
+            "estimated_tokens": 4550,
+        }
+        self.assertIsNone(self.agent._parse_message(sys_msg))
+        self.assertEqual(self.agent._last_thinking_tokens, 4550)
+
+        data = {
+            "type": "result",
+            "result": "Done",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        }
+        res = self.agent._extract_token_usage(data)
+        self.assertEqual(res["last"]["reasoningOutputTokens"], 4550)
+        self.assertEqual(self.agent._last_thinking_tokens, 0)
+
+    def test_thinking_tokens_multi_block_accumulation(self):
+        """Verify thinking tokens across multiple thinking blocks in one turn accumulate."""
+        # Block 1 (streaming deltas up to 4550)
+        self.agent._parse_message({
+            "type": "system",
+            "subtype": "thinking_tokens",
+            "estimated_tokens": 50,
+            "estimated_tokens_delta": 50,
+        })
+        self.agent._parse_message({
+            "type": "system",
+            "subtype": "thinking_tokens",
+            "estimated_tokens": 4550,
+            "estimated_tokens_delta": 4500,
+        })
+        self.assertEqual(self.agent._last_thinking_tokens, 4550)
+
+        # Block 2 (e.g. after tool execution, stream restarts)
+        self.agent._parse_message({
+            "type": "system",
+            "subtype": "thinking_tokens",
+            "estimated_tokens": 100,
+            "estimated_tokens_delta": 100,
+        })
+        self.agent._parse_message({
+            "type": "system",
+            "subtype": "thinking_tokens",
+            "estimated_tokens": 256,
+            "estimated_tokens_delta": 156,
+        })
+        self.assertEqual(self.agent._last_thinking_tokens, 4550 + 256)
+
+        data = {
+            "type": "result",
+            "result": "Done",
+            "usage": {"input_tokens": 100, "output_tokens": 5000},
+        }
+        res = self.agent._extract_token_usage(data)
+        self.assertEqual(res["last"]["reasoningOutputTokens"], 4806)
+        self.assertEqual(self.agent._last_thinking_tokens, 0)
+
+    def test_parse_message_queues_token_usage_on_result(self):
+        data = {
+            "type": "result",
+            "result": "Success",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        }
+        msg = self.agent._parse_message(data)
+        self.assertEqual(msg.type, "result")
+        self.assertEqual(msg.content, "Success")
+
+        self.assertFalse(self.agent._message_queue.empty())
+        queued = self.agent._message_queue.get_nowait()
+        self.assertEqual(queued.type, "token_usage")
+        self.assertEqual(queued.content["last"]["inputTokens"], 100)
+
+
 if __name__ == "__main__":
     unittest.main()

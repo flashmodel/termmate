@@ -2,6 +2,9 @@ import logging
 import html
 import sublime
 
+from .utils import format_token_count
+
+
 LOG = logging.getLogger("TermMate")
 
 
@@ -341,3 +344,141 @@ class RewindConfirmPanel:
     @property
     def visible(self):
         return self._visible
+
+
+class TokenSummaryPhantom:
+    """
+    Renders a block-level phantom displaying turn token metrics at the
+    boundary above the ModelPanel/input prompt once a turn completes.
+    Cleared when a new prompt is submitted or conversation is cleared.
+    """
+
+    def __init__(self, view, input_start_provider):
+        self.view = view
+        self.input_start_provider = input_start_provider
+        self.phantom_set = sublime.PhantomSet(view, "chatview_token_summary")
+        self.token_usage = None
+
+    def show(self, token_usage=None):
+        """Display token metrics for the completed turn."""
+        if token_usage is not None:
+            self.token_usage = token_usage
+        self.update()
+
+    def update(self):
+        """Render or redraw the phantom at Region(max(0, input_start - 1), input_start)."""
+        if not self.token_usage:
+            self.phantom_set.update([])
+            return
+
+        last = self.token_usage.get("last") or {}
+        total = self.token_usage.get("total") or {}
+        last_tokens = (
+            last.get("totalTokens", 0)
+            or (last.get("inputTokens", 0) + last.get("outputTokens", 0))
+        )
+        total_tokens = (
+            total.get("totalTokens", 0)
+            or (total.get("inputTokens", 0) + total.get("outputTokens", 0))
+        )
+        if not last_tokens and not total_tokens:
+            self.phantom_set.update([])
+            return
+
+        input_start = self.input_start_provider()
+        region = sublime.Region(max(0, input_start - 1), input_start)
+
+        html_content = self._render_html(self.token_usage)
+        self.phantom_set.update([
+            sublime.Phantom(region, html_content, sublime.LAYOUT_BLOCK)
+        ])
+
+    def clear(self):
+        """Remove the phantom completely."""
+        self.token_usage = None
+        self.phantom_set.update([])
+
+    def _render_html(self, usage):
+        """
+        Render minihtml markup displaying turn token metrics.
+        Example:
+            ⚡ 34.8k token(in:34.6k, out:217, 91% cached)
+               Context:13.4%(258k) · Total:338k
+        """
+        last = usage.get("last") or {}
+        total = usage.get("total") or {}
+        ctx_window = usage.get("modelContextWindow") or 0
+
+        last_tokens = (
+            last.get("totalTokens", 0)
+            or (last.get("inputTokens", 0) + last.get("outputTokens", 0))
+        )
+        input_tokens = last.get("inputTokens", 0)
+        output_tokens = last.get("outputTokens", 0)
+        cached_tokens = last.get("cachedInputTokens", 0)
+        total_tokens = (
+            total.get("totalTokens", 0)
+            or (total.get("inputTokens", 0) + total.get("outputTokens", 0))
+        )
+
+        # Thinking tokens
+        thinking_html = ""
+        thinking_tokens = (
+            last.get("reasoningOutputTokens")
+            or last.get("thinkingTokens")
+            or 0
+        )
+        if thinking_tokens > 0:
+            thinking_html = f", thinking:{format_token_count(thinking_tokens)}"
+
+        # Cache percentage
+        cache_html = ""
+        if cached_tokens > 0 and input_tokens > 0:
+            cache_pct = min(100, round((cached_tokens / input_tokens) * 100))
+            cache_html = f", {cache_pct}% cached"
+
+        # Context window percentage
+        ctx_html = ""
+        if ctx_window > 0 and input_tokens > 0:
+            pct = (input_tokens / ctx_window) * 100
+            ctx_text = f"{pct:.1f}%"
+            ctx_html = (
+                f' <span class="item">Context:<span class="highlight">{ctx_text}</span>'
+                f'<span class="dim">({format_token_count(ctx_window)})</span></span>'
+            )
+
+        # Session total
+        total_html = ""
+        if total_tokens > 0 and total_tokens != last_tokens:
+            total_html = (
+                f'<span class="sep">·</span>'
+                f'<span class="item">Total:{format_token_count(total_tokens)}</span>'
+            )
+
+        metrics_html = (
+            f'<span class="icon">⚡</span>'
+            f'<span class="item"><span class="highlight">'
+            f'{format_token_count(last_tokens)}</span> token</span>'
+            f'<span class="dim">(in:{format_token_count(input_tokens)}, '
+            f'out:{format_token_count(output_tokens)}{thinking_html}{cache_html})</span>'
+            f'{ctx_html}{total_html}'
+        )
+
+        return f"""
+        <body id="chatview-token-summary" style="margin:0;padding:0;">
+            <style>
+                .metrics {{
+                    margin: 0;
+                    padding: 2px 0 4px 0;
+                    font-family: var(--font-mono);
+                    font-size: 0.85em;
+                    color: color(var(--foreground) alpha(0.7));
+                }}
+                .icon {{ color: color(var(--foreground) alpha(0.6)); padding-right: 5px; }}
+                .highlight {{ color: color(var(--foreground) alpha(0.82)); font-weight: bold; }}
+                .dim {{ color: color(var(--foreground) alpha(0.5)); font-size: 0.9em; }}
+                .sep {{ color: color(var(--foreground) alpha(0.25)); padding: 0 0.15em; }}
+            </style>
+            <div class="metrics">{metrics_html}</div>
+        </body>
+        """

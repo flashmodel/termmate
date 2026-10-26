@@ -15,6 +15,8 @@ class MessageType(Enum):
     STOP = "stop"
     THINKING = "thinking"
     PLAN_DELTA = "plan_delta"
+    TOKEN_USAGE = "token_usage"
+
 
 class Message:
     """Represents a message from an Agent"""

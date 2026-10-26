@@ -91,3 +91,26 @@ def show_diff_text(window, diff_text, name):
     v.run_command('append', {'characters': diff_text, 'disable_tab_translation': True})
     v.set_read_only(True)
     return v
+
+
+def format_token_count(count):
+    """Format token counts into human-readable strings (e.g., 217, 34.8k, 1.2M)."""
+    if count is None:
+        return "0"
+    try:
+        n = float(count)
+    except (ValueError, TypeError):
+        return str(count)
+    if n < 1000:
+        return str(int(n))
+    if n < 999_950:
+        val = n / 1000.0
+        if val < 100:
+            formatted = f"{val:.1f}"
+            return f"{formatted[:-2] if formatted.endswith('.0') else formatted}k"
+        r = round(val)
+        return "1M" if r >= 1000 else f"{r}k"
+    val = n / 1_000_000.0
+    formatted = f"{val:.1f}"
+    return f"{formatted[:-2] if formatted.endswith('.0') else formatted}M"
+

@@ -589,6 +589,14 @@ class CodexAgent(BaseAgent):
             if t_id:
                 await self._message_queue.put(Message("thread_started", content={"session_id": t_id}))
 
+        elif method == "thread/tokenUsage/updated":
+            usage = params.get("tokenUsage", {})
+            if usage:
+                await self._message_queue.put(
+                    Message(MessageType.TOKEN_USAGE.value, content=usage)
+                )
+
+
         elif method == "turn/started":
             turn_id = self._extract_turn_id(params)
             self._active_turn_id = turn_id

@@ -102,11 +102,57 @@ PLAN_MODE_SYSTEM_PROMPT = (
 )
 
 
+def _normalize_single(u: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Normalize a raw token usage dictionary into the standard format expected by
+    the chat UI and TokenSummaryPhantom:
+
+    {
+        "inputTokens": int,            # Total prompt tokens (uncached + cached)
+        "outputTokens": int,           # Output tokens produced by the model
+        "cachedInputTokens": int,      # Cached prompt tokens read from cache
+        "totalTokens": int,            # Total tokens (inputTokens + outputTokens)
+        "reasoningOutputTokens": int,  # Optional thinking tokens (within output)
+    }
+    """
+    if not u:
+        return {
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "cachedInputTokens": 0,
+            "totalTokens": 0,
+        }
+    in_tok = u.get("input_tokens") or u.get("inputTokens") or 0
+    out_tok = u.get("output_tokens") or u.get("outputTokens") or 0
+    cached_tok = (
+        u.get("cache_read_tokens")
+        or u.get("cachedInputTokens")
+        or u.get("cache_read_input_tokens")
+        or 0
+    )
+    if in_tok < cached_tok:
+        in_tok = in_tok + cached_tok
+
+    total_tok = in_tok + out_tok
+    data: Dict[str, Any] = {
+        "inputTokens": in_tok,
+        "outputTokens": out_tok,
+        "cachedInputTokens": cached_tok,
+        "totalTokens": total_tok,
+    }
+    thinking = u.get("thinking_tokens") or u.get("reasoningOutputTokens")
+    if thinking is not None:
+        data["reasoningOutputTokens"] = thinking
+    return data
+
+
 class AntigravityAgent(BaseAgent):
     """
     Client for bidirectional, interactive conversations with the Antigravity CLI (agy)
     using headless streaming JSON protocol.
     """
+
+    _normalize_single = staticmethod(_normalize_single)
 
     def __init__(self, options: Optional[AgentOptions] = None):
         super().__init__(options)
@@ -122,6 +168,8 @@ class AntigravityAgent(BaseAgent):
         self._interrupted: bool = False
         self._restart_pending: bool = False
         self._turn_has_result: bool = False
+        self._turn_step_usages: List[Dict[str, Any]] = []
+        self._last_step_usage: Optional[Dict[str, Any]] = None
         self.available_models: List[Dict[str, Any]] = []
 
         # Resolve executable path
@@ -451,6 +499,8 @@ class AntigravityAgent(BaseAgent):
             await self._spawn_process()
 
         self._turn_has_result = False
+        self._turn_step_usages = []
+        self._last_step_usage = None
         payload_content = content
         prefixes = []
         if self.plan_mode and not proceed_plan:
@@ -577,6 +627,11 @@ class AntigravityAgent(BaseAgent):
             step_index = step_update.get("step_index")
             msg_id = str(step_index) if step_index is not None else None
 
+            usage = step_update.get("usage") or data.get("usage")
+            if usage and state == "DONE":
+                self._last_step_usage = usage
+                self._turn_step_usages.append(usage)
+
             if step_type == "agent_response":
                 text_delta = step_update.get("text_delta") or step_update.get("content")
                 if text_delta:
@@ -687,12 +742,32 @@ class AntigravityAgent(BaseAgent):
                     )
                 elif is_trailing_conn_err:
                     LOG.info(
-                        f"Antigravity trailing socket error suppressed (response present): {err_msg}"
+                        "Antigravity trailing socket error suppressed "
+                        f"(response present): {err_msg}"
                     )
                 else:
                     messages.append(
-                        Message("error", content=err_msg, msg_id=self._session_id, raw_data=result)
+                        Message(
+                            "error",
+                            content=err_msg,
+                            msg_id=self._session_id,
+                            raw_data=result,
+                        )
                     )
+
+            token_usage = self._extract_token_usage(result, raw_data=data)
+            if token_usage:
+                messages.append(
+                    Message(
+                        MessageType.TOKEN_USAGE.value,
+                        content=token_usage,
+                        msg_id=self._session_id,
+                        raw_data=result,
+                    )
+                )
+            self._turn_step_usages = []
+            self._last_step_usage = None
+
             messages.append(
                 Message(
                     "result",
@@ -703,6 +778,61 @@ class AntigravityAgent(BaseAgent):
             )
 
         return messages
+
+    def _extract_token_usage(
+        self,
+        result: Optional[Dict[str, Any]] = None,
+        raw_data: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Extract and normalize token metrics from Antigravity events into
+        the structure expected by TokenSummaryPhantom:
+          last:  metrics for the current turn (accumulated across all steps)
+          total: cumulative session metrics
+        """
+        res = result or {}
+        raw = raw_data or {}
+        total_usage = res.get("usage") or raw.get("usage")
+        if not self._turn_step_usages and not self._last_step_usage and not total_usage:
+            return None
+
+        # Aggregate across all steps in this turn if available:
+        # - inputTokens: sum across all steps in the turn
+        # - outputTokens: sum across all steps in the turn
+        # - cachedInputTokens: sum across all steps in the turn
+        # - reasoningOutputTokens: sum across all steps in the turn
+        # - activeContextTokens: context size from the latest step
+        if self._turn_step_usages:
+            norm_steps = [_normalize_single(u) for u in self._turn_step_usages]
+            total_turn_in = sum(s["inputTokens"] for s in norm_steps)
+            total_turn_out = sum(s["outputTokens"] for s in norm_steps)
+            total_turn_cached = sum(s["cachedInputTokens"] for s in norm_steps)
+            total_turn_thinking = sum(s.get("reasoningOutputTokens", 0) for s in norm_steps)
+
+            last_data: Dict[str, Any] = {
+                "inputTokens": total_turn_in,
+                "outputTokens": total_turn_out,
+                "cachedInputTokens": total_turn_cached,
+                "totalTokens": total_turn_in + total_turn_out,
+                "activeContextTokens": norm_steps[-1]["inputTokens"],
+            }
+            if total_turn_thinking > 0 or any("reasoningOutputTokens" in s for s in norm_steps):
+                last_data["reasoningOutputTokens"] = total_turn_thinking
+        elif self._last_step_usage:
+            last_data = _normalize_single(self._last_step_usage)
+        else:
+            last_data = _normalize_single(total_usage)
+
+        total_data = _normalize_single(total_usage or last_data)
+
+        token_usage = {
+            "last": last_data,
+            "total": total_data,
+        }
+        cost = res.get("cost_usd") or res.get("costUsd") or raw.get("cost_usd")
+        if cost is not None:
+            token_usage["costUsd"] = cost
+        return token_usage
 
     def _extract_exit_error(self) -> str:
         """Extract the most relevant user-facing error message from stderr on abnormal exit."""

@@ -340,6 +340,158 @@ class TestAntigravityAgentEvents(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0].type, "result")
         self.assertEqual(messages[0].content["status"], "SUCCESS")
 
+    async def test_result_event_with_token_usage(self):
+        step_event = {
+            "event": "step_update",
+            "step_update": {
+                "step_index": 1960,
+                "state": "DONE",
+                "step_type": "agent_response",
+                "usage": {
+                    "input_tokens": 3099,
+                    "output_tokens": 3692,
+                    "thinking_tokens": 1918,
+                    "cache_read_tokens": 218110,
+                    "total_tokens": 6791,
+                },
+            },
+        }
+        await self.agent._handle_json_event(step_event)
+
+        result_event = {
+            "event": "result",
+            "result": {
+                "status": "SUCCESS",
+                "num_turns": 58,
+                "usage": {
+                    "input_tokens": 5972947,
+                    "output_tokens": 550875,
+                    "thinking_tokens": 364558,
+                    "cache_read_tokens": 130547261,
+                    "total_tokens": 6523822,
+                },
+            },
+        }
+        await self.agent._handle_json_event(result_event)
+
+        messages = await self._messages()
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0].type, "token_usage")
+        self.assertEqual(messages[1].type, "result")
+
+        token_usage = messages[0].content
+        self.assertEqual(token_usage["last"]["inputTokens"], 221209)
+        self.assertEqual(token_usage["last"]["outputTokens"], 3692)
+        self.assertEqual(token_usage["last"]["cachedInputTokens"], 218110)
+        self.assertEqual(token_usage["last"]["totalTokens"], 224901)
+        self.assertEqual(token_usage["last"]["reasoningOutputTokens"], 1918)
+
+        self.assertEqual(token_usage["total"]["inputTokens"], 136520208)
+        self.assertEqual(token_usage["total"]["outputTokens"], 550875)
+        self.assertEqual(token_usage["total"]["cachedInputTokens"], 130547261)
+        self.assertEqual(token_usage["total"]["totalTokens"], 137071083)
+        self.assertEqual(token_usage["total"]["reasoningOutputTokens"], 364558)
+
+    async def test_result_event_with_multi_step_token_accumulation(self):
+        # Step 1: calling grep tool (output 400, thinking 100)
+        step1 = {
+            "event": "step_update",
+            "step_update": {
+                "step_index": 10,
+                "state": "DONE",
+                "step_type": "agent_response",
+                "usage": {
+                    "input_tokens": 2000,
+                    "output_tokens": 400,
+                    "thinking_tokens": 100,
+                    "cache_read_tokens": 100000,
+                    "total_tokens": 2400,
+                },
+            },
+        }
+        await self.agent._handle_json_event(step1)
+
+        # Step 2: calling edit tool (output 300, thinking 50)
+        step2 = {
+            "event": "step_update",
+            "step_update": {
+                "step_index": 12,
+                "state": "DONE",
+                "step_type": "agent_response",
+                "usage": {
+                    "input_tokens": 2500,
+                    "output_tokens": 300,
+                    "thinking_tokens": 50,
+                    "cache_read_tokens": 100000,
+                    "total_tokens": 2800,
+                },
+            },
+        }
+        await self.agent._handle_json_event(step2)
+
+        # Step 3: final answer (output 500, thinking 200)
+        step3 = {
+            "event": "step_update",
+            "step_update": {
+                "step_index": 14,
+                "state": "DONE",
+                "step_type": "agent_response",
+                "usage": {
+                    "input_tokens": 3000,
+                    "output_tokens": 500,
+                    "thinking_tokens": 200,
+                    "cache_read_tokens": 100000,
+                    "total_tokens": 3500,
+                },
+            },
+        }
+        await self.agent._handle_json_event(step3)
+
+        result_event = {
+            "event": "result",
+            "result": {
+                "status": "SUCCESS",
+                "num_turns": 3,
+                "usage": {
+                    "input_tokens": 15000,
+                    "output_tokens": 3000,
+                    "thinking_tokens": 1000,
+                    "cache_read_tokens": 300000,
+                    "total_tokens": 18000,
+                },
+            },
+        }
+        await self.agent._handle_json_event(result_event)
+
+        messages = await self._messages()
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0].type, "token_usage")
+        self.assertEqual(messages[1].type, "result")
+
+        usage = messages[0].content
+        # Turn output tokens: 400 + 300 + 500 = 1200
+        self.assertEqual(usage["last"]["outputTokens"], 1200)
+        # Turn thinking tokens: 100 + 50 + 200 = 350
+        self.assertEqual(usage["last"]["reasoningOutputTokens"], 350)
+        # Accumulated input across all steps: 102000 + 102500 + 103000 = 307500
+        self.assertEqual(usage["last"]["inputTokens"], 307500)
+        self.assertEqual(usage["last"]["cachedInputTokens"], 300000)
+        # Total tokens in turn: 307500 + 1200 = 308700
+        self.assertEqual(usage["last"]["totalTokens"], 308700)
+        # Active context from latest step: 3000 uncached + 100000 cached = 103000
+        self.assertEqual(usage["last"]["activeContextTokens"], 103000)
+
+        # Total session metrics normalized
+        self.assertEqual(usage["total"]["inputTokens"], 315000)
+        self.assertEqual(usage["total"]["outputTokens"], 3000)
+        self.assertEqual(usage["total"]["cachedInputTokens"], 300000)
+        self.assertEqual(usage["total"]["totalTokens"], 318000)
+        self.assertEqual(usage["total"]["reasoningOutputTokens"], 1000)
+
+        # Buffer is cleared for next turn
+        self.assertEqual(self.agent._turn_step_usages, [])
+        self.assertIsNone(self.agent._last_step_usage)
+
     async def test_result_event_context_canceled_suppresses_error_message(self):
         event = {
             "event": "result",
