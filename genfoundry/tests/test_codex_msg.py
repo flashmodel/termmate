@@ -479,6 +479,106 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
         finally:
             await agent.disconnect()
 
+    async def test_token_usage_cold_start_event(self):
+        """Verify cold start thread/tokenUsage/updated preserves cached=0 and cacheWrite."""
+        fake_proc = FakeProcess()
+        agent = await self._create_agent(fake_proc)
+        try:
+            usage_payload = {
+                "total": {
+                    "totalTokens": 10172,
+                    "inputTokens": 10030,
+                    "cachedInputTokens": 0,
+                    "cacheWriteInputTokens": 10027,
+                    "outputTokens": 142,
+                    "reasoningOutputTokens": 35,
+                },
+                "last": {
+                    "totalTokens": 10172,
+                    "inputTokens": 10030,
+                    "cachedInputTokens": 0,
+                    "cacheWriteInputTokens": 10027,
+                    "outputTokens": 142,
+                    "reasoningOutputTokens": 35,
+                },
+                "modelContextWindow": 258400,
+            }
+            fake_proc.feed({
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "thread-001",
+                    "turnId": "turn-001",
+                    "tokenUsage": usage_payload,
+                },
+            })
+
+            async for msg in agent.receive_messages():
+                if msg.type == MessageType.TOKEN_USAGE.value:
+                    self.assertEqual(msg.content, usage_payload)
+                    last = msg.content["last"]
+                    self.assertEqual(last["inputTokens"], 10030)
+                    self.assertEqual(last["cachedInputTokens"], 0)
+                    self.assertEqual(last["cacheWriteInputTokens"], 10027)
+                    self.assertEqual(last["outputTokens"], 142)
+                    self.assertEqual(last["reasoningOutputTokens"], 35)
+                    self.assertEqual(msg.content["modelContextWindow"], 258400)
+                    break
+        finally:
+            await agent.disconnect()
+
+    async def test_token_usage_multi_step_turn_completion_event(self):
+        """Verify multi-step completed turnUsage has cache hit, reasoning and total breakdown."""
+        fake_proc = FakeProcess()
+        agent = await self._create_agent(fake_proc)
+        try:
+            usage_payload = {
+                "total": {
+                    "totalTokens": 57274,
+                    "inputTokens": 56540,
+                    "cachedInputTokens": 39910,
+                    "cacheWriteInputTokens": 16618,
+                    "outputTokens": 734,
+                    "reasoningOutputTokens": 326,
+                },
+                "last": {
+                    "totalTokens": 17098,
+                    "inputTokens": 16621,
+                    "cachedInputTokens": 14993,
+                    "cacheWriteInputTokens": 1625,
+                    "outputTokens": 477,
+                    "reasoningOutputTokens": 276,
+                },
+                "modelContextWindow": 258400,
+            }
+            fake_proc.feed({
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "thread-001",
+                    "turnId": "turn-001",
+                    "tokenUsage": usage_payload,
+                },
+            })
+
+            async for msg in agent.receive_messages():
+                if msg.type == MessageType.TOKEN_USAGE.value:
+                    self.assertEqual(msg.content, usage_payload)
+                    last = msg.content["last"]
+                    self.assertEqual(last["totalTokens"], 17098)
+                    self.assertEqual(last["inputTokens"], 16621)
+                    self.assertEqual(last["cachedInputTokens"], 14993)
+                    self.assertEqual(last["cacheWriteInputTokens"], 1625)
+                    self.assertEqual(last["outputTokens"], 477)
+                    self.assertEqual(last["reasoningOutputTokens"], 276)
+
+                    total = msg.content["total"]
+                    self.assertEqual(total["totalTokens"], 57274)
+                    self.assertEqual(total["inputTokens"], 56540)
+                    self.assertEqual(total["cachedInputTokens"], 39910)
+                    self.assertEqual(total["reasoningOutputTokens"], 326)
+                    break
+        finally:
+            await agent.disconnect()
+
 
 if __name__ == "__main__":
     unittest.main()

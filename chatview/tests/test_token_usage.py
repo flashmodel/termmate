@@ -78,19 +78,47 @@ class TestTokenSummaryPhantomRendering(unittest.TestCase):
 
         self.assertIn("34.8k", html)
         self.assertIn(
-            "token</span><span class=\"dim\">(in:34.6k, out:217, 91% cached)</span>",
+            "token</span><span class=\"dim\">(in:3.1k, out:217, 91% cached)</span>",
             html,
         )
-        self.assertIn("in:34.6k", html)
+        self.assertIn("in:3.1k", html)
         self.assertIn("out:217", html)
         self.assertIn("91% cached", html)
-        self.assertIn("(in:34.6k, out:217, 91% cached)", html)
+        self.assertIn("(in:3.1k, out:217, 91% cached)", html)
         self.assertIn("cached)</span> <span class=\"item\">Context:", html)
         self.assertIn("Context:", html)
         self.assertIn("13.4%", html)
         self.assertIn("(258k)", html)
         self.assertIn("<span class=\"sep\">·</span><span class=\"item\">Total:339k</span>", html)
         self.assertIn("padding: 0 0.15em;", html)
+
+    def test_render_codex_cold_start_with_cache_write(self):
+        """Verify cold start with cacheWriteInputTokens does not falsely report cached %."""
+        usage = {
+            "last": {
+                "totalTokens": 10172,
+                "inputTokens": 10030,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 10027,
+                "outputTokens": 142,
+                "reasoningOutputTokens": 35,
+            },
+            "total": {
+                "totalTokens": 10172,
+                "inputTokens": 10030,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 10027,
+                "outputTokens": 142,
+                "reasoningOutputTokens": 35,
+            },
+            "modelContextWindow": 258400,
+        }
+        html = self.phantom._render_html(usage)
+
+        self.assertIn("10.2k", html)
+        self.assertIn("(in:10k, out:142, thinking:35)", html)
+        self.assertNotIn("cached", html)
+        self.assertIn("Context:<span class=\"highlight\">3.9%</span>", html)
 
     def test_render_antigravity_usage(self):
         # Normalized Antigravity metrics: inputTokens is total prompt tokens (uncached + cached)
@@ -114,15 +142,27 @@ class TestTokenSummaryPhantomRendering(unittest.TestCase):
 
         self.assertIn("225k", html)
         self.assertIn(
-            "token</span><span class=\"dim\">(in:221k, out:3.7k, thinking:1.9k, 99% cached)</span>",
+            "token</span><span class=\"dim\">(in:3.1k, out:3.7k, thinking:1.9k, 99% cached)</span>",
             html,
         )
-        self.assertIn("in:221k", html)
+        self.assertIn("in:3.1k", html)
         self.assertIn("out:3.7k", html)
         self.assertIn("thinking:1.9k", html)
         self.assertIn("99% cached", html)
-        self.assertIn("(in:221k, out:3.7k, thinking:1.9k, 99% cached)", html)
+        self.assertIn("(in:3.1k, out:3.7k, thinking:1.9k, 99% cached)", html)
         self.assertIn("Total:137.1M", html)
+
+    def test_render_usage_without_cache(self):
+        usage = {
+            "last": {
+                "inputTokens": 1500,
+                "outputTokens": 200,
+                "cachedInputTokens": 0,
+            },
+        }
+        html = self.phantom._render_html(usage)
+        self.assertIn("(in:1.5k, out:200)", html)
+        self.assertNotIn("cached", html)
 
     def test_update_empty_usage_clears_phantom(self):
         self.phantom.show({})

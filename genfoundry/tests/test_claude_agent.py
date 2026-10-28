@@ -140,7 +140,7 @@ class TestClaudeAgentTokenUsageExtraction(unittest.TestCase):
         # 1200 uncached + 800 read + 200 create = 2200 total input tokens
         self.assertEqual(res["last"]["inputTokens"], 2200)
         self.assertEqual(res["last"]["outputTokens"], 150)
-        self.assertEqual(res["last"]["cachedInputTokens"], 1000)
+        self.assertEqual(res["last"]["cachedInputTokens"], 800)
         self.assertEqual(res["last"]["totalTokens"], 2350)
         # 5000 uncached + 3000 read = 8000 total input tokens
         self.assertEqual(res["total"]["inputTokens"], 8000)
@@ -198,14 +198,33 @@ class TestClaudeAgentTokenUsageExtraction(unittest.TestCase):
         # last: 135 + 91038 + 34509 = 125682 in, 6475 out
         self.assertEqual(res["last"]["inputTokens"], 125682)
         self.assertEqual(res["last"]["outputTokens"], 6475)
-        self.assertEqual(res["last"]["cachedInputTokens"], 125547)
+        self.assertEqual(res["last"]["cachedInputTokens"], 91038)
         # total across haiku (145330 in, 2028 out) + fable (125682 in, 6475 out)
         # in: 145330 + 125682 = 271012, out: 2028 + 6475 = 8503
         self.assertEqual(res["total"]["inputTokens"], 271012)
         self.assertEqual(res["total"]["outputTokens"], 8503)
-        self.assertEqual(res["total"]["cachedInputTokens"], 270250)
+        self.assertEqual(res["total"]["cachedInputTokens"], 218578)
         self.assertEqual(res["total"]["totalTokens"], 279515)
         self.assertEqual(res["modelContextWindow"], 1000000)
+
+    def test_extract_token_usage_cold_start_cache_write_not_counted_as_cached(self):
+        """Verify that cache_creation_input_tokens (write) is not counted as cached (hit)."""
+        data = {
+            "type": "result",
+            "usage": {
+                "input_tokens": 3,
+                "output_tokens": 376,
+                "cache_creation_input_tokens": 40756,
+                "cache_read_input_tokens": 0,
+            },
+        }
+        res = self.agent._extract_token_usage(data)
+        self.assertIsNotNone(res)
+        # Total prompt is 3 + 40756 = 40759, but cache hit is 0
+        self.assertEqual(res["last"]["inputTokens"], 40759)
+        self.assertEqual(res["last"]["cachedInputTokens"], 0)
+        self.assertEqual(res["last"]["outputTokens"], 376)
+        self.assertEqual(res["last"]["totalTokens"], 41135)
 
     def test_thinking_tokens_captured_on_result(self):
         sys_msg = {

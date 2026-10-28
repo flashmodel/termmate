@@ -576,8 +576,8 @@ class ClaudeCodeAgent(BaseAgent):
                 or u.get("cacheCreationInputTokens")
                 or 0
             )
-            cached_tok = cache_read + cache_create
-            total_in = raw_in + cached_tok
+            cached_tok = cache_read
+            total_in = raw_in + cache_read + cache_create
             total_tok = u.get("total_tokens") or u.get("totalTokens") or (total_in + out_tok)
             return {
                 "inputTokens": total_in,
@@ -617,7 +617,7 @@ class ClaudeCodeAgent(BaseAgent):
                 inp = raw_inp + c
                 tot_in += inp
                 tot_out += (m.get("outputTokens") or m.get("output_tokens") or 0)
-                tot_cached += c
+                tot_cached += c_read
                 cw = m.get("contextWindow") or 0
                 if cw > context_window:
                     context_window = cw

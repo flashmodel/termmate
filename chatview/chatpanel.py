@@ -402,7 +402,7 @@ class TokenSummaryPhantom:
         """
         Render minihtml markup displaying turn token metrics.
         Example:
-            ⚡ 34.8k token(in:34.6k, out:217, 91% cached)
+            ⚡ 34.8k token(in:3.1k, out:217, 91% cached)
                Context:13.4%(258k) · Total:338k
         """
         last = usage.get("last") or {}
@@ -416,6 +416,7 @@ class TokenSummaryPhantom:
         input_tokens = last.get("inputTokens", 0)
         output_tokens = last.get("outputTokens", 0)
         cached_tokens = last.get("cachedInputTokens", 0)
+        non_cached_input = max(0, input_tokens - cached_tokens)
         total_tokens = (
             total.get("totalTokens", 0)
             or (total.get("inputTokens", 0) + total.get("outputTokens", 0))
@@ -459,7 +460,7 @@ class TokenSummaryPhantom:
             f'<span class="icon">⚡</span>'
             f'<span class="item"><span class="highlight">'
             f'{format_token_count(last_tokens)}</span> token</span>'
-            f'<span class="dim">(in:{format_token_count(input_tokens)}, '
+            f'<span class="dim">(in:{format_token_count(non_cached_input)}, '
             f'out:{format_token_count(output_tokens)}{thinking_html}{cache_html})</span>'
             f'{ctx_html}{total_html}'
         )
