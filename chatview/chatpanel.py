@@ -440,8 +440,9 @@ class TokenSummaryPhantom:
 
         # Context window percentage
         ctx_html = ""
-        if ctx_window > 0 and input_tokens > 0:
-            pct = (input_tokens / ctx_window) * 100
+        ctx_tokens = last.get("activeContextTokens") or input_tokens
+        if ctx_window > 0 and ctx_tokens > 0:
+            pct = (ctx_tokens / ctx_window) * 100
             ctx_text = f"{pct:.1f}%"
             ctx_html = (
                 f' <span class="item">Context:<span class="highlight">{ctx_text}</span>'

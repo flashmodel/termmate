@@ -1616,7 +1616,7 @@ class ChatSession:
         """Record token metrics; if currently idle, display phantom."""
         self.token_usage = usage
         if self.has_sent_message and not self.loading_animation.is_loading:
-            self.token_summary_phantom.show(usage)
+            sublime.set_timeout(lambda: self.token_summary_phantom.show(usage), 0)
 
     def start_loading(self, text=None):
         """Start the loading animation."""
