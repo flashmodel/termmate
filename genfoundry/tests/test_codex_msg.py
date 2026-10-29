@@ -89,9 +89,28 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
                     fake_proc.feed({"id": rid, "result": {"data": [], "nextCursor": None}})
                 elif method == "turn/start":
                     turn_id = f"turn-{rid}"
-                    fake_proc.feed({"id": rid, "result": {}})
+                    fake_proc.feed({
+                        "id": rid,
+                        "result": {
+                            "turn": {
+                                "id": turn_id,
+                                "status": "inProgress",
+                                "items": [],
+                            }
+                        },
+                    })
                     # Simulate agent response events
-                    fake_proc.feed({"method": "turn/started", "params": {"turnId": turn_id}})
+                    fake_proc.feed({
+                        "method": "turn/started",
+                        "params": {
+                            "threadId": "thread-001",
+                            "turn": {
+                                "id": turn_id,
+                                "rootTurnId": turn_id,
+                                "status": "inProgress",
+                            },
+                        },
+                    })
                     fake_proc.feed({
                         "method": "item/agentMessage/delta",
                         "params": {"itemId": f"msg-{rid}", "delta": f"Reply to turn {rid}"},
@@ -106,7 +125,17 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
                             }
                         },
                     })
-                    fake_proc.feed({"method": "turn/completed", "params": {"turnId": turn_id}})
+                    fake_proc.feed({
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-001",
+                            "turn": {
+                                "id": turn_id,
+                                "rootTurnId": turn_id,
+                                "status": "completed",
+                            },
+                        },
+                    })
                 elif method == "thread/revert":
                     fake_proc.feed({"id": rid, "result": {"thread": {"id": "thread-001"}}})
 
@@ -187,8 +216,358 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
         finally:
             await agent.disconnect()
 
+    async def test_v1_legacy_turn_fallback(self):
+        """Verify backward compatibility when server uses v1 flat turnId and empty turn/start."""
+        fake_proc = FakeProcess()
+        opts = AgentOptions(cli_path="/usr/bin/true")
+        agent = CodexAgent(options=opts)
+        self._rpc_calls = []
+
+        async def mock_write_json(data: dict):
+            self._rpc_calls.append(data)
+            rid = data.get("id")
+            method = data.get("method")
+            if rid is not None:
+                if method == "initialize":
+                    fake_proc.feed({"id": rid, "result": {"capabilities": {}}})
+                elif method == "thread/start":
+                    fake_proc.feed({"id": rid, "result": {"thread": {"id": "thread-001"}}})
+                elif method == "turn/start":
+                    # Legacy v1: empty result dictionary
+                    fake_proc.feed({"id": rid, "result": {}})
+                    # Legacy v1: flat turnId in turn/started notification
+                    fake_proc.feed({
+                        "method": "turn/started",
+                        "params": {"turnId": "legacy-turn-1"},
+                    })
+                    fake_proc.feed({
+                        "method": "item/agentMessage/delta",
+                        "params": {"itemId": "msg-1", "delta": "Legacy response text"},
+                    })
+                    fake_proc.feed({
+                        "method": "item/completed",
+                        "params": {
+                            "item": {
+                                "type": "agentMessage",
+                                "id": "msg-1",
+                                "text": "Legacy response text",
+                            }
+                        },
+                    })
+                    # Legacy v1: flat turnId in turn/completed notification
+                    fake_proc.feed({
+                        "method": "turn/completed",
+                        "params": {"turnId": "legacy-turn-1"},
+                    })
+
+        agent._write_json = mock_write_json
+        with patch("asyncio.create_subprocess_exec", return_value=fake_proc):
+            await agent.connect()
+            try:
+                await agent.send_message("Legacy test")
+                messages = await self._collect_turn(agent)
+
+                # Verify turn tracking via fallback extraction
+                self.assertEqual(agent._turn_count, 1)
+                self.assertEqual(agent._turn_ids, ["legacy-turn-1"])
+                self.assertEqual(agent._active_turn_id, "legacy-turn-1")
+                self.assertFalse(agent._is_turn_active)
+
+                types = [m.type for m in messages]
+                self.assertEqual(types.count("turn_started"), 1)
+                self.assertEqual(types[-1], "stop")
+                text_msgs = [m for m in messages if getattr(m, "type", None) == "text"]
+                self.assertTrue(len(text_msgs) > 0)
+                self.assertEqual(text_msgs[0].content, "Legacy response text")
+            finally:
+                await agent.disconnect()
+
+    async def test_v2_turn_full_lifecycle(self):
+        """Verify full v2 turn lifecycle with reasoning, commentary, mcp, and final answer."""
+        fake_proc = FakeProcess()
+        opts = AgentOptions(cli_path="/usr/bin/true")
+        agent = CodexAgent(options=opts)
+        self._rpc_calls = []
+
+        turn_id = "01a18b0f-0120-7783-88c2-255ae09d8ee7"
+        thread_id = "01a18b0c-f529-77a0-a8f1-f69d17cbb0db"
+
+        async def mock_write_json(data: dict):
+            self._rpc_calls.append(data)
+            rid = data.get("id")
+            method = data.get("method")
+            if rid is not None:
+                if method == "initialize":
+                    fake_proc.feed({"id": rid, "result": {"capabilities": {}}})
+                elif method == "thread/start":
+                    fake_proc.feed({
+                        "id": rid,
+                        "result": {"thread": {"id": thread_id}},
+                    })
+                elif method == "turn/start":
+                    # v2 standard result structure
+                    fake_proc.feed({
+                        "id": rid,
+                        "result": {
+                            "turn": {
+                                "id": turn_id,
+                                "status": "inProgress",
+                                "items": [],
+                            }
+                        },
+                    })
+                    # 1. thread/status/changed -> active
+                    fake_proc.feed({
+                        "method": "thread/status/changed",
+                        "params": {"threadId": thread_id, "status": {"type": "active"}},
+                    })
+                    # 2. turn/started with nested turn object
+                    fake_proc.feed({
+                        "method": "turn/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "turn": {
+                                "id": turn_id,
+                                "rootTurnId": turn_id,
+                                "status": "inProgress",
+                            },
+                        },
+                    })
+                    # 3. userMessage item events
+                    fake_proc.feed({
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "item": {
+                                "type": "userMessage",
+                                "id": "u-1",
+                                "content": [{"type": "text", "text": "TPU analysis"}],
+                            },
+                        },
+                    })
+                    fake_proc.feed({
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "item": {
+                                "type": "userMessage",
+                                "id": "u-1",
+                                "content": [{"type": "text", "text": "TPU analysis"}],
+                            },
+                        },
+                    })
+                    # 4. reasoning item events with textDelta
+                    fake_proc.feed({
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "item": {"type": "reasoning", "id": "rs-1", "summary": []},
+                        },
+                    })
+                    fake_proc.feed({
+                        "method": "item/reasoning/textDelta",
+                        "params": {
+                            "itemId": "rs-1",
+                            "delta": "Reasoning about TPU market...",
+                        },
+                    })
+                    fake_proc.feed({
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "item": {"type": "reasoning", "id": "rs-1", "summary": []},
+                        },
+                    })
+                    # 5. commentary agentMessage item (pre-tool thoughts)
+                    fake_proc.feed({
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "item": {
+                                "type": "agentMessage",
+                                "id": "msg-comm",
+                                "text": "",
+                                "phase": "commentary",
+                            },
+                        },
+                    })
+                    fake_proc.feed({
+                        "method": "item/agentMessage/delta",
+                        "params": {
+                            "itemId": "msg-comm",
+                            "delta": "Searching latest 2026 filings...",
+                        },
+                    })
+                    fake_proc.feed({
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "item": {
+                                "type": "agentMessage",
+                                "id": "msg-comm",
+                                "text": "Searching latest 2026 filings...",
+                                "phase": "commentary",
+                            },
+                        },
+                    })
+                    # 6. mcpToolCall item (e.g. search_service.web_run)
+                    fake_proc.feed({
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "item": {
+                                "type": "mcpToolCall",
+                                "id": "exec-1",
+                                "server": "codex_apps",
+                                "tool": "search_service.web_run",
+                                "status": "inProgress",
+                            },
+                        },
+                    })
+                    fake_proc.feed({
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "item": {
+                                "type": "mcpToolCall",
+                                "id": "exec-1",
+                                "server": "codex_apps",
+                                "tool": "search_service.web_run",
+                                "status": "completed",
+                                "arguments": {"query": "Google Cloud TPU revenue"},
+                                "result": {
+                                    "content": [{"type": "text", "text": "Estimates 70B"}]
+                                },
+                            },
+                        },
+                    })
+                    # 7. final_answer agentMessage item
+                    fake_proc.feed({
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "item": {
+                                "type": "agentMessage",
+                                "id": "msg-final",
+                                "text": "",
+                                "phase": "final_answer",
+                            },
+                        },
+                    })
+                    fake_proc.feed({
+                        "method": "item/agentMessage/delta",
+                        "params": {
+                            "itemId": "msg-final",
+                            "delta": "Estimated TPU revenue is 600-750B.",
+                        },
+                    })
+                    fake_proc.feed({
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "item": {
+                                "type": "agentMessage",
+                                "id": "msg-final",
+                                "text": "Estimated TPU revenue is 600-750B.",
+                                "phase": "final_answer",
+                            },
+                        },
+                    })
+                    # 8. thread/tokenUsage/updated
+                    fake_proc.feed({
+                        "method": "thread/tokenUsage/updated",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "tokenUsage": {
+                                "total": {
+                                    "totalTokens": 409378,
+                                    "inputTokens": 405641,
+                                    "cachedInputTokens": 327001,
+                                    "outputTokens": 3737,
+                                    "reasoningOutputTokens": 1133,
+                                },
+                                "last": {
+                                    "totalTokens": 81037,
+                                    "inputTokens": 78616,
+                                    "cachedInputTokens": 70459,
+                                    "outputTokens": 2421,
+                                    "reasoningOutputTokens": 716,
+                                },
+                                "modelContextWindow": 258400,
+                            },
+                        },
+                    })
+                    # 9. thread/readState/changed & thread/status/changed -> idle
+                    fake_proc.feed({
+                        "method": "thread/readState/changed",
+                        "params": {
+                            "threadId": thread_id,
+                            "readState": {
+                                "firstUnread": {"type": "turn", "turnId": turn_id},
+                                "revision": "rev-001",
+                            },
+                        },
+                    })
+                    fake_proc.feed({
+                        "method": "thread/status/changed",
+                        "params": {"threadId": thread_id, "status": {"type": "idle"}},
+                    })
+                    # 10. turn/completed
+                    fake_proc.feed({
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "turn": {
+                                "id": turn_id,
+                                "rootTurnId": turn_id,
+                                "status": "completed",
+                            },
+                        },
+                    })
+
+        agent._write_json = mock_write_json
+        with patch("asyncio.create_subprocess_exec", return_value=fake_proc):
+            await agent.connect()
+            try:
+                await agent.send_message("Analyze TPU revenue")
+                messages = await self._collect_turn(agent)
+
+                # State verification
+                self.assertEqual(agent.thread_id, thread_id)
+                self.assertEqual(agent._turn_count, 1)
+                self.assertEqual(agent._turn_ids, [turn_id])
+                self.assertEqual(agent._active_turn_id, turn_id)
+                self.assertFalse(agent._is_turn_active)
+
+                # Message stream verification
+                types = [m.type for m in messages]
+                self.assertIn("turn_started", types)
+                self.assertIn(MessageType.THINKING.value, types)
+                self.assertIn(MessageType.TOOL_USE.value, types)
+                self.assertIn(MessageType.TOKEN_USAGE.value, types)
+                self.assertEqual(types[-1], MessageType.STOP.value)
+
+                # Verify MCP tool message formatting
+                mcp_msgs = [m for m in messages if m.type == MessageType.TOOL_USE.value]
+                self.assertEqual(len(mcp_msgs), 1)
+                self.assertEqual(mcp_msgs[0].content["name"], "mcpToolCall")
+                self.assertEqual(mcp_msgs[0].content["server"], "codex_apps")
+                self.assertEqual(mcp_msgs[0].content["tool"], "search_service.web_run")
+                self.assertEqual(
+                    mcp_msgs[0].content["arguments"],
+                    {"query": "Google Cloud TPU revenue"},
+                )
+
+                # Verify token usage values
+                token_msgs = [m for m in messages if m.type == MessageType.TOKEN_USAGE.value]
+                self.assertEqual(len(token_msgs), 1)
+                self.assertEqual(token_msgs[0].content["total"]["totalTokens"], 409378)
+            finally:
+                await agent.disconnect()
+
     async def test_steer_plan(self):
-        """Verify that steer() sends a turn/start RPC (via send_message)."""
+        """Verify that steer() sends a turn/steer RPC when turn is active."""
         fake_proc = FakeProcess()
         opts = AgentOptions(cli_path="/usr/bin/true")
         agent = CodexAgent(options=opts)
@@ -210,14 +589,19 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
                     fake_proc.feed({"id": rid, "result": {"data": [], "nextCursor": None}})
                 elif method == "turn/start":
                     fake_proc.feed({"id": rid, "result": {}})
+                elif method == "turn/steer":
+                    fake_proc.feed({"id": rid, "result": {}})
 
         agent._write_json = mock_write_json
         with patch("asyncio.create_subprocess_exec", return_value=fake_proc):
             await agent.connect()
             try:
                 agent._active_turn_id = "turn-XYZ"
+                agent._is_turn_active = True
                 await agent.steer("Implement this plan")
-                steer_call = next((c for c in self._rpc_calls if c.get("method") == "turn/start"), None)
+                steer_call = next(
+                    (c for c in self._rpc_calls if c.get("method") == "turn/steer"), None
+                )
                 self.assertIsNotNone(steer_call)
                 self.assertEqual(steer_call["params"]["input"][0]["text"], "Implement this plan")
                 self.assertEqual(steer_call["params"]["expectedTurnId"], "turn-XYZ")
@@ -761,6 +1145,11 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
                 },
             })
 
+            # Yield to let reader task process events up to subagent completion
+            await asyncio.sleep(0.05)
+            # Subagent completion must not reset main turn active flag
+            self.assertTrue(agent._is_turn_active)
+
             # Main agent completes
             fake_proc.feed({
                 "method": "turn/completed",
@@ -786,6 +1175,7 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(agent._turn_count, 2)
             self.assertEqual(agent._turn_ids, [turn_1_id, turn_2_id])
             self.assertEqual(agent._active_turn_id, turn_2_id)
+            self.assertFalse(agent._is_turn_active)
             # 4. Turn ended with exactly one stop (when main turn finished)
             self.assertEqual(types[-1], "stop")
 
@@ -915,7 +1305,299 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
         finally:
             await agent.disconnect()
 
+    async def test_steer_inactive_turn_falls_back_to_turn_start(self):
+        """Verify steer() uses turn/start without expectedTurnId when no turn is active."""
+        fake_proc = FakeProcess()
+        opts = AgentOptions(cli_path="/usr/bin/true")
+        agent = CodexAgent(options=opts)
+        self._rpc_calls = []
+
+        async def mock_write_json(data: dict):
+            self._rpc_calls.append(data)
+            rid = data.get("id")
+            method = data.get("method")
+            if rid is not None:
+                if method == "initialize":
+                    fake_proc.feed({"id": rid, "result": {"capabilities": {}}})
+                elif method == "thread/start":
+                    fake_proc.feed({"id": rid, "result": {"thread": {"id": "thread-001"}}})
+                elif method == "turn/start":
+                    fake_proc.feed({"id": rid, "result": {}})
+
+        agent._write_json = mock_write_json
+        with patch("asyncio.create_subprocess_exec", return_value=fake_proc):
+            await agent.connect()
+            try:
+                agent._active_turn_id = "turn-old"
+                agent._is_turn_active = False
+                await agent.steer("New turn message")
+                start_call = next(
+                    (c for c in self._rpc_calls if c.get("method") == "turn/start"), None
+                )
+                self.assertIsNotNone(start_call)
+                self.assertEqual(start_call["params"]["input"][0]["text"], "New turn message")
+                self.assertNotIn("expectedTurnId", start_call["params"])
+            finally:
+                await agent.disconnect()
+
+    async def test_steer_race_condition_falls_back_to_turn_start(self):
+        """Verify steer() falls back to turn/start when turn/steer fails due to completed turn."""
+        fake_proc = FakeProcess()
+        opts = AgentOptions(cli_path="/usr/bin/true")
+        agent = CodexAgent(options=opts)
+        self._rpc_calls = []
+
+        async def mock_write_json(data: dict):
+            self._rpc_calls.append(data)
+            rid = data.get("id")
+            method = data.get("method")
+            if rid is not None:
+                if method == "initialize":
+                    fake_proc.feed({"id": rid, "result": {"capabilities": {}}})
+                elif method == "thread/start":
+                    fake_proc.feed({"id": rid, "result": {"thread": {"id": "thread-001"}}})
+                elif method == "turn/steer":
+                    # Simulate race condition: turn completed before steer reached server.
+                    # 1. Server emits turn/completed on stdout, resetting active turn flag.
+                    fake_proc.feed({
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-001",
+                            "turn": {
+                                "id": "turn-race-1",
+                                "rootTurnId": "turn-race-1",
+                                "status": "completed",
+                            },
+                        },
+                    })
+                    # 2. Server responds with error to turn/steer request.
+                    fake_proc.feed({
+                        "id": rid,
+                        "error": {
+                            "code": -32600,
+                            "message": "Turn turn-race-1 is no longer active",
+                        },
+                    })
+                elif method == "turn/start":
+                    # Fallback turn/start arrives and succeeds
+                    fake_proc.feed({
+                        "id": rid,
+                        "result": {
+                            "turn": {
+                                "id": "turn-race-2",
+                                "status": "inProgress",
+                            }
+                        },
+                    })
+
+        agent._write_json = mock_write_json
+        with patch("asyncio.create_subprocess_exec", return_value=fake_proc):
+            await agent.connect()
+            try:
+                agent._active_turn_id = "turn-race-1"
+                agent._is_turn_active = True
+
+                await agent.steer("Steering instruction during race")
+
+                # Verify turn/steer was attempted first
+                steer_call = next(
+                    (c for c in self._rpc_calls if c.get("method") == "turn/steer"), None
+                )
+                self.assertIsNotNone(steer_call)
+                self.assertEqual(steer_call["params"]["expectedTurnId"], "turn-race-1")
+
+                # Verify it fell back to turn/start without expectedTurnId
+                start_call = next(
+                    (c for c in self._rpc_calls if c.get("method") == "turn/start"), None
+                )
+                self.assertIsNotNone(start_call)
+                self.assertEqual(
+                    start_call["params"]["input"][0]["text"],
+                    "Steering instruction during race",
+                )
+                self.assertNotIn("expectedTurnId", start_call["params"])
+            finally:
+                await agent.disconnect()
+
+    async def test_list_codex_sessions_rpc(self):
+        """Verify _list_codex_sessions_rpc uses --listen stdio:// and TermMate clientInfo."""
+        from genfoundry.codex_agent import _list_codex_sessions_rpc
+
+        fake_proc = FakeProcess()
+        executed_cmd = []
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            executed_cmd.extend(args)
+            return fake_proc
+
+        written_requests = []
+        original_write = fake_proc.stdin.write
+
+        def intercept_write(payload: bytes):
+            original_write(payload)
+            for line in payload.split(b"\n"):
+                if not line.strip():
+                    continue
+                data = json.loads(line.decode("utf-8"))
+                written_requests.append(data)
+                rid = data.get("id")
+                method = data.get("method")
+                if rid is not None:
+                    if method == "initialize":
+                        fake_proc.feed({"id": rid, "result": {"capabilities": {}}})
+                    elif method == "thread/list":
+                        fake_proc.feed({
+                            "id": rid,
+                            "result": {
+                                "data": [
+                                    {"id": "t1", "name": "Thread 1", "updatedAt": 123456.0},
+                                ],
+                            },
+                        })
+
+        fake_proc.stdin.write = intercept_write
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
+            threads = await _list_codex_sessions_rpc("/usr/bin/codex", cwd="/workspace")
+
+        self.assertEqual(executed_cmd, ["/usr/bin/codex", "app-server", "--listen", "stdio://"])
+        init_req = next((r for r in written_requests if r.get("method") == "initialize"), None)
+        self.assertIsNotNone(init_req)
+        self.assertEqual(init_req["params"]["clientInfo"]["name"], "TermMate")
+        self.assertEqual(len(threads), 1)
+        self.assertEqual(threads[0]["session_id"], "t1")
+
+    async def test_get_codex_session_info_rpc(self):
+        """Verify _get_codex_session_info_rpc uses thread/read + thread/turns/list."""
+        from genfoundry.codex_agent import _get_codex_session_info_rpc
+
+        fake_proc = FakeProcess()
+        executed_cmd = []
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            executed_cmd.extend(args)
+            return fake_proc
+
+        written_requests = []
+        original_write = fake_proc.stdin.write
+
+        def intercept_write(payload: bytes):
+            original_write(payload)
+            for line in payload.split(b"\n"):
+                if not line.strip():
+                    continue
+                data = json.loads(line.decode("utf-8"))
+                written_requests.append(data)
+                rid = data.get("id")
+                method = data.get("method")
+                if rid is not None:
+                    if method == "initialize":
+                        fake_proc.feed({"id": rid, "result": {"capabilities": {}}})
+                    elif method == "thread/read":
+                        fake_proc.feed({
+                            "id": rid,
+                            "result": {
+                                "thread": {
+                                    "id": "t1",
+                                    "name": "Thread 1",
+                                    "updatedAt": 123456.0,
+                                }
+                            },
+                        })
+                    elif method == "thread/turns/list":
+                        fake_proc.feed({
+                            "id": rid,
+                            "result": {
+                                "data": [
+                                    {
+                                        "id": "turn-1",
+                                        "items": [
+                                            {
+                                                "type": "userMessage",
+                                                "content": [{"type": "text", "text": "Hello"}],
+                                            },
+                                            {
+                                                "type": "agentMessage",
+                                                "text": "Hi there!",
+                                            },
+                                        ],
+                                    }
+                                ]
+                            },
+                        })
+
+        fake_proc.stdin.write = intercept_write
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
+            info = await _get_codex_session_info_rpc(
+                "/usr/bin/codex", "t1", cwd="/workspace", history_limit=5
+            )
+
+        self.assertEqual(executed_cmd, ["/usr/bin/codex", "app-server", "--listen", "stdio://"])
+        read_req = next((r for r in written_requests if r.get("method") == "thread/read"), None)
+        self.assertIsNotNone(read_req)
+        self.assertFalse(read_req["params"].get("includeTurns"))
+
+        turns_req = next(
+            (r for r in written_requests if r.get("method") == "thread/turns/list"), None
+        )
+        self.assertIsNotNone(turns_req)
+        self.assertEqual(turns_req["params"]["threadId"], "t1")
+        self.assertEqual(turns_req["params"]["itemsView"], "summary")
+        self.assertEqual(turns_req["params"]["limit"], 5)
+
+        self.assertIsNotNone(info)
+        self.assertEqual(info["summary"], "Thread 1")
+        self.assertEqual(info["prompt"], "Hello")
+        self.assertEqual(info["response"], "Hi there!")
+
+    async def test_unhandled_server_request_handling(self):
+        """Verify unhandled server requests return decline for approvals and -32601 for others."""
+        fake_proc = FakeProcess()
+        opts = AgentOptions(cli_path="/usr/bin/true")
+        agent = CodexAgent(options=opts)
+        written_messages = []
+
+        async def mock_write_json(data: dict):
+            written_messages.append(data)
+            rid = data.get("id")
+            method = data.get("method")
+            if rid is not None and method == "initialize":
+                fake_proc.feed({"id": rid, "result": {"capabilities": {}}})
+            elif rid is not None and method == "thread/start":
+                fake_proc.feed({"id": rid, "result": {"thread": {"id": "t1"}}})
+
+        agent._write_json = mock_write_json
+        with patch("asyncio.create_subprocess_exec", return_value=fake_proc):
+            await agent.connect()
+            try:
+                # 1. Unhandled approval request -> decision: decline
+                fake_proc.feed({
+                    "id": 901,
+                    "method": "unknown/approvalRequest",
+                    "params": {},
+                })
+                # Yield to let created background task run
+                await asyncio.sleep(0.05)
+                resp_901 = next((m for m in written_messages if m.get("id") == 901), None)
+                self.assertIsNotNone(resp_901)
+                self.assertEqual(resp_901.get("result"), {"decision": "decline"})
+
+                # 2. Unhandled non-approval request -> JSON-RPC error -32601
+                fake_proc.feed({
+                    "id": 902,
+                    "method": "item/tool/call",
+                    "params": {},
+                })
+                await asyncio.sleep(0.05)
+                resp_902 = next((m for m in written_messages if m.get("id") == 902), None)
+                self.assertIsNotNone(resp_902)
+                self.assertIn("error", resp_902)
+                self.assertEqual(resp_902["error"]["code"], -32601)
+                self.assertIn("Method not found", resp_902["error"]["message"])
+            finally:
+                await agent.disconnect()
+
 
 if __name__ == "__main__":
     unittest.main()
-

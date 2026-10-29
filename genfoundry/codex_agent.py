@@ -151,6 +151,7 @@ class CodexAgent(BaseAgent):
         self._permission_callback: Optional[Callable] = self.options.can_use_tool
         # Track active turn so we know when it completes
         self._active_turn_id: Optional[str] = None
+        self._is_turn_active: bool = False
         self._last_rpc_error: Optional[Any] = None
         # Pending approval responses from the UI, keyed by approval_id
         self._pending_approvals: Dict[str, asyncio.Future] = {}
@@ -163,6 +164,7 @@ class CodexAgent(BaseAgent):
         # Counts user turns sent (1-based); used as rewind handle
         self._turn_count: int = 0
         self._turn_ids: List[str] = []
+        self._completed_turn_ids: Set[str] = set()
         self._subagent_thread_ids: Set[str] = set()
         self._subagent_turn_to_root: Dict[str, str] = {}
 
@@ -219,7 +221,7 @@ class CodexAgent(BaseAgent):
         if self.options.extra_env:
             env.update(self.options.extra_env)
 
-        cmd = [self.cli_path, "app-server"]
+        cmd = [self.cli_path, "app-server", "--listen", "stdio://"]
 
         LOG.info(f"Starting Codex app-server: {' '.join(cmd)}")
         
@@ -244,7 +246,7 @@ class CodexAgent(BaseAgent):
 
         # JSON-RPC initialize handshake
         await self._rpc_request("initialize", {
-            "clientInfo": {"name": "codyform", "title": "Codyform", "version": "1.0"},
+            "clientInfo": {"name": "TermMate", "title": "TermMate", "version": "1.0"},
             "capabilities": {"experimentalApi": True}
         })
         await self._rpc_notify("initialized")
@@ -266,10 +268,15 @@ class CodexAgent(BaseAgent):
             if gd not in writable_roots:
                 writable_roots.append(gd)
 
+        if writable_roots:
+            # v2 native parameter
+            thread_params["runtimeWorkspaceRoots"] = writable_roots
+
         # Initialize config if we have add_dirs/git_dirs or other config-based overrides
         config_overrides = {}
 
         if writable_roots:
+            # Backward compatibility: Provide legacy v1 config override alongside v2
             config_overrides["sandbox_workspace_write.writable_roots"] = writable_roots
 
         if self.options.disallowed_tools and "AskUserQuestion" in self.options.disallowed_tools:
@@ -324,6 +331,7 @@ class CodexAgent(BaseAgent):
 
             self._subagent_thread_ids.clear()
             self._subagent_turn_to_root.clear()
+            self._completed_turn_ids.clear()
 
             # Sync turn count from resumed thread so rewind math stays correct
             turn_ids: List[str] = []
@@ -358,7 +366,8 @@ class CodexAgent(BaseAgent):
                 except Exception as e:
                     LOG.debug(f"Failed to fetch turns via thread/turns/list: {e}")
 
-            # Fallback to hydrated turns in thread object if thread/turns/list was unavailable
+            # Backward compatibility fallback: Fall back to hydrated thread.turns if
+            # thread/turns/list is unavailable or older app-server returned inline turns.
             if not turn_ids:
                 for t in thread.get("turns", []):
                     if not isinstance(t, dict):
@@ -374,6 +383,7 @@ class CodexAgent(BaseAgent):
 
             if turn_ids:
                 self._turn_ids = turn_ids
+                self._completed_turn_ids.update(turn_ids)
                 self._turn_count = len(self._turn_ids)
                 LOG.info(
                     f"Codex connect {method}: {self.thread_id} (resumed {self._turn_count} turns)"
@@ -411,11 +421,11 @@ class CodexAgent(BaseAgent):
         """Extract turnId from a message params or result dict."""
         if not data:
             return None
-        # Check direct turnId (older format or item notifications)
+        # Backward compatibility: Support legacy top-level turnId and v2 nested turn.id structures
         turn_id = data.get("turnId")
         if turn_id:
             return turn_id
-        # Check nested turn object (Codex app-server format)
+        # Check nested turn object (Codex app-server v2 format)
         turn = data.get("turn")
         if isinstance(turn, dict):
             return turn.get("id")
@@ -453,8 +463,6 @@ class CodexAgent(BaseAgent):
             "threadId": self.thread_id,
             "input": [{"type": "text", "text": content}],
         }
-        if self._active_turn_id:
-            params["expectedTurnId"] = self._active_turn_id
         if self.options.model:
             params["model"] = self.options.model
         if getattr(self.options, "think_level", None) and self.options.think_level not in ("auto", "default"):
@@ -483,6 +491,8 @@ class CodexAgent(BaseAgent):
             turn_id = self._extract_turn_id(result)
             if turn_id:
                 self._active_turn_id = turn_id
+                if turn_id not in self._completed_turn_ids:
+                    self._is_turn_active = True
                 LOG.debug(f"Captured turnId from turn/start result: {turn_id}")
 
     async def steer(self, text: str, proceed_plan: bool = False) -> None:
@@ -491,18 +501,37 @@ class CodexAgent(BaseAgent):
             raise RuntimeError("Client is not connected or no active thread.")
 
         LOG.info(f"Steering agent: {text} (proceed_plan={proceed_plan})")
-        await self.send_message(text, proceed_plan=proceed_plan)
+        # v2: When a turn is active, steer mid-turn using turn/steer with expectedTurnId
+        if self._is_turn_active and self._active_turn_id and not proceed_plan:
+            res = await self._rpc_request("turn/steer", {
+                "threadId": self.thread_id,
+                "expectedTurnId": self._active_turn_id,
+                "input": [{"type": "text", "text": text}],
+            })
+            # If turn/steer failed because the turn completed just before steer arrived,
+            # fall back to starting a new turn so the steering message is not lost.
+            if res is None and not self._is_turn_active:
+                await self.send_message(text, proceed_plan=proceed_plan)
+        else:
+            # Backward compatibility fallback: Fall back to turn/start when no turn is active
+            await self.send_message(text, proceed_plan=proceed_plan)
 
     async def interrupt(self) -> None:
         """Interrupt the current conversation or turn."""
         if self._is_connected and self.thread_id and self._active_turn_id:
-            LOG.info(f"CodexAgent: Interrupting turn {self._active_turn_id} on thread {self.thread_id}")
+            LOG.info(
+                f"CodexAgent: Interrupting turn {self._active_turn_id} on thread {self.thread_id}"
+            )
+            self._is_turn_active = False
             await self._rpc_request("turn/interrupt", {
                 "threadId": self.thread_id,
                 "turnId": self._active_turn_id
             })
         else:
-            LOG.warning(f"CodexAgent: Cannot interrupt - is_connected: {self._is_connected}, thread_id: {self.thread_id}, active_turn_id: {self._active_turn_id}")
+            LOG.warning(
+                f"CodexAgent: Cannot interrupt - is_connected: {self._is_connected}, "
+                f"thread_id: {self.thread_id}, active_turn_id: {self._active_turn_id}"
+            )
 
     async def rewind(self, turn_identifier: str) -> Optional[str]:
         """Roll back the thread to just before the turn at turn_identifier using thread/revert.
@@ -567,13 +596,33 @@ class CodexAgent(BaseAgent):
             self._turn_ids = self._turn_ids[:idx]
             self._turn_count = len(self._turn_ids)
 
+        self._completed_turn_ids = {t for t in self._completed_turn_ids if t in self._turn_ids}
         self._active_turn_id = None
+        self._is_turn_active = False
         return self.thread_id
 
-    async def _respond_to_server_request(self, request_id: Any, result: Dict[str, Any]) -> None:
+    async def _respond_to_server_request(
+        self, request_id: Any, result: Dict[str, Any]
+    ) -> None:
         """Send a JSON-RPC response to a server-initiated request."""
         LOG.debug(f"response for codex request [{request_id}]: {result}")
-        await self._write_json({"id": request_id, "result": result})
+        try:
+            await self._write_json({"id": request_id, "result": result})
+        except Exception as e:
+            LOG.debug(f"Failed to send JSON-RPC response [{request_id}]: {e}")
+
+    async def _respond_to_server_error(
+        self, request_id: Any, code: int, message: str
+    ) -> None:
+        """Send a JSON-RPC error response to a server-initiated request."""
+        LOG.debug(f"error response for codex request [{request_id}]: {code} {message}")
+        try:
+            await self._write_json({
+                "id": request_id,
+                "error": {"code": code, "message": message},
+            })
+        except Exception as e:
+            LOG.debug(f"Failed to send JSON-RPC error response [{request_id}]: {e}")
 
     async def _write_json(self, data: Dict[str, Any]) -> None:
         if not self._process or not self._process.stdin:
@@ -747,6 +796,7 @@ class CodexAgent(BaseAgent):
                 return
 
             self._active_turn_id = turn_id
+            self._is_turn_active = True
             if turn_id and turn_id not in self._turn_ids:
                 self._turn_ids.append(turn_id)
             self._turn_count = len(self._turn_ids) if self._turn_ids else self._turn_count + 1
@@ -770,14 +820,14 @@ class CodexAgent(BaseAgent):
                 )
                 return
 
+            self._is_turn_active = False
             # Update active turn ID if provided in completion
             if turn_id:
                 self._active_turn_id = turn_id
+                self._completed_turn_ids.add(turn_id)
                 if turn_id not in self._turn_ids:
                     self._turn_ids.append(turn_id)
                 self._turn_count = len(self._turn_ids)
-            # We keep self._active_turn_id here so it can be used as expectedTurnId
-            # for the next turn or steering.
             if self.plan_mode and self._plan_text:
                 await self._message_queue.put(
                     Message(MessageType.PLAN_DELTA.value, content=self._plan_text)
@@ -798,6 +848,14 @@ class CodexAgent(BaseAgent):
                             msg_id=params.get("itemId"))
                 )
 
+        elif method == "item/reasoning/textDelta":
+            delta = params.get("delta", "")
+            if delta:
+                await self._message_queue.put(
+                    Message(MessageType.THINKING.value, content=delta,
+                            msg_id=params.get("itemId"))
+                )
+
         elif method == "item/completed":
             await self._handle_item_completed(params)
 
@@ -814,6 +872,22 @@ class CodexAgent(BaseAgent):
         elif method == "item/tool/requestUserInput":
             asyncio.create_task(self._handle_request_user_input(data["id"], params))
 
+        elif "id" in data and method:
+            # Compatibility fallback: Respond to unhandled server requests to prevent hanging
+            req_id = data["id"]
+            LOG.warning(f"Unhandled server request [{req_id}]: {method}")
+            if "approval" in method.lower():
+                asyncio.create_task(
+                    self._respond_to_server_request(req_id, {"decision": "decline"})
+                )
+            else:
+                asyncio.create_task(
+                    self._respond_to_server_error(
+                        req_id, -32601, f"Method not found: {method}"
+                    )
+                )
+
+        # Backward compatibility: Support legacy error event notifications
         elif method == "codex/event/stream_error":
             msg = params.get("msg", {})
             err_text = msg.get("message", "") if isinstance(msg, dict) else str(params)
@@ -838,6 +912,10 @@ class CodexAgent(BaseAgent):
         if item_type == "collabAgentToolCall":
             for r_id in item.get("receiverThreadIds") or []:
                 self._subagent_thread_ids.add(r_id)
+        elif item_type == "subAgentActivity":
+            agent_t_id = item.get("agentThreadId")
+            if agent_t_id:
+                self._subagent_thread_ids.add(agent_t_id)
 
         if item_type == "commandExecution":
             # Extract cleaner command from commandActions if available
@@ -1005,7 +1083,15 @@ class CodexAgent(BaseAgent):
 
         input_data = {"command": command}
         approved = await self._emit_approval_request(approval_id, "command_execution", input_data)
-        decision = "accept" if approved else "decline"
+        # Backward compatibility: Support v2 decision strings and legacy boolean approvals
+        if isinstance(approved, str) and approved in (
+            "accept", "acceptForSession", "decline", "cancel"
+        ):
+            decision = approved
+        elif approved:
+            decision = "accept"
+        else:
+            decision = "decline"
         await self._respond_to_server_request(request_id, {"decision": decision})
 
     async def _handle_file_approval(self, request_id: Any, params: Dict[str, Any]) -> None:
@@ -1027,7 +1113,15 @@ class CodexAgent(BaseAgent):
             input_data["processed_diff"] = processed_diff
 
         approved = await self._emit_approval_request(approval_id, "fileChange", input_data)
-        decision = "accept" if approved else "decline"
+        # Backward compatibility: Support v2 decision strings and legacy boolean approvals
+        if isinstance(approved, str) and approved in (
+            "accept", "acceptForSession", "decline", "cancel"
+        ):
+            decision = approved
+        elif approved:
+            decision = "accept"
+        else:
+            decision = "decline"
         await self._respond_to_server_request(request_id, {"decision": decision})
 
     async def _handle_request_user_input(self, request_id: Any, params: Dict[str, Any]) -> None:
@@ -1079,7 +1173,7 @@ class CodexAgent(BaseAgent):
         """
         changes = params.get("changes", [])
         if not changes and "fileChanges" in params:
-            # Convert dict to list for uniform processing
+            # Backward compatibility: Convert legacy dict fileChanges to list
             file_changes = params.get("fileChanges", {})
             if isinstance(file_changes, dict):
                 for path, change in file_changes.items():
@@ -1096,11 +1190,16 @@ class CodexAgent(BaseAgent):
 
         for change in changes:
             path = change.get("path", "")
-            # Codex uses {"kind": {"type": "update"}} while other formats use top-level "type"
+            # Backward compatibility: Support various change kind and diff field names
             kind = change.get("kind", {})
-            change_type = (kind.get("type") if isinstance(kind, dict) else None) or change.get("type", "update")
-            # Codex uses "diff" field name; also support "patch" and "unified_diff"
-            patch = change.get("diff") or change.get("patch") or change.get("unified_diff")
+            change_type = (
+                kind.get("type") if isinstance(kind, dict) else None
+            ) or change.get("type", "update")
+            patch = (
+                change.get("diff")
+                or change.get("patch")
+                or change.get("unified_diff")
+            )
             content = change.get("content", "")
 
             if not path:
@@ -1335,7 +1434,7 @@ async def _list_codex_sessions_rpc(cli_path: str, cwd: Optional[str]) -> list:
         kwargs["creationflags"] = _subprocess.CREATE_NO_WINDOW
 
     proc = await _asyncio.create_subprocess_exec(
-        cli_path, "app-server",
+        cli_path, "app-server", "--listen", "stdio://",
         stdin=_asyncio.subprocess.PIPE,
         stdout=_asyncio.subprocess.PIPE,
         stderr=_asyncio.subprocess.DEVNULL,
@@ -1387,7 +1486,7 @@ async def _list_codex_sessions_rpc(cli_path: str, cwd: Optional[str]) -> list:
 
     try:
         await rpc("initialize", {
-            "clientInfo": {"name": "codyform", "title": "Codyform", "version": "1.0"},
+            "clientInfo": {"name": "TermMate", "title": "TermMate", "version": "1.0"},
             "capabilities": {"experimentalApi": True},
         })
         await write_json({"method": "initialized"})
@@ -1469,7 +1568,7 @@ async def _get_codex_session_info_rpc(
         kwargs["creationflags"] = _subprocess.CREATE_NO_WINDOW
 
     proc = await _asyncio.create_subprocess_exec(
-        cli_path, "app-server",
+        cli_path, "app-server", "--listen", "stdio://",
         stdin=_asyncio.subprocess.PIPE,
         stdout=_asyncio.subprocess.PIPE,
         stderr=_asyncio.subprocess.DEVNULL,
@@ -1521,19 +1620,19 @@ async def _get_codex_session_info_rpc(
 
     try:
         await rpc("initialize", {
-            "clientInfo": {"name": "codyform", "title": "Codyform", "version": "1.0"},
+            "clientInfo": {"name": "TermMate", "title": "TermMate", "version": "1.0"},
             "capabilities": {"experimentalApi": True},
         })
         await write_json({"method": "initialized"})
 
-        # thread/read with includeTurns gives us metadata + conversation history in one call.
-        read_result = await rpc("thread/read", {"threadId": session_id, "includeTurns": True})
+        # In v2, thread/read returns metadata; turns are retrieved via thread/turns/list.
+        read_result = await rpc("thread/read", {"threadId": session_id, "includeTurns": False})
 
         thread = (read_result or {}).get("thread", {}) if isinstance(read_result, dict) else {}
         summary = thread.get("name") or thread.get("preview") or None
         updated_at = float(thread.get("updatedAt") or 0)
 
-        # If metadata is missing (thread not loaded in server state), fall back to thread/list.
+        # Compatibility fallback: Query thread/list if metadata is not in thread/read
         if not summary:
             list_params: Dict[str, Any] = {
                 "sortKey": "updated_at",
@@ -1551,8 +1650,24 @@ async def _get_codex_session_info_rpc(
                         updated_at = float(t.get("updatedAt") or 0)
                         break
 
+        turns_params: Dict[str, Any] = {
+            "threadId": session_id,
+            "itemsView": "summary",
+            "sortDirection": "desc",
+        }
+        if history_limit > 0:
+            turns_params["limit"] = history_limit
+        turns_result = await rpc("thread/turns/list", turns_params)
+
+        raw_turns = []
+        if turns_result and isinstance(turns_result, dict) and "data" in turns_result:
+            raw_turns = list(reversed(turns_result.get("data", [])))
+        elif thread.get("turns"):
+            # Backward compatibility fallback: Fall back to hydrated thread.turns
+            raw_turns = thread.get("turns", [])
+
         turns = []
-        for turn in thread.get("turns", []):
+        for turn in raw_turns:
             prompt_parts = []
             response_parts = []
             for item in turn.get("items", []):
