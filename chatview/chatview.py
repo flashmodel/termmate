@@ -30,7 +30,10 @@ from .chatpanel import (
 
 from .md_render import MarkdownFormatter
 from .chatrender import extract_diff_fold_ranges
-from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
+from .artifact import FileChangesArtifact, ARTIFACT_REGION_KEY, DIFF_VIEW_PATH_KEY, diff_view_click
+from . import filelinks
+from . import inputpane
+from . import toolfold
 from .install import run_install, find_existing_cli, get_agent_list_items
 from .autocomplete import AutoComplete
 
@@ -141,6 +144,14 @@ def update_agent_model_status(window, view=None):
             display_model = f"{display_model} :{think_level}"
 
         status = f"▣ {agent_provider}({display_model})"
+        if settings.get("status_indicator_modes", True):
+            # Plan and approve mode, and a running marker: the model panel in the chat
+            # shows these too, but it scrolls away with the input line.
+            plan_mode = window.settings().get(CHAT_PLAN_MODE, PlanMode.FAST.value)
+            approve_mode = window.settings().get(CHAT_APPROVE_MODE, ApproveMode.ALLOW_EDIT.value)
+            status += f" · plan:{plan_mode} · approve:{approve_mode}"
+            if session and session.loading_animation.is_loading:
+                status = "⟳ " + status
 
     for target in [view] if view else window.views():
         # Clear the status key used by earlier versions of this feature.
@@ -283,12 +294,85 @@ def _reconnect_chat_view(view):
     session = ChatSession(window, view, cwd, add_dirs=add_dirs, session_id=session_id)
     chatview_clients[window_id] = session
     update_agent_model_status(window)
+    # Regions don't survive a restart: underline the "▣ N files changed" headers again
+    session.artifact.restore_header_regions()
+    toolfold.restore(view, settings.get("fold_tool_calls", True))
+    _open_input_pane_if_enabled(window, view)
     # Restore the input phantoms at the existing CHAT_INPUT_START position
     session.notice_phantom.show("conversation restored after restart")
     session.model_phantom.update()
     # Scroll after phantom layout so the restored view reaches the end.
     sublime.set_timeout(lambda: view.show(view.size()), 0)
     LOG.info(f"Reconnected ChatView agent for window {window_id}, cwd={cwd}, add_dirs={add_dirs}, session_id={session_id}")
+
+
+def _open_input_pane_if_enabled(window, chat_view):
+    """Open the input pane under the chat when the `input_pane` setting is on.
+
+    Deferred a tick so the chat view is placed in its group first. A pane restored
+    with the session is reused, not duplicated, whatever the setting."""
+    settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+    enabled = settings.get("input_pane", False)
+
+    def open_pane():
+        if not (chat_view.is_valid() and window.is_valid()):
+            return
+        pane = inputpane.find_input_pane(window)
+        if pane is not None:
+            # Restored with the session: phantoms (the hint, the model panel) are not
+            pane.run_command("term_chat_input_pane_header")
+            inputpane.update_hint(pane, _send_shortcut())
+            _refresh_chat_input(window)
+        elif enabled:
+            _open_input_pane(window, chat_view)
+
+    sublime.set_timeout(open_pane, 0)
+
+
+def _refresh_chat_input(window):
+    """Redraw the chat's input marker and Agent / Model / PlanMode panel after the input pane
+    opened or closed: they live in the pane while it is open, at the chat's input line otherwise."""
+    if window is None or window.id() not in chatview_clients:
+        return
+    session = chatview_clients[window.id()]
+    _move_chat_input_to_pane(window, session.chat_view)
+    if inputpane.find_input_pane(window) is not None:
+        inputpane.keep_height(window)
+    session.model_phantom.update()
+    session.input_marker.update()
+
+
+def _move_chat_input_to_pane(window, chat_view):
+    """While the input pane is open it is the only input box: text left in the chat's input
+    line (typed before the pane opened, or restored after a restart) moves to the pane's end."""
+    pane = inputpane.find_input_pane(window)
+    if pane is None or not chat_view.is_valid():
+        return
+    text = chat_view.substr(sublime.Region(input_editable_start(chat_view), chat_view.size()))
+    if not text:
+        return
+    chat_view.run_command("term_chat_replace_input", {"text": ""})
+    pane.run_command("append", {"characters": text})
+    pane.sel().clear()
+    pane.sel().add(sublime.Region(pane.size()))
+    inputpane.update_hint(pane, _send_shortcut())
+
+
+def _open_input_pane(window, chat_view):
+    pane = inputpane.open_input_pane(window, chat_view, _send_shortcut())
+    _refresh_chat_input(window)
+    return pane
+
+
+def _send_shortcut():
+    return "Cmd+Enter" if sublime.platform() == "osx" else "Ctrl+Enter"
+
+
+def _find_chat_view(window):
+    for view in window.views():
+        if view.settings().get(CHAT_VIEW_FLAG, False):
+            return view
+    return None
 
 
 def get_all_folders(view):
@@ -707,7 +791,10 @@ class InputPromptMarker:
         self.phantom_set = sublime.PhantomSet(view, "chatview_input_marker")
 
     def update(self):
-        """Pin the marker at the input line start."""
+        """Pin the marker at the input line start (hidden while the input pane takes input)."""
+        if inputpane.find_input_pane(self.view.window()) is not None:
+            self.clear()
+            return
         start = input_editable_start(self.view)
         if start > self.view.size():
             # Input line not created yet (fresh view before term_chat_input_prompt)
@@ -731,6 +818,8 @@ class ModelPanel:
         self.view = view
         self.window = window
         self.phantom_set = sublime.PhantomSet(view, "chatview_model")
+        # The same panel drawn at the top of the input pane, while one is open
+        self.pane_phantom_set = None
         self.status_hint = StatusHint()
 
     def _on_navigate(self, href):
@@ -739,8 +828,12 @@ class ModelPanel:
             self.window.run_command("term_chat_set_agent")
         elif href == "set_model":
             self.window.run_command("term_chat_set_model")
+        elif href == "resume_session":
+            self.window.run_command("term_chat_resume_session")
         elif href == "toggle_plan":
             self.window.run_command("term_chat_toggle_plan_mode")
+        elif href == "toggle_input_pane":
+            self.window.run_command("term_chat_toggle_input_pane")
         elif href == "stop_conversation":
             self.window.run_command("term_chat_interrupt", {"confirm": True})
 
@@ -766,6 +859,7 @@ class ModelPanel:
 
         input_start = get_input_start(self.view)
         region = sublime.Region(input_start, input_start)
+        pane = inputpane.find_input_pane(self.window)
 
         agent_provider = self.window.settings().get(CHAT_AGENT, "claude")
         model = self.window.settings().get(f"chatview_model_{agent_provider}") or "default"
@@ -782,6 +876,11 @@ class ModelPanel:
         )
 
         stop_hint_html = self.status_hint.render()
+        # Opens the Resume Session list (same as the command palette entry)
+        history_html = (
+            '<a href="resume_session" class="model-tag">'
+            '<span class="label">Chats</span></a>'
+        )
 
         agent_tag = (
             f'<a href="set_agent" class="model-tag">'
@@ -794,7 +893,15 @@ class ModelPanel:
             f'<span class="value">{html.escape(display_model)}</span></a>'
         )
 
-        buttons_html = "&nbsp;".join([agent_tag, model_tag, plan_tag_html])
+        # Icon after PlanMode (before the stop button): opens / closes the input pane.
+        # No box, like the stop button: accent colored while the pane is closed, dim while open
+        pane_open = pane is not None
+        input_tag = (
+            f'<a href="toggle_input_pane" class="{"pane-tag" if pane_open else "pane-tag-on"}">'
+            f'⬓</a>'  # a square with its lower part split off, like the pane
+        )
+
+        buttons_html = "&nbsp;".join([agent_tag, model_tag, plan_tag_html, history_html, input_tag])
 
         panel_html = f"""
         <body id="chatview-model" style="margin: 0; padding: 0;">
@@ -813,6 +920,21 @@ class ModelPanel:
                     padding: 2px 2px;
                     font-size: 0.9em;
                     text-decoration: none;
+                }}
+                .pane-tag, .pane-tag-on {{
+                    display: inline-block;
+                    padding: 2px 2px;
+                    font-size: 1.1em;
+                    line-height: 1.2;
+                    text-decoration: none;
+                    position: relative;
+                    top: -1px;
+                }}
+                .pane-tag {{
+                    color: color(var(--foreground) alpha(0.45));
+                }}
+                .pane-tag-on {{
+                    color: var(--accent);
                 }}
                 .stop-hint {{
                     color: var(--accent);
@@ -840,17 +962,46 @@ class ModelPanel:
         </body>
         """
 
-        phantom = sublime.Phantom(
-            region,
-            panel_html,
-            sublime.LAYOUT_BLOCK,
-            self._on_navigate
-        )
-        self.phantom_set.update([phantom])
+        if pane is not None:
+            # Input goes through the pane: show the panel there, on its reserved first line
+            # (inline: a block phantom would sit below that line), not in the chat
+            self.phantom_set.update([])
+            if self.pane_phantom_set is None or self.pane_phantom_set.view.id() != pane.id():
+                self.pane_phantom_set = sublime.PhantomSet(pane, "chatview_model")
+            self.pane_phantom_set.update([sublime.Phantom(
+                sublime.Region(0, 0), panel_html, sublime.LAYOUT_INLINE, self._on_navigate)])
+        else:
+            self._clear_pane()
+            phantom = sublime.Phantom(
+                region,
+                panel_html,
+                sublime.LAYOUT_BLOCK,
+                self._on_navigate
+            )
+            self.phantom_set.update([phantom])
+        # Keep the status bar copy (always visible, unlike this phantom) in step
+        update_agent_model_status(self.window)
+
+    def keep_pane_panel_on_top(self):
+        """Typing at the start of the input pane can push the panel below the first line; put it back."""
+        phantom_set = self.pane_phantom_set
+        if phantom_set is None or not phantom_set.phantoms or not phantom_set.view.is_valid():
+            return
+        regions = phantom_set.view.query_phantom(phantom_set.phantoms[0].id)
+        if regions and regions[0].begin() != 0:
+            phantom_set.update([])  # PhantomSet compares the stored region, so force a redraw
+            self.update()
+
+    def _clear_pane(self):
+        if self.pane_phantom_set is not None:
+            if self.pane_phantom_set.view.is_valid():
+                self.pane_phantom_set.update([])
+            self.pane_phantom_set = None
 
     def clear(self):
         """Clear the model phantom."""
         self.phantom_set.update([])
+        self._clear_pane()
 
 
 class PermissionPanel:
@@ -1427,11 +1578,12 @@ class ChatSession:
             text = f"{AGENT_SEPARATOR}\n\n{clean}" if clean else f"{AGENT_SEPARATOR}\n\n"
         formatted_text = self.markdown_formatter.format(text, flush=flush)
         html_tables = self.markdown_formatter.take_html_tables()
+        text_starts = self.markdown_formatter.take_text_starts()
         if formatted_text:
             sublime.set_timeout(
-                lambda ft=formatted_text, ht=html_tables: self.chat_view.run_command(
+                lambda ft=formatted_text, ht=html_tables, ts=text_starts: self.chat_view.run_command(
                     "term_chat_output_append",
-                    {"text": ft, "html_tables": ht},
+                    {"text": ft, "html_tables": ht, "text_starts": ts},
                 ),
                 0,
             )
@@ -1721,6 +1873,8 @@ class ChatSession:
 
     def show_file_changes_artifact(self):
         """Append the collapsed file changes artifact for the finished turn."""
+        # The turn is over: its last run of tool calls is finished too
+        self.chat_view.run_command("term_chat_fold_tool_calls")
         self.artifact.show()
         if self.has_sent_message and self.token_usage:
             self.token_summary_phantom.show(self.token_usage)
@@ -2200,6 +2354,7 @@ class TermChatCliCommand(sublime_plugin.WindowCommand):
         if initial_msg and send_immediate:
             chat_view.run_command("term_chat_send_input")
         self.window.focus_view(chat_view)
+        _open_input_pane_if_enabled(self.window, chat_view)
 
 
 class TermChatSplitChatCommand(sublime_plugin.WindowCommand):
@@ -2242,6 +2397,25 @@ class TermChatSplitChatCommand(sublime_plugin.WindowCommand):
             sublime.status_message(f"No active {PACKAGE_NAME} found to split")
 
     def _split_and_move(self, view):
+        window = self.window
+        pane = inputpane.find_input_pane(window)
+        if pane is not None:
+            # The split rebuilds the layout; take the input pane (and its row) out first,
+            # then put it back under the chat in its new place
+            text = inputpane.get_text(pane)
+            group, _ = window.get_view_index(pane)
+            pane.settings().set(inputpane.SKIP_COLLAPSE, True)  # collapsed here, not by on_pre_close
+            pane.close()
+            inputpane.collapse_group(window, group)
+            self._split_layout(view)
+            new_pane = _open_input_pane(window, view)
+            if new_pane is not None and text:
+                new_pane.run_command("append", {"characters": text})
+                inputpane.update_hint(new_pane, _send_shortcut())
+            return
+        self._split_layout(view)
+
+    def _split_layout(self, view):
         window = self.window
         layout = window.get_layout()
         cols = layout.get("cols", [0.0, 1.0])
@@ -2286,6 +2460,11 @@ class TermChatSendInputCommand(sublime_plugin.TextCommand):
         user_input = self.view.substr(sublime.Region(editable_start, self.view.size())).strip()
 
         if not user_input:
+            # Ctrl+Enter in the chat while the input pane holds the prompt: send that
+            # (the pane's send fills this input line first, so this doesn't recurse)
+            pane = inputpane.find_input_pane(window)
+            if pane is not None:
+                pane.run_command("term_chat_input_pane_send")
             return
 
         if sublime.platform() == "osx":
@@ -2366,6 +2545,133 @@ class TermChatHistoryDownCommand(sublime_plugin.TextCommand):
         self.view.show(self.view.size())
 
 
+class TermChatToggleInputPaneCommand(sublime_plugin.WindowCommand):
+    """Open or close the input pane under the Chat View (starting a chat if there is none)."""
+
+    def run(self):
+        # A half-typed prompt moves along: pane -> chat input line on close, and back on open
+        pane = inputpane.find_input_pane(self.window)
+        if pane is not None:
+            text = inputpane.get_text(pane)
+            inputpane.close_input_pane(self.window)
+            chat_view = _find_chat_view(self.window)
+            if chat_view:
+                if text:
+                    chat_view.run_command("term_chat_replace_input", {"text": text, "append": True})
+                self.window.focus_view(chat_view)
+            return
+        chat_view = _find_chat_view(self.window)
+        if chat_view is None:
+            self.window.run_command("term_chat_cli")
+            chat_view = _find_chat_view(self.window)
+            if chat_view is None:
+                return
+        _open_input_pane(self.window, chat_view)  # moves the chat's input line text into the pane
+
+
+class TermChatInputPaneSendCommand(sublime_plugin.TextCommand):
+    """Send the input pane's text through the Chat View's input line (bound to Ctrl+Enter in the pane)."""
+
+    def run(self, edit):
+        window = self.view.window()
+        if not window:
+            return
+        text = inputpane.get_text(self.view).strip()
+        if not text:
+            return
+        chat_view = _find_chat_view(window)
+        if chat_view is None:
+            window.run_command("term_chat_cli", {"initial_msg": text, "send_immediate": True})
+        else:
+            if window.id() not in chatview_clients:
+                _reconnect_chat_view(chat_view)
+            chat_view.run_command("term_chat_replace_input", {"text": text})
+            chat_view.run_command("term_chat_send_input")
+        inputpane.replace_text(self.view, edit, "")
+        inputpane.update_hint(self.view, _send_shortcut())
+        window.focus_view(self.view)
+
+
+class TermChatInputPaneHeaderCommand(sublime_plugin.TextCommand):
+    """Give the input pane its reserved first line (for the Agent / Model / PlanMode bar) if it lacks one."""
+
+    def run(self, edit):
+        if not inputpane.has_header(self.view):
+            self.view.insert(edit, 0, "\n")
+        inputpane.clamp_selection(self.view)
+
+
+class TermChatReplaceInputCommand(sublime_plugin.TextCommand):
+    """Replace the Chat View's input line with `text`, or add it at the end with append=True.
+
+    Used by the input pane and Quick Message: unlike `insert`, it isn't forwarded to the
+    input pane by ChatViewListener.on_text_command."""
+
+    def run(self, edit, text="", append=False):
+        editable_start = input_editable_start(self.view)
+        if append:
+            self.view.insert(edit, self.view.size(), text)
+        else:
+            self.view.replace(edit, sublime.Region(editable_start, self.view.size()), text)
+        self.view.sel().clear()
+        self.view.sel().add(sublime.Region(self.view.size()))
+
+
+class TermChatInputPaneHistoryCommand(sublime_plugin.TextCommand):
+    """Step through the session's prompt history in the input pane (Up / Down on its first / last line)."""
+
+    def run(self, edit, forward=False):
+        window = self.view.window()
+        if not window or window.id() not in chatview_clients:
+            return
+        session = chatview_clients[window.id()]
+        if not forward:
+            if session.history_index == len(session.history):
+                session.history_stash = inputpane.get_text(self.view)
+            if session.history_index > 0:
+                session.history_index -= 1
+                inputpane.replace_text(self.view, edit, session.history[session.history_index])
+        elif session.history_index < len(session.history):
+            session.history_index += 1
+            if session.history_index == len(session.history):
+                text = session.history_stash
+            else:
+                text = session.history[session.history_index]
+            inputpane.replace_text(self.view, edit, text)
+        inputpane.update_hint(self.view, _send_shortcut())
+
+
+def _file_link_base_dirs(view):
+    """Directories relative file links resolve against: the agent cwd, then the window's folders."""
+    dirs = []
+    window = view.window()
+    if window:
+        session = chatview_clients.get(window.id())
+        if session:
+            cwd = session.agent_thread.cwd if session.agent_thread else session.cwd
+            if cwd:
+                dirs.append(cwd)
+        dirs.extend(d for d in window.folders() if d not in dirs)
+    return dirs
+
+
+def _file_links_click():
+    """How a file link opens: "single" (one click) or "double" (double-click, the default)."""
+    settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+    return "single" if settings.get("file_links_click") == "single" else "double"
+
+
+def _schedule_file_link_scan(view):
+    """Underline file paths in a Chat View (after a short idle delay) if `file_links` is enabled."""
+    if not view.settings().get(CHAT_VIEW_FLAG, False):
+        return
+    settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+    if not settings.get("file_links", True):
+        view.erase_regions(filelinks.FILE_LINK_REGION_KEY)
+        filelinks.forget(view)
+        return
+    filelinks.schedule_scan(view, _file_link_base_dirs, skip_key=ARTIFACT_REGION_KEY, end_fn=get_input_start)
+
 
 class ChatViewListener(sublime_plugin.EventListener):
     def on_load(self, view):
@@ -2395,23 +2701,51 @@ class ChatViewListener(sublime_plugin.EventListener):
         if group == -1:
             return
 
-        # Check if a ChatView occupies this group, then redirect to any other group
-        for v in window.views_in_group(group):
-            if v.settings().get(CHAT_VIEW_FLAG, False):
-                for g in range(window.num_groups()):
-                    if g != group:
-                        window.set_view_index(view, g, 0)
-                        window.focus_view(view)
-                        break
-                break
+        # If the Chat View or its input pane occupies this group, redirect to another group
+        def is_chat_group(g):
+            return any(v.settings().get(CHAT_VIEW_FLAG, False) or inputpane.is_input_pane(v)
+                       for v in window.views_in_group(g))
+
+        if is_chat_group(group):
+            targets = [g for g in range(window.num_groups()) if g != group and not is_chat_group(g)]
+            if not targets:
+                # Only the chat and its input pane: at least keep files out of the small pane row
+                chat_view = _find_chat_view(window)
+                pane = inputpane.find_input_pane(window)
+                if chat_view and pane and window.get_view_index(pane)[0] == group:
+                    targets = [window.get_view_index(chat_view)[0]]
+            if targets:
+                window.set_view_index(view, targets[0], 0)
+                window.focus_view(view)
 
     def on_activated(self, view):
         update_agent_model_status(view.window(), view)
+        _schedule_file_link_scan(view)
+
+    def on_pre_close(self, view):
+        """Closing the input pane gives its row back to the chat; closing the chat closes the pane."""
+        window = view.window()
+        if window is None:
+            return
+        if inputpane.is_input_pane(view):
+            skip_collapse = view.settings().get(inputpane.SKIP_COLLAPSE, False)
+            group, _ = window.get_view_index(view)
+
+            def after_close():
+                if not skip_collapse:
+                    inputpane.collapse_group(window, group)
+                # Input moves back to the chat's own input line
+                _refresh_chat_input(window)
+
+            sublime.set_timeout(after_close, 0)
+        elif view.settings().get(CHAT_VIEW_FLAG, False):
+            sublime.set_timeout(lambda: inputpane.close_input_pane(window), 0)
 
     def on_close(self, view):
         """
         Cleanup session when the chat view is closed.
         """
+        filelinks.forget(view)
         if view.name() == CHAT_VIEW_NAME:
             window = view.window()
             if window is None:
@@ -2433,7 +2767,11 @@ class ChatViewListener(sublime_plugin.EventListener):
         """
         Restrict cursor movement to the editable area.
         Allows selecting history for copy, but prevents placing the caret in history.
+        In the input pane, keeps the caret out of the bar's header line.
         """
+        if inputpane.is_input_pane(view):
+            inputpane.clamp_selection(view)
+            return
         if not view.settings().get(CHAT_VIEW_FLAG, False) and view.name() != CHAT_VIEW_NAME:
             return
         if not view.settings().has(CHAT_INPUT_START):
@@ -2481,6 +2819,25 @@ class ChatViewListener(sublime_plugin.EventListener):
                 if diff_view_click(view, abs_path, click_point):
                     return ("noop", {})
 
+        # Input pane: Up on the first line / Down on the last line of the text steps through
+        # prompt history; backspace at the start of the text must not eat the bar's header line
+        if inputpane.is_input_pane(view):
+            if inputpane.blocks_header_delete(view, command_name):
+                return ("noop", {})
+            if (command_name == "move" and args and args.get("by") == "lines"
+                    and not view.is_auto_complete_visible() and len(view.sel()) == 1):
+                sel = view.sel()[0]
+                if sel.empty():
+                    forward = args.get("forward", True)
+                    row, _ = view.rowcol(sel.begin())
+                    if forward:
+                        edge_row = view.rowcol(view.size())[0]
+                    else:
+                        edge_row = view.rowcol(inputpane.text_region(view).begin())[0]
+                    if row == edge_row:
+                        return ("term_chat_input_pane_history", {"forward": forward})
+            return None
+
         # Only monitor ChatView chat views
         if not view.settings().get(CHAT_VIEW_FLAG, False) and view.name() != CHAT_VIEW_NAME:
             return None
@@ -2505,6 +2862,16 @@ class ChatViewListener(sublime_plugin.EventListener):
                     if session.is_artifact_execute_at(click_point):
                         if session.open_artifact_diff_at(click_point):
                             return ("noop", {})
+                    elif "by" not in args:
+                        # Single click on a "▣ N files changed" header → fold / unfold its file list;
+                        # on a "⏺ N tool calls" header or a call's ⏺ → fold / unfold the calls;
+                        # on a file link → open it, when `file_links_click` is "single"
+                        if toolfold.toggle_at(view, click_point):
+                            return ("noop", {})
+                        if session.artifact.toggle_file_list_at(click_point):
+                            return ("noop", {})
+                        if _file_links_click() == "single" and filelinks.open_link_at(view, click_point):
+                            return ("noop", {})
                     elif is_word_select:
                         line_text = view.substr(view.line(click_point))
                         if session.message_processor.open_tool_file(line_text, window, view=view, point=click_point):
@@ -2513,6 +2880,8 @@ class ChatViewListener(sublime_plugin.EventListener):
                                 line_text, window, view, click_point):
                             return ("noop", {})
                         if session.open_artifact_diff_at(click_point):
+                            return ("noop", {})
+                        if _file_links_click() != "single" and filelinks.open_link_at(view, click_point):
                             return ("noop", {})
 
         editable_start = input_editable_start(view)
@@ -2554,6 +2923,18 @@ class ChatViewListener(sublime_plugin.EventListener):
                     self._redirect_cursor(view)
                     return ("noop", {})
 
+        # While the input pane is open, typing / pasting in the chat goes to the pane
+        if command_name in ("insert", "paste", "paste_and_indent", "insert_snippet",
+                            "paste_from_history", "clipboard_history_paste"):
+            pane = inputpane.find_input_pane(view.window())
+            if pane is not None:
+                window = view.window()
+                window.focus_view(pane)
+                pane.sel().clear()
+                pane.sel().add(sublime.Region(pane.size()))
+                pane.run_command(command_name, args or {})
+                return ("noop", {})
+
         # Handle insert/modification commands - redirect to end if in protected area
         mod_commands = ("insert", "paste", "insert_characters", "insert_snippet",
                        "append", "yank", "paste_and_indent", "clipboard_history_paste")
@@ -2577,6 +2958,8 @@ class ChatViewListener(sublime_plugin.EventListener):
             return input_editable_start(view)
         if view.settings().get(CHAT_QUICK_PROMPT_FLAG, False):
             return 0
+        if inputpane.is_input_pane(view):
+            return inputpane.text_region(view).begin()
         return None
 
     def on_query_completions(self, view, prefix, locations):
@@ -2597,10 +2980,14 @@ class ChatViewListener(sublime_plugin.EventListener):
         )
 
     def on_hover(self, view, point, hover_zone):
-        """Show rewind confirm phantom when hovering over a prompt gutter dot."""
-        if hover_zone != sublime.HOVER_GUTTER:
-            return
+        """Show rewind confirm phantom when hovering over a prompt gutter dot,
+        or an "Open" popup when hovering over a file link."""
         if not view.settings().get(CHAT_VIEW_FLAG, False):
+            return
+        if hover_zone == sublime.HOVER_TEXT:
+            filelinks.show_link_popup(view, point)
+            return
+        if hover_zone != sublime.HOVER_GUTTER:
             return
         window = view.window()
         if not window or window.id() not in chatview_clients:
@@ -2626,6 +3013,15 @@ class ChatViewListener(sublime_plugin.EventListener):
         """
         Trigger autocompletion immediately when '@' or a directory '/' is typed.
         """
+        _schedule_file_link_scan(view)
+        if inputpane.is_input_pane(view):
+            if not inputpane.has_header(view):
+                # Something (a delete-line macro, undo) removed the bar's header line: put it back
+                view.run_command("term_chat_input_pane_header")
+            inputpane.update_hint(view, _send_shortcut())
+            window = view.window()
+            if window and window.id() in chatview_clients:
+                chatview_clients[window.id()].model_phantom.keep_pane_panel_on_top()
         editable_start = self._get_editable_start(view)
         if editable_start is None:
             return
@@ -2692,7 +3088,7 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
 
 class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
 
-    def run(self, edit, text, html_tables=None):
+    def run(self, edit, text, html_tables=None, text_starts=None):
         insert_at = get_input_start(self.view, 0) - 1
         inserted = self.view.insert(edit, insert_at, text)
         # The anchor region shifts with the insert; re-set to keep the
@@ -2707,6 +3103,9 @@ class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
                     end = insert_at + table["end"]
                     session.table_phantoms.add(
                         sublime.Region(start, end), table["html"])
+        if text_starts:
+            # Where the agent's text starts after a tool call: tool-call folding stops there
+            toolfold.mark_text_starts(self.view, [insert_at + start for start in text_starts])
 
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
         diff_folds = extract_diff_fold_ranges(
@@ -2717,7 +3116,18 @@ class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
         for start, end in diff_folds:
             if end > start:
                 self.view.fold(sublime.Region(insert_at + start, insert_at + end))
+        if settings.get("fold_tool_calls", True):
+            toolfold.fold_runs(self.view, edit, insert_at + inserted)
         self.view.show(self.view.size())
+
+
+class TermChatFoldToolCallsCommand(sublime_plugin.TextCommand):
+    """Fold the last run of tool calls of a finished turn (runs are folded as text follows them)."""
+
+    def run(self, edit):
+        settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+        if settings.get("fold_tool_calls", True):
+            toolfold.fold_runs(self.view, edit, get_input_start(self.view, 0) - 1, final=True)
 
 
 class TermChatInputPromptCommand(sublime_plugin.TextCommand):
@@ -2778,7 +3188,11 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
             if not selected.strip():
                 return
             tags = "\n".join("> " + line for line in selected.splitlines())
-            input_text = view.substr(sublime.Region(editable_start, view.size()))
+            pane = inputpane.find_input_pane(self.window)
+            if pane is not None:
+                input_text = inputpane.get_text(pane)
+            else:
+                input_text = view.substr(sublime.Region(editable_start, view.size()))
             # A blank line always precedes and follows the quote block,
             insert_text = tags + "\n\n"
             trailing = len(input_text) - len(input_text.rstrip("\n"))
@@ -2808,8 +3222,18 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
                 chat_view = v
                 break
 
+        pane = inputpane.find_input_pane(self.window)
         if not chat_view:
             self.window.run_command("term_chat_cli", {"initial_msg": tags})
+        elif pane is not None:
+            # Prompts are typed in the input pane: add the context there, at the end
+            self.window.focus_view(pane)
+            if not insert_text:
+                return
+            pane.sel().clear()
+            pane.sel().add(sublime.Region(pane.size()))
+            pane.run_command("insert", {"characters": insert_text})
+            pane.show(pane.size())
         else:
             self.window.focus_view(chat_view)
             if not insert_text:
@@ -2931,7 +3355,7 @@ class TermChatPromptCommand(sublime_plugin.WindowCommand):
             # (a copy-selection there would drop the text into history).
             chat_view.sel().clear()
             chat_view.sel().add(sublime.Region(chat_view.size()))
-            chat_view.run_command("insert", {"characters": prompt})
+            chat_view.run_command("term_chat_replace_input", {"text": prompt, "append": True})
             chat_view.run_command("term_chat_send_input")
         else:
             # Start a new session and send immediately
@@ -3072,13 +3496,17 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
             return session.window.settings().get(CHAT_AGENT, "claude")
         return self.window.settings().get(CHAT_AGENT, "claude")
 
-    def run(self):
+    def run(self, all_projects=False):
         import datetime
         window_id = self.window.id()
         session = chatview_clients.get(window_id)
         agent = self._get_agent(session)
         cwd = self._get_cwd(session)
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+
+        if all_projects and agent != "claude":
+            sublime.status_message("Chats from all projects are only available for Claude Code")
+            return
 
         if agent == "codex":
             raw = list_codex_sessions(cwd)
@@ -3098,12 +3526,16 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
         elif agent == "antigravity":
             sessions = list_antigravity_sessions(cwd)
             placeholder = "Resume previous Antigravity session"
+        elif all_projects:
+            sessions = list_sessions_for_cwd(None)
+            placeholder = "Resume a Claude session from any project"
         else:
             sessions = list_sessions_for_cwd(cwd)
             placeholder = "Resume previous Claude session"
 
         if not sessions:
-            sublime.status_message("No past sessions found for this workspace")
+            sublime.status_message("No past sessions found" if all_projects
+                                   else "No past sessions found for this workspace")
             return
 
         current_session_id = session.agent_thread.session_id if session and session.agent_thread else None
@@ -3116,15 +3548,31 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
                 summary = summary[:self._PREVIEW_LEN] + "…"
             dt = datetime.datetime.fromtimestamp(s["mtime"]).strftime("%Y-%m-%d %H:%M")
             marker = "  ●" if sid == current_session_id else ""
-            items.append([summary, f"{sid[:8]}  {dt}{marker}"])
+            project = s.get("cwd") if all_projects else None
+            folder = "  " + (os.path.basename(project.rstrip("/\\")) or project) if project else ""
+            items.append([summary, f"{sid[:8]}  {dt}{marker}{folder}"])
 
         def on_select(index):
             if index < 0:
                 return
             chosen = sessions[index]
             chosen_id = chosen["session_id"]
+            if all_projects and chosen.get("cwd") and chosen["cwd"] != cwd:
+                # Claude finds a session through its project folder: run the chat in that folder
+                if not os.path.isdir(chosen["cwd"]):
+                    sublime.status_message(f"Project folder no longer exists: {chosen['cwd']}")
+                    return
+                self.window.settings().set(CHAT_WORKSPACE, chosen["cwd"])
             if chosen_id == current_session_id:
-                sublime.status_message("Already on that session")
+                # Same conversation: nothing to restart, but show its recent turns again. The chat text
+                # can be lost when Sublime restores the tab after a restart; the agent still has it.
+                active_session = chatview_clients.get(window_id)
+                if active_session is None:
+                    sublime.status_message("Already on that session")
+                    return
+                info = active_session._fetch_session_info(agent, chosen_id, cwd)
+                active_session._append_resume_history(agent, chosen_id, info)
+                sublime.status_message("Showing the recent history of this session")
                 return
 
             active_session = chatview_clients.get(window_id)

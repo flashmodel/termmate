@@ -4,5 +4,9 @@
         "caption": "TermMate: Split Chat Window",
         "command": "term_chat_split_chat",
         "args": {"group": "$group", "index": "$index"}
+    },
+    {
+        "caption": "TermMate: Toggle Input Pane",
+        "command": "term_chat_toggle_input_pane"
     }
 ]

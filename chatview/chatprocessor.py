@@ -399,10 +399,10 @@ class BaseChatMessageProcessor:
     def _render_diff_block(self, diff_text):
         if not diff_text:
             return ""
-        # Keep the diff visually subordinate to its tool-call header without
-        # sacrificing much of the chat view's usable line width.
-        indented = "\n".join("  " + line for line in diff_text.rstrip().splitlines())
-        return f"  ````diff\n{indented}\n  ````"
+        # Indent the diff 4 spaces so it sits visibly under its tool-call header
+        # (ChatMD.sublime-syntax and extract_diff_fold_ranges accept 4 and the older 2).
+        indented = "\n".join("    " + line for line in diff_text.rstrip().splitlines())
+        return f"    ````diff\n{indented}\n    ````"
 
     def _format_tool_block(self, block):
         name = block.get("name")

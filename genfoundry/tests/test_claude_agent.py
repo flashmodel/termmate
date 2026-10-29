@@ -301,5 +301,18 @@ class TestClaudeAgentTokenUsageExtraction(unittest.TestCase):
         self.assertEqual(queued.content["last"]["inputTokens"], 100)
 
 
+class TestSessionCwd(unittest.TestCase):
+
+    def test_first_cwd_is_the_session_folder(self):
+        # Later entries follow the agent's cd; the session lives under the folder it started in
+        from genfoundry.claude_agent import _extract_session_cwd
+        head = ('{"type":"summary","summary":"x"}\n'
+                '{"type":"user","cwd":"/proj","message":{}}\n'
+                '{"type":"assistant","cwd":"/proj/sub","message":{}}\n'
+                '{"type":"user","cwd":"/proj/sub","mess')
+        self.assertEqual(_extract_session_cwd(head), "/proj")
+        self.assertIsNone(_extract_session_cwd('{"type":"summary"}\n{"cwd":"/cut'))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1147,6 +1147,22 @@ def _extract_json_str(text: str, key: str) -> Optional[str]:
     return last
 
 
+def _extract_session_cwd(head: str) -> Optional[str]:
+    """The folder a session was started in: the `cwd` of its first entry that has one. Later entries
+    follow the agent's `cd`s, but Claude Code finds the session through the folder it started in."""
+    import json as _json
+    for line in head.splitlines():
+        if '"cwd"' not in line:
+            continue
+        try:
+            cwd = _json.loads(line).get("cwd")
+        except Exception:
+            continue  # the head's last line may be cut off
+        if isinstance(cwd, str) and cwd:
+            return cwd
+    return None
+
+
 def _extract_first_prompt(head: str) -> str:
     """Extract first meaningful user prompt from JSONL head chunk."""
     import json as _json
@@ -1235,6 +1251,7 @@ def _parse_session_entry(session_id: str, lite: dict) -> Optional[dict]:
         "summary": summary,
         "custom_title": custom_title,
         "first_prompt": first_prompt,
+        "cwd": _extract_session_cwd(head),
     }
 
 

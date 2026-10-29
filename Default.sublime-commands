@@ -20,6 +20,10 @@
         "command": "term_chat_split_chat"
     },
     {
+        "caption": "TermMate: Toggle Input Pane\tinput box that stays below the chat",
+        "command": "term_chat_toggle_input_pane"
+    },
+    {
         "caption": "TermMate: Approve Mode\ttool permission mode",
         "command": "term_chat_set_approve_mode"
     },
@@ -42,6 +46,11 @@
     {
         "caption": "TermMate: Resume Session\tresume previous conversation",
         "command": "term_chat_resume_session"
+    },
+    {
+        "caption": "TermMate: Resume Session (All Projects)\tClaude Code chats from every folder",
+        "command": "term_chat_resume_session",
+        "args": {"all_projects": true}
     },
     {
         "caption": "TermMate: Plan Mode",

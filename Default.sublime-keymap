@@ -14,5 +14,21 @@
         [
             { "key": "setting.chatview_chat", "operator": "equal", "operand": true }
         ]
+    },
+    {
+        "keys": ["ctrl+enter"],
+        "command": "term_chat_input_pane_send",
+        "context":
+        [
+            { "key": "setting.chatview_input_pane", "operator": "equal", "operand": true }
+        ]
+    },
+    {
+        "keys": ["shift+escape"],
+        "command": "term_chat_interrupt",
+        "context":
+        [
+            { "key": "setting.chatview_input_pane", "operator": "equal", "operand": true }
+        ]
     }
 ]
