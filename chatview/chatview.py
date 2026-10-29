@@ -3053,7 +3053,6 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
     Shows a quick-panel listing past sessions for the current workspace and agent.
     Works whether or not a ChatView is already open: when none exists, opening
     the selected session creates one first.
-    Supports both claude and codex agents.
     """
 
     _PREVIEW_LEN = 80
@@ -3072,6 +3071,23 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
             return session.window.settings().get(CHAT_AGENT, "claude")
         return self.window.settings().get(CHAT_AGENT, "claude")
 
+    def _load_sessions(self, agent, cwd, settings):
+        if agent == "codex":
+            raw = list_codex_sessions(cwd)
+            return [{"session_id": s["session_id"], "summary": s["summary"],
+                     "mtime": s["updated_at"]} for s in raw]
+        if agent == "pi":
+            return list_pi_sessions(cwd)
+        if agent == "opencode":
+            return list_opencode_sessions(
+                cwd,
+                extra_env=settings.get("env", {}),
+                cli_path=settings.get("opencode_command") or None,
+            )
+        if agent == "antigravity":
+            return list_antigravity_sessions(cwd)
+        return list_sessions_for_cwd(cwd)
+
     def run(self):
         import datetime
         window_id = self.window.id()
@@ -3080,27 +3096,8 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
         cwd = self._get_cwd(session)
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
 
-        if agent == "codex":
-            raw = list_codex_sessions(cwd)
-            sessions = [{"session_id": s["session_id"], "summary": s["summary"],
-                         "mtime": s["updated_at"]} for s in raw]
-            placeholder = "Resume previous Codex session"
-        elif agent == "pi":
-            sessions = list_pi_sessions(cwd)
-            placeholder = "Resume previous Pi session"
-        elif agent == "opencode":
-            sessions = list_opencode_sessions(
-                cwd,
-                extra_env=settings.get("env", {}),
-                cli_path=settings.get("opencode_command") or None,
-            )
-            placeholder = "Resume previous OpenCode session"
-        elif agent == "antigravity":
-            sessions = list_antigravity_sessions(cwd)
-            placeholder = "Resume previous Antigravity session"
-        else:
-            sessions = list_sessions_for_cwd(cwd)
-            placeholder = "Resume previous Claude session"
+        placeholder = f"[{agent}] Resume previous session"
+        sessions = self._load_sessions(agent, cwd, settings)
 
         if not sessions:
             sublime.status_message("No past sessions found for this workspace")
@@ -3149,11 +3146,6 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
             sublime.status_message(f"Resuming session {chosen_id[:8]}…")
 
         self.window.show_quick_panel(items, on_select, placeholder=placeholder)
-
-    def is_enabled(self):
-        session = chatview_clients.get(self.window.id())
-        agent = self._get_agent(session)
-        return agent in ("claude", "codex", "pi", "opencode", "antigravity")
 
 
 class TermChatInterruptCommand(sublime_plugin.WindowCommand):
