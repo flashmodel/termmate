@@ -2693,6 +2693,9 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
 class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
 
     def run(self, edit, text, html_tables=None):
+        # Follow the reply only while the end of the chat is on screen: scrolled up to
+        # read back, the view stays put until you scroll down to the end again
+        follow = self.view.visible_region().end() >= self.view.size()
         insert_at = get_input_start(self.view, 0) - 1
         inserted = self.view.insert(edit, insert_at, text)
         # The anchor region shifts with the insert; re-set to keep the
@@ -2717,7 +2720,8 @@ class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
         for start, end in diff_folds:
             if end > start:
                 self.view.fold(sublime.Region(insert_at + start, insert_at + end))
-        self.view.show(self.view.size())
+        if follow:
+            self.view.show(self.view.size())
 
 
 class TermChatInputPromptCommand(sublime_plugin.TextCommand):
