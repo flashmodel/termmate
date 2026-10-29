@@ -310,24 +310,71 @@ class CodexAgent(BaseAgent):
             thread_params["sandbox"] = "workspace-write"
 
         method = "thread/resume" if self.options.session_id else "thread/start"
+        if self.options.session_id:
+            thread_params["excludeTurns"] = True
         self._last_rpc_error = None
         result = await self._rpc_request(method, thread_params)
         if result and isinstance(result, dict):
             thread = result.get("thread", {})
-            self.thread_id = thread.get("id")
+            self.thread_id = thread.get("id") or self.options.session_id
 
             # Capture the default model assigned by the server
             if "model" in result and not self.options.model:
                 self.options.model = result.get("model")
 
+            self._subagent_thread_ids.clear()
+            self._subagent_turn_to_root.clear()
+
             # Sync turn count from resumed thread so rewind math stays correct
-            turns = thread.get("turns", [])
-            if turns:
-                self._turn_ids = [
-                    t["id"] for t in turns
-                    if isinstance(t, dict) and t.get("id")
-                ]
-                self._turn_count = len(self._turn_ids) if self._turn_ids else len(turns)
+            turn_ids: List[str] = []
+            if self.options.session_id and self.thread_id:
+                try:
+                    cursor = None
+                    while True:
+                        t_params: Dict[str, Any] = {
+                            "threadId": self.thread_id,
+                            "itemsView": "notLoaded",
+                            "sortDirection": "asc",
+                        }
+                        if cursor:
+                            t_params["cursor"] = cursor
+                        t_res = await self._rpc_request("thread/turns/list", t_params)
+                        if not t_res or not isinstance(t_res, dict):
+                            break
+                        for t in t_res.get("data", []):
+                            if not isinstance(t, dict):
+                                continue
+                            t_id = t.get("id")
+                            if not t_id:
+                                continue
+                            r_id = t.get("rootTurnId")
+                            if r_id and r_id != t_id:
+                                self._subagent_turn_to_root[t_id] = r_id
+                            else:
+                                turn_ids.append(t_id)
+                        cursor = t_res.get("nextCursor")
+                        if not cursor:
+                            break
+                except Exception as e:
+                    LOG.debug(f"Failed to fetch turns via thread/turns/list: {e}")
+
+            # Fallback to hydrated turns in thread object if thread/turns/list was unavailable
+            if not turn_ids:
+                for t in thread.get("turns", []):
+                    if not isinstance(t, dict):
+                        continue
+                    t_id = t.get("id")
+                    if not t_id:
+                        continue
+                    r_id = t.get("rootTurnId")
+                    if r_id and r_id != t_id:
+                        self._subagent_turn_to_root[t_id] = r_id
+                    else:
+                        turn_ids.append(t_id)
+
+            if turn_ids:
+                self._turn_ids = turn_ids
+                self._turn_count = len(self._turn_ids)
                 LOG.info(
                     f"Codex connect {method}: {self.thread_id} (resumed {self._turn_count} turns)"
                 )
@@ -335,10 +382,11 @@ class CodexAgent(BaseAgent):
                 self._turn_ids = []
                 self._turn_count = 0
                 LOG.info(f"Codex connect {method}: {self.thread_id}")
-            self._subagent_thread_ids.clear()
-            self._subagent_turn_to_root.clear()
         else:
-            err_detail = f": {self._parse_codex_error(self._last_rpc_error)}" if self._last_rpc_error else ""
+            err_detail = (
+                f": {self._parse_codex_error(self._last_rpc_error)}"
+                if self._last_rpc_error else ""
+            )
             action = "resume session" if self.options.session_id else "start session"
             err_msg = f"Failed to {action}{err_detail}"
             LOG.error(err_msg)
@@ -582,7 +630,10 @@ class CodexAgent(BaseAgent):
                     if not line:
                         continue
                     try:
-                        LOG.debug(f"codex receive: {line}")
+                        if len(line) > 500:
+                            LOG.debug(f"codex receive: {line[:500]} ... [{len(line)} chars]")
+                        else:
+                            LOG.debug(f"codex receive: {line}")
                         data = json.loads(line)
                         await self._dispatch(data)
                     except json.JSONDecodeError:

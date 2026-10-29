@@ -82,6 +82,11 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
                     fake_proc.feed({"id": rid, "result": {"capabilities": {}}})
                 elif method == "thread/start":
                     fake_proc.feed({"id": rid, "result": {"thread": {"id": "thread-001"}}})
+                elif method == "thread/resume":
+                    t_id = data.get("params", {}).get("threadId", "thread-001")
+                    fake_proc.feed({"id": rid, "result": {"thread": {"id": t_id}}})
+                elif method == "thread/turns/list":
+                    fake_proc.feed({"id": rid, "result": {"data": [], "nextCursor": None}})
                 elif method == "turn/start":
                     turn_id = f"turn-{rid}"
                     fake_proc.feed({"id": rid, "result": {}})
@@ -198,6 +203,11 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
                     fake_proc.feed({"id": rid, "result": {"capabilities": {}}})
                 elif method == "thread/start":
                     fake_proc.feed({"id": rid, "result": {"thread": {"id": "thread-001"}}})
+                elif method == "thread/resume":
+                    t_id = data.get("params", {}).get("threadId", "thread-001")
+                    fake_proc.feed({"id": rid, "result": {"thread": {"id": t_id}}})
+                elif method == "thread/turns/list":
+                    fake_proc.feed({"id": rid, "result": {"data": [], "nextCursor": None}})
                 elif method == "turn/start":
                     fake_proc.feed({"id": rid, "result": {}})
 
@@ -230,6 +240,11 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
                     fake_proc.feed({"id": rid, "result": {"capabilities": {}}})
                 elif method == "thread/start":
                     fake_proc.feed({"id": rid, "result": {"thread": {"id": "thread-001"}}})
+                elif method == "thread/resume":
+                    t_id = data.get("params", {}).get("threadId", "thread-001")
+                    fake_proc.feed({"id": rid, "result": {"thread": {"id": t_id}}})
+                elif method == "thread/turns/list":
+                    fake_proc.feed({"id": rid, "result": {"data": [], "nextCursor": None}})
                 elif method == "turn/start":
                     fake_proc.feed({"id": rid, "result": {}})
                     # Simulate command execution events
@@ -785,6 +800,118 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(revert_call["params"]["threadId"], "thread-001")
             self.assertEqual(revert_call["params"]["beforeTurnId"], turn_2_id)
+        finally:
+            await agent.disconnect()
+
+    async def test_thread_resume_exclude_turns_and_turns_list_hydration(self):
+        """Verify thread/resume sends excludeTurns: True and hydrates via thread/turns/list."""
+        fake_proc = FakeProcess()
+        opts = AgentOptions(
+            cli_path="/usr/bin/true",
+            session_id="thread-resume-001",
+        )
+        agent = CodexAgent(options=opts)
+        rpc_calls = []
+        original_write = agent._write_json
+
+        async def mock_write_json(data: dict):
+            rpc_calls.append(data)
+            await original_write(data)
+            if "id" in data:
+                method = data.get("method", "")
+                rid = data["id"]
+                if method == "initialize":
+                    fake_proc.feed({"id": rid, "result": {"capabilities": {}}})
+                elif method == "thread/resume":
+                    fake_proc.feed({
+                        "id": rid,
+                        "result": {
+                            "thread": {"id": "thread-resume-001"},
+                        },
+                    })
+                elif method == "thread/turns/list":
+                    fake_proc.feed({
+                        "id": rid,
+                        "result": {
+                            "data": [
+                                {"id": "turn-r1", "rootTurnId": "turn-r1"},
+                                {"id": "turn-r2", "rootTurnId": "turn-r2"},
+                                {"id": "turn-r2-sub", "rootTurnId": "turn-r2"},
+                            ],
+                            "nextCursor": None,
+                        },
+                    })
+
+        agent._write_json = mock_write_json
+        with patch("asyncio.create_subprocess_exec", return_value=fake_proc):
+            await agent.connect()
+
+        try:
+            # 1. thread/resume had excludeTurns: True
+            resume_call = next(c for c in rpc_calls if c.get("method") == "thread/resume")
+            self.assertTrue(resume_call["params"].get("excludeTurns"))
+            self.assertEqual(resume_call["params"].get("threadId"), "thread-resume-001")
+
+            # 2. thread/turns/list was called with itemsView: notLoaded
+            turns_call = next(c for c in rpc_calls if c.get("method") == "thread/turns/list")
+            self.assertEqual(turns_call["params"].get("threadId"), "thread-resume-001")
+            self.assertEqual(turns_call["params"].get("itemsView"), "notLoaded")
+
+            # 3. turns were properly hydrated into agent
+            self.assertEqual(agent._turn_ids, ["turn-r1", "turn-r2"])
+            self.assertEqual(agent._turn_count, 2)
+            self.assertEqual(agent._subagent_turn_to_root, {"turn-r2-sub": "turn-r2"})
+        finally:
+            await agent.disconnect()
+
+    async def test_thread_resume_fallback_to_hydrated_turns(self):
+        """Verify fallback to thread.turns when thread/turns/list fails or returns empty."""
+        fake_proc = FakeProcess()
+        opts = AgentOptions(
+            cli_path="/usr/bin/true",
+            session_id="thread-resume-legacy",
+        )
+        agent = CodexAgent(options=opts)
+        original_write = agent._write_json
+
+        async def mock_write_json(data: dict):
+            await original_write(data)
+            if "id" in data:
+                method = data.get("method", "")
+                rid = data["id"]
+                if method == "initialize":
+                    fake_proc.feed({"id": rid, "result": {"capabilities": {}}})
+                elif method == "thread/resume":
+                    fake_proc.feed({
+                        "id": rid,
+                        "result": {
+                            "thread": {
+                                "id": "thread-resume-legacy",
+                                "turns": [
+                                    {"id": "turn-legacy-1", "rootTurnId": "turn-legacy-1"},
+                                    {"id": "turn-legacy-sub", "rootTurnId": "turn-legacy-1"},
+                                    {"id": "turn-legacy-2", "rootTurnId": "turn-legacy-2"},
+                                ],
+                            },
+                        },
+                    })
+                elif method == "thread/turns/list":
+                    fake_proc.feed({
+                        "id": rid,
+                        "error": {"code": -32601, "message": "Method not found"},
+                    })
+
+        agent._write_json = mock_write_json
+        with patch("asyncio.create_subprocess_exec", return_value=fake_proc):
+            await agent.connect()
+
+        try:
+            self.assertEqual(agent._turn_ids, ["turn-legacy-1", "turn-legacy-2"])
+            self.assertEqual(agent._turn_count, 2)
+            self.assertEqual(
+                agent._subagent_turn_to_root,
+                {"turn-legacy-sub": "turn-legacy-1"}
+            )
         finally:
             await agent.disconnect()
 
