@@ -29,6 +29,7 @@ from .chatpanel import (
 )
 
 from .md_render import MarkdownFormatter
+from . import usage
 from .chatrender import extract_diff_fold_ranges
 from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
 from .install import run_install, find_existing_cli, get_agent_list_items
@@ -732,6 +733,18 @@ class ModelPanel:
         self.window = window
         self.phantom_set = sublime.PhantomSet(view, "chatview_model")
         self.status_hint = StatusHint()
+        # Plan usage windows from the Claude CLI: {window: (utilization, resets_at)}, see usage.py
+        self.usage = {}
+
+    def set_usage(self, windows):
+        """Merge newly reported usage windows and redraw the bar."""
+        self.usage.update(windows)
+        self.update()
+
+    def _show_usage_popup(self):
+        content = usage.popup_html(self.usage) or usage.NO_DATA_HTML
+        view = self.view
+        view.show_popup(content, flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY, location=-1, max_width=480)
 
     def _on_navigate(self, href):
         """Handle actions from links in the model panel."""
@@ -741,6 +754,8 @@ class ModelPanel:
             self.window.run_command("term_chat_set_model")
         elif href == "toggle_plan":
             self.window.run_command("term_chat_toggle_plan_mode")
+        elif href == "usage":
+            self._show_usage_popup()
         elif href == "stop_conversation":
             self.window.run_command("term_chat_interrupt", {"confirm": True})
 
@@ -794,7 +809,14 @@ class ModelPanel:
             f'<span class="value">{html.escape(display_model)}</span></a>'
         )
 
-        buttons_html = "&nbsp;".join([agent_tag, model_tag, plan_tag_html])
+        tags = [agent_tag, model_tag, plan_tag_html]
+        if agent_provider == "claude":
+            # Session and weekly limits used; click for every plan limit with its reset time
+            used = usage.tag_text(self.usage)
+            value = f'<span class="value">{used}</span>' if used else ""
+            tags.append(f'<a href="usage" class="model-tag"><span class="label">Usage{":" if used else ""}</span>'
+                        f'{value}</a>')
+        buttons_html = "&nbsp;".join(tags)
 
         panel_html = f"""
         <body id="chatview-model" style="margin: 0; padding: 0;">

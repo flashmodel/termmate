@@ -143,6 +143,10 @@ Run `TermMate: Quick Message` from the command palette to compose and send a mes
 
 You can use the command palette (`TermMate: Split Chat Window`) or right-click the chat view tab and select **TermMate: Split Chat Window** to split the editor layout and place the chat view into its own dedicated pane. By default, this pane is isolated so opening other files will not overwrite the chat view. This isolation behavior can be configured via the `dedicated_chat_pane` setting.
 
+**6. Plan Usage (Claude Code)**
+
+The Usage button at the end of the Agent / Model / PlanMode bar shows how much of your session and weekly limits you have used, followed by any other weekly limit your plan has (`Usage: 18% · 8% · 27%`); a number turns yellow from 60%, orange from 70% and red from 90%. Click it to see what each number is: session (5-hour), weekly, and other weekly limits when they apply (per model, included overage), each with a bar and its reset time. The numbers come from the Claude CLI and update after each reply; they do not change while the chat is idle.
+
 ## Agent Modes & Controls
 
 ### Plan Mode

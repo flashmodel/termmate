@@ -8,6 +8,7 @@ import xml.etree.ElementTree
 
 import sublime
 
+from . import usage
 from . import utils
 
 LOG = logging.getLogger("TermMate")
@@ -565,6 +566,11 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
                     LOG.info(f"system session_id: {session_id}")
                     # Store session_id in view settings for persistence across restarts
                     self.session.set_view_session_id(self.session.chat_view, session_id)
+
+        elif message.type == "rate_limit_event":
+            windows = usage.parse_windows((getattr(message, "raw_data", {}) or {}).get("rate_limit_info"))
+            if windows:
+                sublime.set_timeout(lambda w=windows: self.session.model_phantom.set_usage(w), 0)  # UI thread
 
         elif message.type == "control_request":
             # Handle permission request directly
