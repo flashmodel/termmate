@@ -143,6 +143,20 @@ Run `TermMate: Quick Message` from the command palette to compose and send a mes
 
 You can use the command palette (`TermMate: Split Chat Window`) or right-click the chat view tab and select **TermMate: Split Chat Window** to split the editor layout and place the chat view into its own dedicated pane. By default, this pane is isolated so opening other files will not overwrite the chat view. This isolation behavior can be configured via the `dedicated_chat_pane` setting.
 
+**6. File and Web Links**
+
+File paths the agent writes in its replies (`src/main.py`, `src/main.py:42`, `src/main.py#L10-25`, `/abs/path/main.py`) are underlined when the file exists, and so are `http://` and `https://` addresses; paths and addresses inside `` `code` `` or a fenced code block are code and stay plain. Hover one for an **Open** link, or double-click it (one click with `"file_links_click": "single"`), to open the file at that line (a `#L10-25` range is selected) or the address in your browser. Relative paths resolve against the agent's working directory, then the window's folders. Turn this off with the `file_links` setting.
+
+**7. Folded Tool Calls**
+
+The tool calls between the agent's messages (`⏺ Bash ...`, `⏺ Read ...`, edits with their diffs) are folded into one line per run once the run is over, so the chat reads as what the agent says:
+
+```
+⏺ 6 tool calls…
+```
+
+Before that, each call that takes several lines (a multi-line command, an edit with its diff) is folded to its first line as soon as it is finished. Click the `⏺ N tool calls` line to expand or collapse the run; click the `⏺` of a call to expand or collapse that call (on a one-line call it collapses the run). The `▶` arrow in the gutter works too. Turn this off with the `fold_tool_calls` setting.
+
 ## Agent Modes & Controls
 
 ### Plan Mode
@@ -186,7 +200,7 @@ When an agent creates or modifies files, TermMate displays a summary of affected
     src/bar.py  +5 -1
 ```
 
-Double-Click a file entry to jump directly to the file and review the unified diff in the editor. Artifacts are folded by default. Click the `▶` arrow in the gutter to expand and view the full diff inline.
+Double-Click a file entry to jump directly to the file and review the unified diff in the editor. Artifacts are folded by default. Click the `▣ N files changed` header (or the `▶` arrow in the gutter) to expand and view the full diff inline.
 
 ### 2. Plan & Walkthrough Artifacts (Antigravity)
 
@@ -347,8 +361,13 @@ These settings can be added or changed in `Preferences → Package Settings → 
 | :--- | :--- | :--- |
 | `table_style` | Controls how Markdown tables are rendered in the Chat | `"bordered"`, `"markdown"`, or `"html"`; default: `"html"` |
 | `diff_fold_limit` | Automatically folds a diff when it contains more than this many diff lines  | default: `200` (to show complete diff much as possible); set to `0` to keep all diffs expanded |
+| `fold_tool_calls` | Folds each multi-line tool call to its first line once it is finished, and each run of two or more calls in a reply under one `⏺ N tool calls` line; click that line (or the `⏺` of a call) to expand or collapse it. | `true` or `false`; default: `true` |
+| `list_indent` | Indents lists in agent replies by this many spaces so they stand out from the surrounding text; the blank line between a text line and a list is dropped, and a line ending with `:` pulls in the paragraph or code block after it the same way. Other code blocks are left alone. | number of spaces; default: `4`; `0` keeps everything as written |
 | `dedicated_chat_pane` | Keeps the Chat tab in a dedicated pane so files opened elsewhere do not replace it. | `true` or `false`; default: `true` |
+| `file_links` | Underlines existing file paths and web addresses in agent replies; hover or double-click one to open it (the file at its line, the address in the browser). | `true` or `false`; default: `true` |
+| `file_links_click` | Whether a file or web link opens on a single click or a double-click. | `"single"` or `"double"`; default: `"double"` |
 | `show_status_indicator` | Whether to display model indicator `claude(sonnet)` in status bar | `true` or `false`; default: `true` |
+| `status_indicator_modes` | Add the plan mode, approve mode and a `⟳` while the agent works to the status bar indicator, so they stay visible when the chat is scrolled up. | `true` or `false`; default: `true` |
 
 ## 💡 TermMate Agent Tips
 

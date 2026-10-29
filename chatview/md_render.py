@@ -13,15 +13,29 @@ class MarkdownFormatter:
 
     _HTML_LINE_BREAK_RE = re.compile(r'<br\s*/?\s*>', re.IGNORECASE)
     _EXPLICIT_LINE_BREAK = '\n'
+    _LIST_ITEM_RE = re.compile(r'^\s*(?:[-*+]|\d{1,9}[.)])(?:\s|$)')
+    _HEADING_RE = re.compile(r'^#{1,6}(?:\s|$)')
+    DEFAULT_LIST_INDENT = 4
 
     def __init__(self, max_width_getter=None):
         self.table_buffer = []
         self.in_code_block = False
         self.code_fence_char = None
         self.code_fence_len = 0
+        self.in_list = False  # the lines being read belong to a list (see _indent_list_line)
+        self.code_indent = 0  # extra indent of the open code block, when it is inside a list item
+        # Blank lines between a text line and the block it introduces, see _before_line
+        self.after_text = False  # the last line was text (not an item, code or table)
+        self.intro = False  # ... ending with ":", so the next block belongs to it
+        self.intro_block = False  # the lines being read are a paragraph introduced that way (indented)
+        self.held_blank = False  # a blank line after text is held until the next line is known
+        # Tool calls ("⏺ Bash ...") and their indented bodies are passed through as they are
+        self.in_tool_call = False
+        self.text_start_pending = False  # the agent's text starts with the next output line
         self.remaining_text = ""
         self.max_width_getter = max_width_getter
         self._html_tables = []
+        self._text_starts = []
 
     def reset(self):
         """Reset internal buffers and code block fence states."""
@@ -29,8 +43,17 @@ class MarkdownFormatter:
         self.in_code_block = False
         self.code_fence_char = None
         self.code_fence_len = 0
+        self.in_list = False
+        self.code_indent = 0
+        self.after_text = False
+        self.intro = False
+        self.intro_block = False
+        self.held_blank = False
+        self.in_tool_call = False
+        self.text_start_pending = False
         self.remaining_text = ""
         self._html_tables.clear()
+        self._text_starts.clear()
 
     def char_width(self, char):
         if unicodedata.combining(char):
@@ -47,6 +70,28 @@ class MarkdownFormatter:
         tables = self._html_tables
         self._html_tables = []
         return tables
+
+    def take_text_starts(self):
+        """Return and clear the offsets, in the text of the last format call, where the agent's text starts
+        after a tool call. The chat marks them so tool-call folding stops there (an indented list right
+        after a call would otherwise read as the call's body)."""
+        starts = self._text_starts
+        self._text_starts = []
+        return starts
+
+    def _tool_body(self, line):
+        """Whether `line` is a tool call's header or body, passed through unchanged. A line at the left
+        edge that is not a tool call ends the call: the agent's text starts there."""
+        if line.startswith("⏺ "):
+            self.in_tool_call = True
+            return False  # the header goes through _before_line, which resets the text state
+        if not self.in_tool_call:
+            return False
+        if not line.strip() or line[0] in " \t":
+            return True
+        self.in_tool_call = False
+        self.text_start_pending = True
+        return False
 
     def _wrap_cell(self, text, width):
         """Split cell text into lines no wider than width display columns."""
@@ -261,6 +306,94 @@ class MarkdownFormatter:
             return settings.get("table_style", "bordered")
         except Exception:
             return "bordered"
+
+    def _get_list_indent(self):
+        """Return how many spaces list items are indented (the `list_indent` setting)."""
+        settings = sublime.load_settings("TermMate.sublime-settings")
+        value = settings.get("list_indent", self.DEFAULT_LIST_INDENT)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return min(value, 8)
+        return self.DEFAULT_LIST_INDENT
+
+    def _indent_list_line(self, line, indent):
+        """Indent a list item, and the indented lines that continue it, by `indent` spaces.
+
+        Agents write lists flush with the left edge, which reads as one dense block next to the
+        paragraph above it. Nested items keep their offsets relative to their parent. A line at
+        the left edge that is not an item (a heading, a paragraph) ends the list.
+        """
+        if indent <= 0 or not line.strip():
+            return line
+        if self._LIST_ITEM_RE.match(line):
+            self.in_list = True
+        elif self.intro_block:
+            return " " * indent + line  # a paragraph introduced by a line ending with ":"
+        elif not (self.in_list and line[0] == ' '):
+            self.in_list = False
+            return line
+        return " " * indent + line
+
+    _INTRO_TRAIL = "*_~` "  # emphasis / code markers after the colon of an intro line ("**Steps:**")
+
+    def _is_intro(self, stripped):
+        return stripped.rstrip(self._INTRO_TRAIL).endswith(":")
+
+    def _before_line(self, line, indent, output_lines):
+        """Handle the blank lines between a text line and the block after it.
+
+        A blank line after a text line is held back until the next line arrives (it comes in a
+        later chunk while streaming). It is dropped before a list item, so the list sits under
+        the text above it instead of floating below it, and it is dropped after a line ending
+        with ":" whatever follows: that line introduces the next block, which is indented like a
+        list (`intro_block`) up to the next blank line. Otherwise the blank is written out.
+        Returns True when `line` was held (nothing to output for it now).
+        """
+        if not indent:
+            return False
+        stripped = line.strip()
+        if line.startswith("⏺ "):
+            # A tool call is not part of the text above it: never indented, a held blank stays
+            if self.held_blank:
+                self.held_blank = False
+                output_lines.append("")
+            self.intro = self.intro_block = self.after_text = False
+            return False
+        item = bool(self._LIST_ITEM_RE.match(line))
+        # A heading starts a new section: a ":" line before it introduces nothing
+        heading = bool(self._HEADING_RE.match(stripped))
+        if self.held_blank:
+            if not stripped:
+                return True  # several blank lines: still one, still held
+            self.held_blank = False
+            if self.intro and not heading:
+                self.intro_block = not item
+            else:
+                self.intro_block = False
+                if not item:
+                    output_lines.append("")
+            self.intro = False
+        if not stripped:
+            if self.after_text and not self.in_list:
+                self.held_blank = True
+                return True
+            self.intro = self.intro_block = self.after_text = False
+            return False
+        if self.intro:  # "Text:" directly followed by its block, no blank line
+            self.intro_block = not item and not heading
+        self.after_text = not item
+        self.intro = self.after_text and self._is_intro(stripped)
+        return False
+
+    def _release_blank(self, output_lines):
+        """A code fence, a table or the end follows: write out a held blank line, unless a ":" line
+        introduced the block. Returns True in that case (a code block is then indented like a list)."""
+        introduced = self.intro
+        if self.held_blank:
+            self.held_blank = False
+            if not introduced:
+                output_lines.append("")
+        self.intro = self.intro_block = self.after_text = False
+        return introduced
 
     def _get_table_max_width(self):
         """Return the maximum rendered table width in display columns."""
@@ -585,6 +718,8 @@ class MarkdownFormatter:
 
         output_lines = []
         html_table_lines = []
+        list_indent = self._get_list_indent()
+        text_start_lines = []  # indexes in output_lines where the agent's text starts after a tool call
 
         def flush_buffer():
             if self.table_buffer:
@@ -607,6 +742,14 @@ class MarkdownFormatter:
 
         for line in lines:
             stripped = line.strip()
+            mark = len(output_lines)
+
+            if not self.in_code_block and self._tool_body(line):
+                output_lines.append(line)
+                continue
+            if self.text_start_pending:
+                self.text_start_pending = False
+                text_start_lines.append(mark)
 
             if not self.in_code_block:
                 if stripped.startswith(('```', '~~~')):
@@ -614,12 +757,21 @@ class MarkdownFormatter:
                     count = len(stripped) - len(stripped.lstrip(char))
                     if count >= 3:
                         flush_buffer()
+                        introduced = self._release_blank(output_lines)
                         self.code_fence_char = char
                         self.code_fence_len = count
                         self.in_code_block = True
-                        output_lines.append(line)
+                        # A fence inside a list item moves with it, so the code stays under its bullet;
+                        # one introduced by a line ending with ":" is indented the same way
+                        if list_indent and (introduced or self.in_list and line[:1] == ' '):
+                            self.code_indent = list_indent
+                        else:
+                            self.code_indent = 0
+                            self.in_list = False
+                        output_lines.append(" " * self.code_indent + line)
                         continue
             else:
+                pad = " " * self.code_indent if line.strip() else ""
                 if stripped.startswith(self.code_fence_char * self.code_fence_len):
                     char = self.code_fence_char
                     count = len(stripped) - len(stripped.lstrip(char))
@@ -627,27 +779,40 @@ class MarkdownFormatter:
                         self.code_fence_char = None
                         self.code_fence_len = 0
                         self.in_code_block = False
-                        output_lines.append(line)
+                        self.code_indent = 0
+                        output_lines.append(pad + line)
                         continue
-                output_lines.append(line)
+                output_lines.append(pad + line)
                 continue
 
             # Detect table rows - must start with | and have at least one more |
             if stripped.startswith('|') and '|' in stripped[1:]:
+                self._release_blank(output_lines)
                 self.table_buffer.append(line)
             else:
                 flush_buffer()
-                output_lines.append(line)
+                if self._before_line(line, list_indent, output_lines):
+                    continue
+                output_lines.append(self._indent_list_line(line, list_indent))
 
         if flush:
+            if self.remaining_text and not self.in_code_block and self._tool_body(self.remaining_text):
+                output_lines.append(self.remaining_text)
+                self.remaining_text = ""
+            if self.remaining_text and self.text_start_pending:
+                self.text_start_pending = False
+                text_start_lines.append(len(output_lines))
             if self.remaining_text:
                 if self.remaining_text.strip().startswith('|'):
+                    self._release_blank(output_lines)
                     self.table_buffer.append(self.remaining_text)
                 else:
                     flush_buffer()
-                    output_lines.append(self.remaining_text)
+                    if not self._before_line(self.remaining_text, list_indent, output_lines):
+                        output_lines.append(self._indent_list_line(self.remaining_text, list_indent))
                 self.remaining_text = ""
             flush_buffer()
+            self._release_blank(output_lines)
 
         if output_lines:
             res = '\n'.join(output_lines)
@@ -662,6 +827,9 @@ class MarkdownFormatter:
                 table["start"] = block_start + fold_start_column
                 table["end"] = block_start + len(source)
                 self._html_tables.append(table)
+            for index in text_start_lines:
+                if index < len(output_lines):
+                    self._text_starts.append(sum(len(line) + 1 for line in output_lines[:index]))
             if not flush:
                 res += '\n'
             return res

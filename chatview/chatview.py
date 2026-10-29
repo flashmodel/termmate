@@ -30,7 +30,9 @@ from .chatpanel import (
 
 from .md_render import MarkdownFormatter
 from .chatrender import extract_diff_fold_ranges
-from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
+from .artifact import FileChangesArtifact, ARTIFACT_REGION_KEY, DIFF_VIEW_PATH_KEY, diff_view_click
+from . import filelinks
+from . import toolfold
 from .install import run_install, find_existing_cli, get_agent_list_items
 from .autocomplete import AutoComplete
 
@@ -141,6 +143,14 @@ def update_agent_model_status(window, view=None):
             display_model = f"{display_model} :{think_level}"
 
         status = f"▣ {agent_provider}({display_model})"
+        if settings.get("status_indicator_modes", True):
+            # Plan and approve mode, and a running marker: the model panel in the chat
+            # shows these too, but it scrolls away with the input line.
+            plan_mode = window.settings().get(CHAT_PLAN_MODE, PlanMode.FAST.value)
+            approve_mode = window.settings().get(CHAT_APPROVE_MODE, ApproveMode.ALLOW_EDIT.value)
+            status += f" · plan:{plan_mode} · approve:{approve_mode}"
+            if session and session.loading_animation.is_loading:
+                status = "⟳ " + status
 
     for target in [view] if view else window.views():
         # Clear the status key used by earlier versions of this feature.
@@ -283,6 +293,9 @@ def _reconnect_chat_view(view):
     session = ChatSession(window, view, cwd, add_dirs=add_dirs, session_id=session_id)
     chatview_clients[window_id] = session
     update_agent_model_status(window)
+    # Regions don't survive a restart: underline the "▣ N files changed" headers again
+    session.artifact.restore_header_regions()
+    toolfold.restore(view, settings.get("fold_tool_calls", True))
     # Restore the input phantoms at the existing CHAT_INPUT_START position
     session.notice_phantom.show("conversation restored after restart")
     session.model_phantom.update()
@@ -847,6 +860,8 @@ class ModelPanel:
             self._on_navigate
         )
         self.phantom_set.update([phantom])
+        # Keep the status bar copy (always visible, unlike this phantom) in step
+        update_agent_model_status(self.window)
 
     def clear(self):
         """Clear the model phantom."""
@@ -1427,11 +1442,12 @@ class ChatSession:
             text = f"{AGENT_SEPARATOR}\n\n{clean}" if clean else f"{AGENT_SEPARATOR}\n\n"
         formatted_text = self.markdown_formatter.format(text, flush=flush)
         html_tables = self.markdown_formatter.take_html_tables()
+        text_starts = self.markdown_formatter.take_text_starts()
         if formatted_text:
             sublime.set_timeout(
-                lambda ft=formatted_text, ht=html_tables: self.chat_view.run_command(
+                lambda ft=formatted_text, ht=html_tables, ts=text_starts: self.chat_view.run_command(
                     "term_chat_output_append",
-                    {"text": ft, "html_tables": ht},
+                    {"text": ft, "html_tables": ht, "text_starts": ts},
                 ),
                 0,
             )
@@ -1721,6 +1737,8 @@ class ChatSession:
 
     def show_file_changes_artifact(self):
         """Append the collapsed file changes artifact for the finished turn."""
+        # The turn is over: its last run of tool calls is finished too
+        self.chat_view.run_command("term_chat_fold_tool_calls")
         self.artifact.show()
         if self.has_sent_message and self.token_usage:
             self.token_summary_phantom.show(self.token_usage)
@@ -2366,6 +2384,37 @@ class TermChatHistoryDownCommand(sublime_plugin.TextCommand):
         self.view.show(self.view.size())
 
 
+def _file_link_base_dirs(view):
+    """Directories relative file links resolve against: the agent cwd, then the window's folders."""
+    dirs = []
+    window = view.window()
+    if window:
+        session = chatview_clients.get(window.id())
+        if session:
+            cwd = session.agent_thread.cwd if session.agent_thread else session.cwd
+            if cwd:
+                dirs.append(cwd)
+        dirs.extend(d for d in window.folders() if d not in dirs)
+    return dirs
+
+
+def _file_links_click():
+    """How a file link opens: "single" (one click) or "double" (double-click, the default)."""
+    settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+    return "single" if settings.get("file_links_click") == "single" else "double"
+
+
+def _schedule_file_link_scan(view):
+    """Underline file paths in a Chat View (after a short idle delay) if `file_links` is enabled."""
+    if not view.settings().get(CHAT_VIEW_FLAG, False):
+        return
+    settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+    if not settings.get("file_links", True):
+        view.erase_regions(filelinks.FILE_LINK_REGION_KEY)
+        filelinks.forget(view)
+        return
+    filelinks.schedule_scan(view, _file_link_base_dirs, skip_key=ARTIFACT_REGION_KEY, end_fn=get_input_start)
+
 
 class ChatViewListener(sublime_plugin.EventListener):
     def on_load(self, view):
@@ -2407,11 +2456,13 @@ class ChatViewListener(sublime_plugin.EventListener):
 
     def on_activated(self, view):
         update_agent_model_status(view.window(), view)
+        _schedule_file_link_scan(view)
 
     def on_close(self, view):
         """
         Cleanup session when the chat view is closed.
         """
+        filelinks.forget(view)
         if view.name() == CHAT_VIEW_NAME:
             window = view.window()
             if window is None:
@@ -2505,6 +2556,16 @@ class ChatViewListener(sublime_plugin.EventListener):
                     if session.is_artifact_execute_at(click_point):
                         if session.open_artifact_diff_at(click_point):
                             return ("noop", {})
+                    elif "by" not in args:
+                        # Single click on a "▣ N files changed" header → fold / unfold its file list;
+                        # on a "⏺ N tool calls" header or a call's ⏺ → fold / unfold the calls;
+                        # on a file link → open it, when `file_links_click` is "single"
+                        if toolfold.toggle_at(view, click_point):
+                            return ("noop", {})
+                        if session.artifact.toggle_file_list_at(click_point):
+                            return ("noop", {})
+                        if _file_links_click() == "single" and filelinks.open_link_at(view, click_point):
+                            return ("noop", {})
                     elif is_word_select:
                         line_text = view.substr(view.line(click_point))
                         if session.message_processor.open_tool_file(line_text, window, view=view, point=click_point):
@@ -2513,6 +2574,8 @@ class ChatViewListener(sublime_plugin.EventListener):
                                 line_text, window, view, click_point):
                             return ("noop", {})
                         if session.open_artifact_diff_at(click_point):
+                            return ("noop", {})
+                        if _file_links_click() != "single" and filelinks.open_link_at(view, click_point):
                             return ("noop", {})
 
         editable_start = input_editable_start(view)
@@ -2597,10 +2660,14 @@ class ChatViewListener(sublime_plugin.EventListener):
         )
 
     def on_hover(self, view, point, hover_zone):
-        """Show rewind confirm phantom when hovering over a prompt gutter dot."""
-        if hover_zone != sublime.HOVER_GUTTER:
-            return
+        """Show rewind confirm phantom when hovering over a prompt gutter dot,
+        or an "Open" popup when hovering over a file link."""
         if not view.settings().get(CHAT_VIEW_FLAG, False):
+            return
+        if hover_zone == sublime.HOVER_TEXT:
+            filelinks.show_link_popup(view, point)
+            return
+        if hover_zone != sublime.HOVER_GUTTER:
             return
         window = view.window()
         if not window or window.id() not in chatview_clients:
@@ -2626,6 +2693,7 @@ class ChatViewListener(sublime_plugin.EventListener):
         """
         Trigger autocompletion immediately when '@' or a directory '/' is typed.
         """
+        _schedule_file_link_scan(view)
         editable_start = self._get_editable_start(view)
         if editable_start is None:
             return
@@ -2692,7 +2760,7 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
 
 class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
 
-    def run(self, edit, text, html_tables=None):
+    def run(self, edit, text, html_tables=None, text_starts=None):
         insert_at = get_input_start(self.view, 0) - 1
         inserted = self.view.insert(edit, insert_at, text)
         # The anchor region shifts with the insert; re-set to keep the
@@ -2707,6 +2775,9 @@ class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
                     end = insert_at + table["end"]
                     session.table_phantoms.add(
                         sublime.Region(start, end), table["html"])
+        if text_starts:
+            # Where the agent's text starts after a tool call: tool-call folding stops there
+            toolfold.mark_text_starts(self.view, [insert_at + start for start in text_starts])
 
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
         diff_folds = extract_diff_fold_ranges(
@@ -2717,8 +2788,18 @@ class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
         for start, end in diff_folds:
             if end > start:
                 self.view.fold(sublime.Region(insert_at + start, insert_at + end))
+        if settings.get("fold_tool_calls", True):
+            toolfold.fold_runs(self.view, edit, insert_at + inserted)
         self.view.show(self.view.size())
 
+
+class TermChatFoldToolCallsCommand(sublime_plugin.TextCommand):
+    """Fold the last run of tool calls of a finished turn (runs are folded as text follows them)."""
+
+    def run(self, edit):
+        settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+        if settings.get("fold_tool_calls", True):
+            toolfold.fold_runs(self.view, edit, get_input_start(self.view, 0) - 1, final=True)
 
 class TermChatInputPromptCommand(sublime_plugin.TextCommand):
 
