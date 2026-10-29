@@ -865,10 +865,12 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
 
         elif message.type == "turn_started":
             # Extract turnId if available
-            self._active_turn_id = message.content.get("turnId")
+            turn_id = message.content.get("turnId")
+            self._active_turn_id = turn_id
             turn_index = message.content.get("turnIndex")
-            if turn_index is not None:
-                self.session.update_last_prompt_uuid(str(turn_index))
+            uuid_to_store = turn_id or (str(turn_index) if turn_index is not None else None)
+            if uuid_to_store is not None:
+                self.session.update_last_prompt_uuid(str(uuid_to_store))
             self.session.start_loading()
 
         elif message.type in ("thinking", "text"):

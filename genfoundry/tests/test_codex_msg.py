@@ -102,6 +102,8 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
                         },
                     })
                     fake_proc.feed({"method": "turn/completed", "params": {"turnId": turn_id}})
+                elif method == "thread/revert":
+                    fake_proc.feed({"id": rid, "result": {"thread": {"id": "thread-001"}}})
 
         agent._write_json = mock_write_json
 
@@ -576,6 +578,213 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(total["cachedInputTokens"], 39910)
                     self.assertEqual(total["reasoningOutputTokens"], 326)
                     break
+        finally:
+            await agent.disconnect()
+
+    async def test_rewind_with_thread_revert(self):
+        fake_proc = FakeProcess()
+        agent = await self._create_agent(fake_proc)
+
+        try:
+            # Turn 1
+            await agent.send_message("First message")
+            await self._collect_turn(agent)
+
+            # Turn 2
+            await agent.send_message("Second message")
+            await self._collect_turn(agent)
+
+            self.assertEqual(agent._turn_count, 2)
+            self.assertEqual(len(agent._turn_ids), 2)
+            turn_2_id = agent._turn_ids[1]
+
+            # Rewind using turn ID
+            thread_id = await agent.rewind(turn_2_id)
+            self.assertEqual(thread_id, "thread-001")
+            self.assertEqual(agent._turn_count, 1)
+            self.assertEqual(len(agent._turn_ids), 1)
+
+            revert_call = next(
+                c for c in self._rpc_calls if c.get("method") == "thread/revert"
+            )
+            self.assertEqual(revert_call["params"]["threadId"], "thread-001")
+            self.assertEqual(revert_call["params"]["beforeTurnId"], turn_2_id)
+        finally:
+            await agent.disconnect()
+
+    async def test_rewind_with_turn_index_resolves_to_revert(self):
+        fake_proc = FakeProcess()
+        agent = await self._create_agent(fake_proc)
+
+        try:
+            # Turn 1
+            await agent.send_message("First message")
+            await self._collect_turn(agent)
+
+            # Turn 2
+            await agent.send_message("Second message")
+            await self._collect_turn(agent)
+
+            turn_2_id = agent._turn_ids[1]
+
+            # Rewind using index string "2"
+            thread_id = await agent.rewind("2")
+            self.assertEqual(thread_id, "thread-001")
+            self.assertEqual(agent._turn_count, 1)
+
+            revert_call = next(
+                c for c in self._rpc_calls if c.get("method") == "thread/revert"
+            )
+            self.assertEqual(revert_call["params"]["beforeTurnId"], turn_2_id)
+        finally:
+            await agent.disconnect()
+
+    async def test_subagent_activity_visible_and_lifecycle_isolated(self):
+        fake_proc = FakeProcess()
+        agent = await self._create_agent(fake_proc)
+
+        try:
+            # Turn 1: normal turn
+            await agent.send_message("First message")
+            await self._collect_turn(agent)
+
+            self.assertEqual(agent._turn_count, 1)
+            turn_1_id = agent._turn_ids[0]
+
+            # In Turn 2, simulate an active turn that spawns a subagent
+            turn_2_id = "turn-custom-2"
+            fake_proc.feed({
+                "method": "turn/started",
+                "params": {
+                    "threadId": "thread-001",
+                    "turn": {
+                        "id": turn_2_id,
+                        "rootTurnId": turn_2_id,
+                    },
+                },
+            })
+
+            # Subagent thread and turn
+            sub_thread_id = "subthread-xyz"
+            sub_turn_id = "subturn-abc"
+
+            # Main agent tool call spawns subagent
+            fake_proc.feed({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "collabAgentToolCall",
+                        "id": "collab-1",
+                        "tool": "spawnAgent",
+                        "receiverThreadIds": [sub_thread_id],
+                        "prompt": "Investigate something",
+                        "status": "completed",
+                    }
+                },
+            })
+
+            # Subagent starts its turn
+            fake_proc.feed({
+                "method": "turn/started",
+                "params": {
+                    "threadId": sub_thread_id,
+                    "turn": {
+                        "id": sub_turn_id,
+                        "rootTurnId": turn_2_id,
+                    },
+                },
+            })
+
+            # Subagent produces tool call and text
+            fake_proc.feed({
+                "method": "item/started",
+                "params": {
+                    "item": {
+                        "type": "mcpToolCall",
+                        "id": "mcp-1",
+                        "server": "web_search",
+                        "tool": "search",
+                        "status": "inProgress",
+                    },
+                    "threadId": sub_thread_id,
+                },
+            })
+            fake_proc.feed({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "agentMessage",
+                        "id": "submsg-1",
+                        "text": "Subagent findings",
+                    },
+                    "threadId": sub_thread_id,
+                },
+            })
+
+            # Subagent turn completes
+            fake_proc.feed({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": sub_thread_id,
+                    "turn": {
+                        "id": sub_turn_id,
+                        "rootTurnId": turn_2_id,
+                    },
+                },
+            })
+
+            # Main agent produces final text
+            fake_proc.feed({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "agentMessage",
+                        "id": "mainmsg-2",
+                        "text": "Main agent final answer",
+                    },
+                    "threadId": "thread-001",
+                },
+            })
+
+            # Main agent completes
+            fake_proc.feed({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-001",
+                    "turn": {
+                        "id": turn_2_id,
+                        "rootTurnId": turn_2_id,
+                    },
+                },
+            })
+
+            # Collect all messages for turn 2
+            messages = await self._collect_turn(agent)
+            types = [m.type for m in messages]
+
+            # 1. Main turn started was emitted exactly once
+            self.assertEqual(types.count("turn_started"), 1)
+            # 2. Subagent tool calls and messages were emitted
+            self.assertIn("tool_use", types)
+            self.assertIn("assistant", types)
+            # 3. Main thread turn state was preserved
+            self.assertEqual(agent._turn_count, 2)
+            self.assertEqual(agent._turn_ids, [turn_1_id, turn_2_id])
+            self.assertEqual(agent._active_turn_id, turn_2_id)
+            # 4. Turn ended with exactly one stop (when main turn finished)
+            self.assertEqual(types[-1], "stop")
+
+            # 5. Rewind with subagent turn ID resolves to root turn_2_id
+            reverted_thread = await agent.rewind(sub_turn_id)
+            self.assertEqual(reverted_thread, "thread-001")
+            self.assertEqual(agent._turn_count, 1)
+            self.assertEqual(agent._turn_ids, [turn_1_id])
+
+            revert_call = next(
+                c for c in self._rpc_calls if c.get("method") == "thread/revert"
+            )
+            self.assertEqual(revert_call["params"]["threadId"], "thread-001")
+            self.assertEqual(revert_call["params"]["beforeTurnId"], turn_2_id)
         finally:
             await agent.disconnect()
 

@@ -162,6 +162,9 @@ class CodexAgent(BaseAgent):
         self._plan_text: str = ""
         # Counts user turns sent (1-based); used as rewind handle
         self._turn_count: int = 0
+        self._turn_ids: List[str] = []
+        self._subagent_thread_ids: Set[str] = set()
+        self._subagent_turn_to_root: Dict[str, str] = {}
 
         if not self.cli_path:
             raise FileNotFoundError(
@@ -320,10 +323,20 @@ class CodexAgent(BaseAgent):
             # Sync turn count from resumed thread so rewind math stays correct
             turns = thread.get("turns", [])
             if turns:
-                self._turn_count = len(turns)
-                LOG.info(f"Codex connect {method}: {self.thread_id} (resumed {self._turn_count} turns)")
+                self._turn_ids = [
+                    t["id"] for t in turns
+                    if isinstance(t, dict) and t.get("id")
+                ]
+                self._turn_count = len(self._turn_ids) if self._turn_ids else len(turns)
+                LOG.info(
+                    f"Codex connect {method}: {self.thread_id} (resumed {self._turn_count} turns)"
+                )
             else:
+                self._turn_ids = []
+                self._turn_count = 0
                 LOG.info(f"Codex connect {method}: {self.thread_id}")
+            self._subagent_thread_ids.clear()
+            self._subagent_turn_to_root.clear()
         else:
             err_detail = f": {self._parse_codex_error(self._last_rpc_error)}" if self._last_rpc_error else ""
             action = "resume session" if self.options.session_id else "start session"
@@ -359,6 +372,23 @@ class CodexAgent(BaseAgent):
         if isinstance(turn, dict):
             return turn.get("id")
         return None
+
+    def _is_subagent(
+        self,
+        thread_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        root_turn_id: Optional[str] = None,
+    ) -> bool:
+        """Determine whether an event or turn belongs to a collaborative subagent."""
+        if thread_id and self.thread_id and thread_id != self.thread_id:
+            return True
+        if thread_id and thread_id in self._subagent_thread_ids:
+            return True
+        if root_turn_id and turn_id and root_turn_id != turn_id:
+            return True
+        if turn_id and turn_id in self._subagent_turn_to_root:
+            return True
+        return False
 
     async def send_message(self, content: str, parent_tool_use_id: Optional[str] = None, proceed_plan: bool = False) -> None:
         """Send a user message to Codex by starting a new turn on the thread."""
@@ -427,29 +457,68 @@ class CodexAgent(BaseAgent):
             LOG.warning(f"CodexAgent: Cannot interrupt - is_connected: {self._is_connected}, thread_id: {self.thread_id}, active_turn_id: {self._active_turn_id}")
 
     async def rewind(self, turn_identifier: str) -> Optional[str]:
-        """Roll back the thread to just before the turn at turn_identifier (1-based index).
+        """Roll back the thread to just before the turn at turn_identifier using thread/revert.
 
-        Drops the target turn and everything after it.
-        numTurns = _turn_count - (target_index - 1) = turns from target to end (inclusive).
+        turn_identifier may be a turn ID string (e.g. 'turn-...') or a 1-based turn index.
         Returns the thread_id (unchanged).
         """
         if not self._is_connected or not self.thread_id:
             raise RuntimeError("Client is not connected or no active thread.")
 
-        target_index = int(turn_identifier)
-        num_turns = self._turn_count - (target_index - 1)
-        if num_turns < 1:
-            return self.thread_id
+        before_turn_id: Optional[str] = None
+        target_index: Optional[int] = None
 
-        LOG.info(f"[rewind] thread/rollback numTurns={num_turns} (turn_count={self._turn_count}, target={target_index})")
-        result = await self._rpc_request("thread/rollback", {
+        ident_str = str(turn_identifier).strip()
+        # Resolve subagent turn ID to parent root turn ID if needed
+        if ident_str in self._subagent_turn_to_root:
+            resolved = self._subagent_turn_to_root[ident_str]
+            LOG.info(f"[rewind] mapped subagent turn {ident_str} -> root turn {resolved}")
+            ident_str = resolved
+
+        if ident_str.isdigit():
+            target_index = int(ident_str)
+            if 1 <= target_index <= len(self._turn_ids):
+                before_turn_id = self._turn_ids[target_index - 1]
+        else:
+            before_turn_id = ident_str
+            if before_turn_id in self._turn_ids:
+                target_index = self._turn_ids.index(before_turn_id) + 1
+
+        if not before_turn_id:
+            raise RuntimeError(
+                f"Cannot revert: turn identifier '{turn_identifier}' could not be resolved to a turn ID"
+            )
+
+        if target_index is not None and self._turn_count > 0:
+            num_turns = self._turn_count - (target_index - 1)
+            if num_turns < 1:
+                return self.thread_id
+
+        LOG.info(
+            f"[rewind] thread/revert beforeTurnId={before_turn_id} "
+            f"(turn_count={self._turn_count}, target={target_index})"
+        )
+        self._last_rpc_error = None
+        result = await self._rpc_request("thread/revert", {
             "threadId": self.thread_id,
-            "numTurns": num_turns,
+            "beforeTurnId": before_turn_id,
         })
         if result is None:
-            raise RuntimeError("thread/rollback RPC failed or timed out")
+            err_msg = (
+                self._parse_codex_error(self._last_rpc_error)
+                if self._last_rpc_error else "RPC failed or timed out"
+            )
+            raise RuntimeError(f"Codex thread/revert failed: {err_msg}")
 
-        self._turn_count = target_index - 1
+        # Update local tracking on success
+        if target_index is not None:
+            self._turn_count = target_index - 1
+            self._turn_ids = self._turn_ids[:self._turn_count]
+        elif before_turn_id in self._turn_ids:
+            idx = self._turn_ids.index(before_turn_id)
+            self._turn_ids = self._turn_ids[:idx]
+            self._turn_count = len(self._turn_ids)
+
         self._active_turn_id = None
         return self.thread_id
 
@@ -583,11 +652,22 @@ class CodexAgent(BaseAgent):
         method = data.get("method", "")
         params = data.get("params", {})
 
+        # Pre-cache item in case an approval request references it
+        item = params.get("item")
+        if isinstance(item, dict) and item.get("id"):
+            self._item_cache[item["id"]] = item
+
         if method == "thread/started":
             thread_data = params.get("thread", {})
             t_id = thread_data.get("id")
             if t_id:
-                await self._message_queue.put(Message("thread_started", content={"session_id": t_id}))
+                if self.thread_id and t_id != self.thread_id:
+                    self._subagent_thread_ids.add(t_id)
+                    LOG.debug(f"Recorded subagent thread: {t_id}")
+                else:
+                    await self._message_queue.put(
+                        Message("thread_started", content={"session_id": t_id})
+                    )
 
         elif method == "thread/tokenUsage/updated":
             usage = params.get("tokenUsage", {})
@@ -596,20 +676,55 @@ class CodexAgent(BaseAgent):
                     Message(MessageType.TOKEN_USAGE.value, content=usage)
                 )
 
+        elif method == "thread/reverted":
+            LOG.info(f"Codex thread/reverted: {params.get('threadId')}")
 
         elif method == "turn/started":
             turn_id = self._extract_turn_id(params)
+            turn_obj = params.get("turn", {}) if isinstance(params.get("turn"), dict) else {}
+            root_turn_id = turn_obj.get("rootTurnId")
+            event_thread_id = params.get("threadId")
+
+            if turn_id and root_turn_id and root_turn_id != turn_id:
+                self._subagent_turn_to_root[turn_id] = root_turn_id
+
+            if self._is_subagent(event_thread_id, turn_id, root_turn_id):
+                LOG.debug(
+                    f"Subagent turn/started ignored for main thread: "
+                    f"turnId={turn_id}, threadId={event_thread_id}"
+                )
+                return
+
             self._active_turn_id = turn_id
-            self._turn_count += 1
+            if turn_id and turn_id not in self._turn_ids:
+                self._turn_ids.append(turn_id)
+            self._turn_count = len(self._turn_ids) if self._turn_ids else self._turn_count + 1
             await self._message_queue.put(
                 Message("turn_started", content={"turnId": turn_id, "turnIndex": self._turn_count})
             )
 
         elif method == "turn/completed":
-            # Update active turn ID if provided in completion
             turn_id = self._extract_turn_id(params)
+            turn_obj = params.get("turn", {}) if isinstance(params.get("turn"), dict) else {}
+            root_turn_id = turn_obj.get("rootTurnId")
+            event_thread_id = params.get("threadId")
+
+            if turn_id and root_turn_id and root_turn_id != turn_id:
+                self._subagent_turn_to_root[turn_id] = root_turn_id
+
+            if self._is_subagent(event_thread_id, turn_id, root_turn_id):
+                LOG.debug(
+                    f"Subagent turn/completed ignored for main thread: "
+                    f"turnId={turn_id}, threadId={event_thread_id}"
+                )
+                return
+
+            # Update active turn ID if provided in completion
             if turn_id:
                 self._active_turn_id = turn_id
+                if turn_id not in self._turn_ids:
+                    self._turn_ids.append(turn_id)
+                self._turn_count = len(self._turn_ids)
             # We keep self._active_turn_id here so it can be used as expectedTurnId
             # for the next turn or steering.
             if self.plan_mode and self._plan_text:
@@ -668,6 +783,10 @@ class CodexAgent(BaseAgent):
         item_id = item.get("id")
         if item_id:
             self._item_cache[item_id] = item
+
+        if item_type == "collabAgentToolCall":
+            for r_id in item.get("receiverThreadIds") or []:
+                self._subagent_thread_ids.add(r_id)
 
         if item_type == "commandExecution":
             # Extract cleaner command from commandActions if available
@@ -755,6 +874,8 @@ class CodexAgent(BaseAgent):
             await self._message_queue.put(tool_msg)
 
         elif item_type == "collabAgentToolCall":
+            for r_id in item.get("receiverThreadIds") or []:
+                self._subagent_thread_ids.add(r_id)
             tool_msg = Message(
                 MessageType.TOOL_USE.value,
                 content={
