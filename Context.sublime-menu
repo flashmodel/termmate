@@ -18,6 +18,10 @@
                 "command": "term_chat_resume_session"
             },
             {
+                "caption": "Delete Chat…",
+                "command": "term_chat_delete_session"
+            },
+            {
                 "caption": "Clear Session",
                 "command": "term_chat_clear_session"
             },

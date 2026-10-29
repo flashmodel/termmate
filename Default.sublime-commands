@@ -44,6 +44,10 @@
         "command": "term_chat_resume_session"
     },
     {
+        "caption": "TermMate: Delete Chat\tremove a past conversation",
+        "command": "term_chat_delete_session"
+    },
+    {
         "caption": "TermMate: Plan Mode",
         "command": "term_chat_toggle_plan_mode"
     },

@@ -14,7 +14,7 @@ from ..genfoundry import (
     PermissionResultAllow, PermissionResultDeny, list_sessions_for_cwd, list_codex_sessions,
     list_pi_sessions, list_opencode_sessions, get_opencode_session_info,
     list_antigravity_sessions, get_antigravity_session_tail)
-from ..genfoundry.claude_agent import get_claude_session_tail
+from ..genfoundry.claude_agent import get_claude_session_tail, delete_session as delete_claude_session
 from ..genfoundry.codex_agent import get_codex_session_info
 from ..genfoundry.opencode_agent import stop_sublime_opencode_server
 from ..genfoundry.pi_agent import get_pi_session_tail
@@ -3154,6 +3154,64 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
         session = chatview_clients.get(self.window.id())
         agent = self._get_agent(session)
         return agent in ("claude", "codex", "pi", "opencode", "antigravity")
+
+
+class TermChatDeleteSessionCommand(TermChatResumeSessionCommand):
+    """
+    Shows the same list as Resume Session and deletes the chosen chat (Claude Code only).
+
+    The chat's file (and its folder of subagent logs and tool results, if any) is moved to the system trash,
+    so it is gone from TermMate and Claude Code; restoring it from the trash brings the chat back.
+    """
+
+    def run(self):
+        import datetime
+        session = chatview_clients.get(self.window.id())
+        if self._get_agent(session) != "claude":
+            sublime.status_message("Deleting chats is only supported for Claude Code")
+            return
+        cwd = self._get_cwd(session)
+        sessions = list_sessions_for_cwd(cwd)
+        if not sessions:
+            sublime.status_message("No past sessions found for this workspace")
+            return
+
+        current_session_id = session.agent_thread.session_id if session and session.agent_thread else None
+        items = []
+        for s in sessions:
+            summary = s["summary"] or "(empty)"
+            if len(summary) > self._PREVIEW_LEN:
+                summary = summary[:self._PREVIEW_LEN] + "…"
+            dt = datetime.datetime.fromtimestamp(s["mtime"]).strftime("%Y-%m-%d %H:%M")
+            marker = "  ●" if s["session_id"] == current_session_id else ""
+            items.append([summary, f"{s['session_id'][:8]}  {dt}{marker}"])
+
+        def on_select(index):
+            if index < 0:
+                return
+            chosen_id = sessions[index]["session_id"]
+            if chosen_id == current_session_id:
+                sublime.message_dialog(
+                    "This is the chat you are in. Switch to another chat or run Clear Session, then delete it.")
+                return
+            summary = sessions[index]["summary"] or chosen_id[:8]
+            if not sublime.ok_cancel_dialog(
+                    f"Delete this chat?\n\n{summary}\n\n"
+                    "It disappears from TermMate and Claude Code and its file goes to the system trash.",
+                    "Delete"):
+                return
+            try:
+                # Sublime Text's own copy, the one its side bar Delete uses
+                from Default.send2trash import send2trash
+            except ImportError:
+                sublime.status_message("Could not delete chat: no system trash support")
+                return
+            if delete_claude_session(chosen_id, cwd, send2trash):
+                sublime.status_message(f"Deleted chat {chosen_id[:8]}")
+            else:
+                sublime.status_message(f"Could not delete chat {chosen_id[:8]}")
+
+        self.window.show_quick_panel(items, on_select, placeholder="Delete a Claude chat")
 
 
 class TermChatInterruptCommand(sublime_plugin.WindowCommand):

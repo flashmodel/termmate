@@ -213,6 +213,10 @@ Hover over any gutter dot or click the `↩` button that appears at the prompt l
 
 When confirmed, TermMate forks the session at the selected prompt, removes all subsequent messages from the chat view - letting you explore a different direction without losing the original context.
 
+**4. Delete a Chat**
+
+Right-click and choose **TermMate → Delete Chat…** (or run **`TermMate: Delete Chat`**), pick a past chat from the list and confirm. The chat disappears from TermMate and Claude Code: its file in `~/.claude/projects` (and the folder of the same name, if any) is moved to the system trash, where you can restore it or empty it for good. Claude Code only for now; the chat you are in cannot be deleted.
+
 ## Shortcuts & Commands
 
 | Action | macOS | Windows/Linux | Command Palette |

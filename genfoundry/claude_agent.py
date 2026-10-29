@@ -1458,6 +1458,32 @@ def list_sessions_for_cwd(cwd: Optional[str] = None) -> list:
     return results
 
 
+def delete_session(session_id: str, cwd: Optional[str], trash: Callable[[str], None]) -> bool:
+    """Move a session to the trash: its `<id>.jsonl` file and the `<id>/` folder next to it, if any
+    (subagent logs, tool results). `trash` takes a path, e.g. `send2trash`.
+
+    Returns False, changing nothing, when `session_id` is not a session id, its file is not found or
+    `trash` fails on it.
+    """
+    if not _validate_session_uuid(session_id):
+        return False
+    found = _find_session_file_with_dir(session_id, cwd)
+    if found is None:
+        return False
+    path, project_dir = found
+    try:
+        trash(str(path))
+    except Exception:
+        return False
+    folder = project_dir / session_id
+    if folder.is_dir() and not folder.is_symlink():
+        try:
+            trash(str(folder))
+        except Exception:
+            pass  # the chat is already gone; the folder is only its side data
+    return True
+
+
 if __name__ == "__main__":
     # Windows compatibility
     if sys.platform == 'win32':
