@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import tempfile
+import sqlite3
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,6 +21,7 @@ from genfoundry.antigravity_agent import (
     _parse_iso_timestamp,
     _is_workspace_match,
     _read_transcript_summary_and_mtime,
+    _load_sessions_from_db,
 )
 from genfoundry.base_agent import AgentOptions, Message
 
@@ -1168,6 +1170,160 @@ class TestAntigravityMetadataAndSessionDiscovery(unittest.TestCase):
                 results_all = list_antigravity_sessions(None)
                 self.assertEqual(len(results_all), 1)
                 self.assertEqual(results_all[0]["session_id"], "sess-1")
+
+    def test_list_antigravity_sessions_sqlite_database(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = os.path.join(tmp_dir, "conversation_summaries.db")
+            conn = sqlite3.connect(db_path)
+            conn.execute("""
+                CREATE TABLE conversation_summaries (
+                    conversation_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    preview TEXT NOT NULL DEFAULT '',
+                    step_count INTEGER NOT NULL DEFAULT 0,
+                    last_modified_time TEXT,
+                    workspace_uris TEXT
+                )
+            """)
+            ws_target = os.path.join(tmp_dir, "workspace_target")
+            os.makedirs(ws_target, exist_ok=True)
+            ws_other = os.path.join(tmp_dir, "workspace_other")
+            os.makedirs(ws_other, exist_ok=True)
+
+            conn.execute(
+                """
+                INSERT INTO conversation_summaries
+                (conversation_id, title, preview, step_count, last_modified_time, workspace_uris)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "sess-sql-recent",
+                    "Recent Sqlite Conversation",
+                    "User request preview",
+                    12,
+                    "2026-10-31 01:00:00+00:00",
+                    json.dumps([f"file://{ws_target}"]),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO conversation_summaries
+                (conversation_id, title, preview, step_count, last_modified_time, workspace_uris)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "sess-sql-other",
+                    "Other Project Conversation",
+                    "Other preview",
+                    5,
+                    "2026-10-30 12:00:00+00:00",
+                    json.dumps([f"file://{ws_other}"]),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO conversation_summaries
+                (conversation_id, title, preview, step_count, last_modified_time, workspace_uris)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "sess-sql-empty",
+                    "Empty Conversation",
+                    "",
+                    0,
+                    "2026-10-31 02:00:00+00:00",
+                    json.dumps([f"file://{ws_target}"]),
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            # Test direct _load_sessions_from_db function
+            db_sessions = _load_sessions_from_db(db_path)
+            self.assertEqual(len(db_sessions), 2)
+            self.assertIn("sess-sql-recent", db_sessions)
+            self.assertIn("sess-sql-other", db_sessions)
+            self.assertNotIn("sess-sql-empty", db_sessions)
+            self.assertEqual(
+                _load_sessions_from_db(os.path.join(tmp_dir, "missing.db")), {}
+            )
+
+            hist_file = os.path.join(tmp_dir, "history.jsonl")
+            with patch("genfoundry.antigravity_agent._get_base_dir", return_value=tmp_dir), \
+                 patch("genfoundry.antigravity_agent._get_history_file", return_value=hist_file):
+                results_target = list_antigravity_sessions(ws_target)
+                self.assertEqual(len(results_target), 1)
+                self.assertEqual(results_target[0]["session_id"], "sess-sql-recent")
+                self.assertEqual(results_target[0]["summary"], "Recent Sqlite Conversation")
+                self.assertEqual(results_target[0]["steps"], 12)
+
+                results_all = list_antigravity_sessions(None)
+                self.assertEqual(len(results_all), 2)
+                self.assertEqual(results_all[0]["session_id"], "sess-sql-recent")
+                self.assertEqual(results_all[1]["session_id"], "sess-sql-other")
+
+    def test_list_antigravity_sessions_sqlite_and_metadata_merge(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # 1. Sqlite DB has the latest session
+            db_path = os.path.join(tmp_dir, "conversation_summaries.db")
+            conn = sqlite3.connect(db_path)
+            conn.execute("""
+                CREATE TABLE conversation_summaries (
+                    conversation_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    preview TEXT NOT NULL DEFAULT '',
+                    step_count INTEGER NOT NULL DEFAULT 0,
+                    last_modified_time TEXT,
+                    workspace_uris TEXT
+                )
+            """)
+            conn.execute(
+                """
+                INSERT INTO conversation_summaries
+                (conversation_id, title, preview, step_count, last_modified_time, workspace_uris)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "sess-live",
+                    "Live SQLite Session",
+                    "Live preview",
+                    8,
+                    "2026-10-31 03:00:00+00:00",
+                    json.dumps([]),
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            # 2. Metadata JSON has an older session
+            cache_dir = os.path.join(tmp_dir, "cache")
+            os.makedirs(cache_dir, exist_ok=True)
+            meta_path = os.path.join(cache_dir, "conversation_metadata.json")
+            data = {
+                "conversations": {
+                    "sess-cached": {
+                        "summary": {
+                            "ID": "sess-cached",
+                            "Title": "Cached Old Session",
+                            "NumSteps": 3,
+                            "UpdatedAt": "2026-10-30T10:00:00Z",
+                            "WorkspaceURIs": [],
+                        }
+                    }
+                }
+            }
+            with open(meta_path, "w") as f:
+                json.dump(data, f)
+
+            hist_file = os.path.join(tmp_dir, "history.jsonl")
+            with patch("genfoundry.antigravity_agent._get_base_dir", return_value=tmp_dir), \
+                 patch("genfoundry.antigravity_agent._get_history_file", return_value=hist_file):
+                results = list_antigravity_sessions(None)
+                self.assertEqual(len(results), 2)
+                self.assertEqual(results[0]["session_id"], "sess-live")
+                self.assertEqual(results[0]["summary"], "Live SQLite Session")
+                self.assertEqual(results[1]["session_id"], "sess-cached")
+                self.assertEqual(results[1]["summary"], "Cached Old Session")
 
 
 if __name__ == "__main__":

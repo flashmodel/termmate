@@ -13,6 +13,8 @@ import shutil
 import signal
 import sys
 import datetime
+import sqlite3
+from pathlib import Path
 from urllib.parse import urlparse, unquote
 from typing import Optional, Dict, Any, AsyncIterator, List, Set, Tuple
 
@@ -1109,6 +1111,67 @@ def _read_transcript_summary_and_mtime(session_id: str) -> Tuple[str, float]:
     return "", 0.0
 
 
+def _load_sessions_from_db(db_file: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """
+    Read session summaries from Antigravity's conversation_summaries.db SQLite database.
+    Returns mapping of session_id -> {session_id, summary, mtime, workspaces, steps}.
+    """
+    if db_file is None:
+        db_file = os.path.join(_get_base_dir(), "conversation_summaries.db")
+
+    sessions: Dict[str, Dict[str, Any]] = {}
+    if not os.path.isfile(db_file):
+        return sessions
+
+    try:
+        try:
+            db_uri = Path(db_file).as_uri() + "?mode=ro"
+            conn = sqlite3.connect(db_uri, uri=True, timeout=3.0)
+        except Exception:
+            conn = sqlite3.connect(db_file, timeout=3.0)
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT conversation_id, title, preview, step_count, last_modified_time,
+                       workspace_uris
+                FROM conversation_summaries
+                WHERE step_count > 0
+                ORDER BY last_modified_time DESC
+            """)
+            for cid, title, preview, num_steps, last_mod, ws_json in cur.fetchall():
+                if not cid:
+                    continue
+                summary_text = (title or preview or "").strip()
+                mtime = _parse_iso_timestamp(last_mod or "")
+
+                ws_set: Set[str] = set()
+                if ws_json:
+                    try:
+                        uris = json.loads(ws_json) if isinstance(ws_json, str) else ws_json
+                        if isinstance(uris, list):
+                            for u in uris:
+                                if isinstance(u, str) and u.startswith("file://"):
+                                    path = unquote(urlparse(u).path)
+                                    if path:
+                                        ws_set.add(path)
+                    except Exception:
+                        pass
+
+                sessions[cid] = {
+                    "session_id": cid,
+                    "summary": summary_text,
+                    "mtime": mtime,
+                    "workspaces": ws_set,
+                    "steps": num_steps or 0,
+                }
+        finally:
+            conn.close()
+    except Exception as e:
+        LOG.debug(f"Error reading conversation_summaries.db: {e}")
+
+    return sessions
+
+
 def list_antigravity_sessions(cwd: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     List past Antigravity conversations from ~/.gemini/antigravity-cli cache, brain, and history.
@@ -1118,10 +1181,12 @@ def list_antigravity_sessions(cwd: Optional[str] = None) -> List[Dict[str, Any]]
     history_file = _get_history_file()
     last_conv_file = os.path.join(base_dir, "cache", "last_conversations.json")
     meta_file = os.path.join(base_dir, "cache", "conversation_metadata.json")
+    db_file = os.path.join(base_dir, "conversation_summaries.db")
 
-    sessions_by_id: Dict[str, Dict[str, Any]] = {}
+    # 1. Primary live store: conversation_summaries.db (authoritative real-time summaries)
+    sessions_by_id: Dict[str, Dict[str, Any]] = _load_sessions_from_db(db_file)
 
-    # 1. Main metadata: bulk load structured sessions (Title, Steps, UpdatedAt, WorkspaceURIs)
+    # 2. Secondary/fallback metadata: bulk load structured sessions (conversation_metadata.json)
     if os.path.isfile(meta_file):
         try:
             with open(meta_file, "r", encoding="utf-8", errors="replace") as f:
@@ -1148,17 +1213,26 @@ def list_antigravity_sessions(cwd: Optional[str] = None) -> List[Dict[str, Any]]
                         if mtime <= 0:
                             mtime = _parse_iso_timestamp(c_data.get("last_modified_time") or "")
 
-                        sessions_by_id[cid] = {
-                            "session_id": cid,
-                            "summary": title,
-                            "mtime": mtime,
-                            "workspaces": ws_set,
-                            "steps": num_steps,
-                        }
+                        if cid in sessions_by_id:
+                            curr = sessions_by_id[cid]
+                            if ws_set:
+                                curr["workspaces"].update(ws_set)
+                            if not curr.get("summary") and title:
+                                curr["summary"] = title
+                            if mtime > curr.get("mtime", 0.0):
+                                curr["mtime"] = mtime
+                        else:
+                            sessions_by_id[cid] = {
+                                "session_id": cid,
+                                "summary": title,
+                                "mtime": mtime,
+                                "workspaces": ws_set,
+                                "steps": num_steps,
+                            }
         except Exception as e:
             LOG.debug(f"Error reading conversation metadata: {e}")
 
-    # 2. Single-pass merge: history.jsonl (augments workspaces and missing active sessions)
+    # 3. Single-pass merge: history.jsonl (augments workspaces and missing active sessions)
     if os.path.isfile(history_file):
         try:
             with open(history_file, "r", encoding="utf-8", errors="replace") as f:
@@ -1202,7 +1276,7 @@ def list_antigravity_sessions(cwd: Optional[str] = None) -> List[Dict[str, Any]]
         except Exception as e:
             LOG.warning(f"Failed to read antigravity history: {e}")
 
-    # 3. Active mappings: last_conversations.json (augments active workspace mapping per directory)
+    # 4. Active mappings: last_conversations.json (augments active workspace mapping per directory)
     if os.path.isfile(last_conv_file):
         try:
             with open(last_conv_file, "r", encoding="utf-8", errors="replace") as f:
@@ -1223,7 +1297,7 @@ def list_antigravity_sessions(cwd: Optional[str] = None) -> List[Dict[str, Any]]
         except Exception as e:
             LOG.debug(f"Error reading last conversations: {e}")
 
-    # 4. Fast targeted fallback & transcript mtime calibration
+    # 5. Fast targeted fallback & transcript mtime calibration
     for cid, s in sessions_by_id.items():
         if not s.get("summary"):
             fb_summary, fb_mtime = _read_transcript_summary_and_mtime(cid)
@@ -1242,7 +1316,7 @@ def list_antigravity_sessions(cwd: Optional[str] = None) -> List[Dict[str, Any]]
                         pass
                     break
 
-    # 5. Filter by cwd if requested
+    # 6. Filter by cwd if requested
     results = []
     norm_cwd = os.path.normcase(os.path.realpath(cwd)) if cwd else None
 
@@ -1269,7 +1343,7 @@ def list_antigravity_sessions(cwd: Optional[str] = None) -> List[Dict[str, Any]]
             "workspace": matched_ws,
         })
 
-    # 6. Sort newest first (reverse chronological order)
+    # 7. Sort newest first (reverse chronological order)
     results.sort(key=lambda s: s["mtime"], reverse=True)
     return results
 
