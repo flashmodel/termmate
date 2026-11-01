@@ -22,6 +22,7 @@ from genfoundry.antigravity_agent import (
     _is_workspace_match,
     _read_transcript_summary_and_mtime,
     _load_sessions_from_db,
+    _file_uri_to_path,
 )
 from genfoundry.base_agent import AgentOptions, Message
 
@@ -1324,6 +1325,167 @@ class TestAntigravityMetadataAndSessionDiscovery(unittest.TestCase):
                 self.assertEqual(results[0]["summary"], "Live SQLite Session")
                 self.assertEqual(results[1]["session_id"], "sess-cached")
                 self.assertEqual(results[1]["summary"], "Cached Old Session")
+
+    def test_file_uri_to_path(self):
+        # POSIX standard path
+        self.assertEqual(
+            _file_uri_to_path("file:///Users/sino/project"),
+            "/Users/sino/project",
+        )
+        # Percent-encoded spaces
+        self.assertEqual(
+            _file_uri_to_path("file:///Users/sino/my%20project/sub%20dir"),
+            "/Users/sino/my project/sub dir",
+        )
+        # Windows-style file URI with 3 slashes
+        win_path_3 = _file_uri_to_path("file:///C:/Users/sino/project")
+        self.assertTrue(
+            win_path_3 in ("C:/Users/sino/project", "C:\\Users\\sino\\project")
+        )
+        # Windows-style file URI with 2 slashes
+        win_path_2 = _file_uri_to_path("file://C:/Users/sino/project")
+        self.assertTrue(
+            win_path_2 in ("C:/Users/sino/project", "C:\\Users\\sino\\project")
+        )
+        # Invalid / non-file URIs
+        self.assertEqual(_file_uri_to_path("https://example.com"), "")
+        self.assertEqual(_file_uri_to_path(""), "")
+
+    def test_list_antigravity_sessions_sqlite_filters_subagents(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = os.path.join(tmp_dir, "conversation_summaries.db")
+            conn = sqlite3.connect(db_path)
+            conn.execute("""
+                CREATE TABLE conversation_summaries (
+                    conversation_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    preview TEXT NOT NULL DEFAULT '',
+                    step_count INTEGER NOT NULL DEFAULT 0,
+                    last_modified_time TEXT,
+                    workspace_uris TEXT,
+                    parent_conversation_id TEXT NOT NULL DEFAULT '',
+                    nesting_depth INTEGER NOT NULL DEFAULT 0,
+                    agent_name TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            ws_path = os.path.join(tmp_dir, "my_project")
+            os.makedirs(ws_path, exist_ok=True)
+
+            # 1. Top-level user session (should be included)
+            conn.execute(
+                """
+                INSERT INTO conversation_summaries
+                (conversation_id, title, preview, step_count, last_modified_time,
+                 workspace_uris, parent_conversation_id, nesting_depth, agent_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "root-sess-1",
+                    "Root User Session",
+                    "User prompt preview",
+                    10,
+                    "2026-10-31 05:00:00+00:00",
+                    json.dumps([f"file://{ws_path}"]),
+                    "",
+                    0,
+                    "",
+                ),
+            )
+
+            # 2. Subagent session with parent_conversation_id (should be excluded)
+            conn.execute(
+                """
+                INSERT INTO conversation_summaries
+                (conversation_id, title, preview, step_count, last_modified_time,
+                 workspace_uris, parent_conversation_id, nesting_depth, agent_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "subagent-sess-1",
+                    "",
+                    "Research Pi Agent Subtask",
+                    25,
+                    "2026-10-31 05:01:00+00:00",
+                    json.dumps([f"file://{ws_path}"]),
+                    "root-sess-1",
+                    1,
+                    "research",
+                ),
+            )
+
+            # 3. Subagent session with nesting_depth > 0 (should be excluded)
+            conn.execute(
+                """
+                INSERT INTO conversation_summaries
+                (conversation_id, title, preview, step_count, last_modified_time,
+                 workspace_uris, parent_conversation_id, nesting_depth, agent_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "subagent-sess-2",
+                    "Nested Task",
+                    "",
+                    15,
+                    "2026-10-31 05:02:00+00:00",
+                    json.dumps([f"file://{ws_path}"]),
+                    "",
+                    2,
+                    "worker",
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            # Direct check
+            db_sessions = _load_sessions_from_db(db_path)
+            self.assertEqual(len(db_sessions), 1)
+            self.assertIn("root-sess-1", db_sessions)
+            self.assertNotIn("subagent-sess-1", db_sessions)
+            self.assertNotIn("subagent-sess-2", db_sessions)
+
+            # list_antigravity_sessions check
+            hist_file = os.path.join(tmp_dir, "history.jsonl")
+            with patch("genfoundry.antigravity_agent._get_base_dir", return_value=tmp_dir), \
+                 patch("genfoundry.antigravity_agent._get_history_file", return_value=hist_file):
+                results = list_antigravity_sessions(ws_path)
+                self.assertEqual(len(results), 1)
+                self.assertEqual(results[0]["session_id"], "root-sess-1")
+                self.assertEqual(results[0]["summary"], "Root User Session")
+
+    def test_load_sessions_from_db_relative_path(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_name = "test_rel.db"
+            db_path = os.path.join(tmp_dir, db_name)
+            conn = sqlite3.connect(db_path)
+            conn.execute("""
+                CREATE TABLE conversation_summaries (
+                    conversation_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    preview TEXT NOT NULL DEFAULT '',
+                    step_count INTEGER NOT NULL DEFAULT 0,
+                    last_modified_time TEXT,
+                    workspace_uris TEXT
+                )
+            """)
+            conn.execute(
+                """
+                INSERT INTO conversation_summaries
+                (conversation_id, title, preview, step_count, last_modified_time, workspace_uris)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                ("rel-sess", "Relative Session", "", 5, "2026-10-31 01:00:00+00:00", "[]"),
+            )
+            conn.commit()
+            conn.close()
+
+            orig_cwd = os.getcwd()
+            try:
+                os.chdir(tmp_dir)
+                sessions = _load_sessions_from_db(db_name)
+                self.assertEqual(len(sessions), 1)
+                self.assertIn("rel-sess", sessions)
+            finally:
+                os.chdir(orig_cwd)
 
 
 if __name__ == "__main__":

@@ -14,8 +14,9 @@ import signal
 import sys
 import datetime
 import sqlite3
+from contextlib import closing
 from pathlib import Path
-from urllib.parse import urlparse, unquote
+from urllib.request import url2pathname
 from typing import Optional, Dict, Any, AsyncIterator, List, Set, Tuple
 
 # logger by package name
@@ -1074,6 +1075,15 @@ def _is_workspace_match(ws_path: str, norm_cwd: str) -> bool:
     )
 
 
+def _file_uri_to_path(u: str) -> str:
+    """Convert file:// URI to normalized filesystem path (cross-platform)."""
+    if not isinstance(u, str) or not u.startswith("file://"):
+        return ""
+    raw = u[16:] if u.startswith("file://localhost/") else u[7:]
+    path = url2pathname(raw)
+    return path[1:] if re.match(r"^/[a-zA-Z]:", path) else path
+
+
 def _read_transcript_summary_and_mtime(session_id: str) -> Tuple[str, float]:
     """
     Read first valid USER_INPUT prompt and file mtime from brain transcript logs.
@@ -1111,6 +1121,15 @@ def _read_transcript_summary_and_mtime(session_id: str) -> Tuple[str, float]:
     return "", 0.0
 
 
+def _connect_sqlite_ro(db_file: str) -> sqlite3.Connection:
+    """Connect to SQLite database in read-only mode with fallback to read-write."""
+    try:
+        db_uri = Path(os.path.abspath(db_file)).as_uri() + "?mode=ro"
+        return sqlite3.connect(db_uri, uri=True, timeout=3.0)
+    except Exception:
+        return sqlite3.connect(db_file, timeout=3.0)
+
+
 def _load_sessions_from_db(db_file: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
     """
     Read session summaries from Antigravity's conversation_summaries.db SQLite database.
@@ -1124,18 +1143,25 @@ def _load_sessions_from_db(db_file: Optional[str] = None) -> Dict[str, Dict[str,
         return sessions
 
     try:
-        try:
-            db_uri = Path(db_file).as_uri() + "?mode=ro"
-            conn = sqlite3.connect(db_uri, uri=True, timeout=3.0)
-        except Exception:
-            conn = sqlite3.connect(db_file, timeout=3.0)
-        try:
+        with closing(_connect_sqlite_ro(db_file)) as conn:
             cur = conn.cursor()
-            cur.execute("""
+            cur.execute("PRAGMA table_info(conversation_summaries)")
+            cols = {row[1] for row in cur.fetchall()}
+
+            where_clauses = ["step_count > 0"]
+            if "parent_conversation_id" in cols:
+                where_clauses.append(
+                    "(parent_conversation_id = '' OR parent_conversation_id IS NULL)"
+                )
+            if "nesting_depth" in cols:
+                where_clauses.append("(nesting_depth = 0 OR nesting_depth IS NULL)")
+
+            where_sql = " AND ".join(where_clauses)
+            cur.execute(f"""
                 SELECT conversation_id, title, preview, step_count, last_modified_time,
                        workspace_uris
                 FROM conversation_summaries
-                WHERE step_count > 0
+                WHERE {where_sql}
                 ORDER BY last_modified_time DESC
             """)
             for cid, title, preview, num_steps, last_mod, ws_json in cur.fetchall():
@@ -1150,10 +1176,9 @@ def _load_sessions_from_db(db_file: Optional[str] = None) -> Dict[str, Dict[str,
                         uris = json.loads(ws_json) if isinstance(ws_json, str) else ws_json
                         if isinstance(uris, list):
                             for u in uris:
-                                if isinstance(u, str) and u.startswith("file://"):
-                                    path = unquote(urlparse(u).path)
-                                    if path:
-                                        ws_set.add(path)
+                                path = _file_uri_to_path(u)
+                                if path:
+                                    ws_set.add(path)
                     except Exception:
                         pass
 
@@ -1164,8 +1189,6 @@ def _load_sessions_from_db(db_file: Optional[str] = None) -> Dict[str, Dict[str,
                     "workspaces": ws_set,
                     "steps": num_steps or 0,
                 }
-        finally:
-            conn.close()
     except Exception as e:
         LOG.debug(f"Error reading conversation_summaries.db: {e}")
 
@@ -1203,10 +1226,9 @@ def list_antigravity_sessions(cwd: Optional[str] = None) -> List[Dict[str, Any]]
                         uris = summary.get("WorkspaceURIs") or []
                         ws_set: Set[str] = set()
                         for u in uris:
-                            if isinstance(u, str) and u.startswith("file://"):
-                                path = unquote(urlparse(u).path)
-                                if path:
-                                    ws_set.add(path)
+                            path = _file_uri_to_path(u)
+                            if path:
+                                ws_set.add(path)
 
                         title = (summary.get("Title") or summary.get("Preview") or "").strip()
                         mtime = _parse_iso_timestamp(summary.get("UpdatedAt") or "")
