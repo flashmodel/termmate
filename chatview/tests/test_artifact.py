@@ -443,5 +443,83 @@ class TestArtifact(unittest.TestCase):
         self.assertTrue(handled)
         self.mock_window.open_file.assert_called_once_with("/workspace/src/app.py")
 
+    def test_show_adds_header_region(self):
+        from chatview.artifact import ARTIFACT_HEADER_KEY
+        self.mock_view.get_regions.return_value = []
+        self.artifact.record("/path/to/project/file1.py", "file1.py", "+new line\n")
+        self.artifact.show()
+
+        header_calls = [c for c in self.mock_view.add_regions.call_args_list if c[0][0] == ARTIFACT_HEADER_KEY]
+        self.assertEqual(len(header_calls), 1)
+        (header,) = header_calls[0][0][1]
+        # input_start_fn returns 100, output is appended at 99 after a leading "\n"
+        self.assertEqual((header.begin(), header.end()), (100, 100 + len("▣ 1 file changed")))
+
+
+class FakeFoldView:
+    """Just enough of sublime.View over a string for fold toggling."""
+
+    def __init__(self, text, headers):
+        self.text = text
+        self.headers = headers
+        self.folds = []
+
+    def get_regions(self, key):
+        return self.headers
+
+    def size(self):
+        return len(self.text)
+
+    def line(self, point):
+        start = self.text.rfind("\n", 0, point) + 1
+        end = self.text.find("\n", point)
+        return MockRegion(start, len(self.text) if end == -1 else end)
+
+    def substr(self, region):
+        return self.text[region.begin():region.end()]
+
+    def fold(self, region):
+        self.folds.append((region.begin(), region.end()))
+
+    def unfold(self, region):
+        hit = [f for f in self.folds if f[0] <= region.begin() <= f[1]]
+        self.folds = [f for f in self.folds if f not in hit]
+        return hit
+
+
+class TestArtifactHeaderToggle(unittest.TestCase):
+
+    TEXT = "reply\n▣ 2 files changed\n    a.py  +1 -0\n    b.py  +2 -1\n \n❯ "
+
+    def setUp(self):
+        start = self.TEXT.index("▣")
+        end = self.TEXT.index("\n", start)
+        self.header = MockRegion(start, end)
+        self.header.empty = lambda: False
+        self.view = FakeFoldView(self.TEXT, [self.header])
+        self.artifact = FileChangesArtifact(self.view, MagicMock(), lambda view: len(self.TEXT))
+        self.list_end = self.TEXT.index("\n ")
+
+    def test_click_unfolds_then_folds(self):
+        self.view.folds = [(self.header.end(), self.list_end)]
+        self.assertTrue(self.artifact.toggle_file_list_at(self.header.begin() + 2))
+        self.assertEqual(self.view.folds, [])
+        self.assertTrue(self.artifact.toggle_file_list_at(self.header.begin() + 2))
+        self.assertEqual(self.view.folds, [(self.header.end(), self.list_end)])
+
+    def test_click_header_without_region(self):
+        # A chat restored after a restart: the header text is there, its region is not
+        self.view.headers = []
+        self.view.folds = [(self.header.end(), self.list_end)]
+        self.assertTrue(self.artifact.toggle_file_list_at(self.header.begin() + 2))
+        self.assertEqual(self.view.folds, [])
+        self.assertTrue(self.artifact.toggle_file_list_at(self.header.begin() + 2))
+        self.assertEqual(self.view.folds, [(self.header.end(), self.list_end)])
+
+    def test_click_elsewhere_not_handled(self):
+        self.assertFalse(self.artifact.toggle_file_list_at(0))
+        self.assertFalse(self.artifact.toggle_file_list_at(None))
+        self.assertEqual(self.view.folds, [])
+
 if __name__ == "__main__":
     unittest.main()

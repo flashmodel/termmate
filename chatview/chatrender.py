@@ -27,7 +27,8 @@ def extract_diff_fold_ranges(text, limit, preview_lines=0):
         content = line.rstrip("\r\n")
         stripped = content.strip()
         if opening is None:
-            if (len(content) - len(content.lstrip(" ")) <= 3
+            # Tool-call diffs are indented 4 spaces (one more than a Markdown fence allows)
+            if (len(content) - len(content.lstrip(" ")) <= 4
                     and stripped.startswith("```")
                     and stripped.lstrip("`").strip() == "diff"):
                 opening_indent = len(content) - len(content.lstrip(" "))

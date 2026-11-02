@@ -55,27 +55,49 @@ contexts:
         1: punctuation.definition.raw.code-fence.begin.markdown
         2: constant.other.language-name.markdown
       push: diff_block
+    # Lists in replies are indented (`list_indent`, 4 spaces by default), and so are the paragraph or
+    # code block after a line ending with ":". Markdown reads 4 spaces after a blank line as an indented
+    # code block, so hand these lines to its "Markdown at any indentation" context instead (lists, fenced
+    # code with its language, paragraphs). A line at the left edge (heading, paragraph, tool call, next
+    # turn) ends the block.
+    - match: '^(?=[ ]{4,}\S)'
+      embed: scope:text.html.markdown#indented-markdown
+      escape: '^(?=\S)'
+    # A Markdown paragraph runs on until a blank line or a block start with at most 3 spaces of
+    # indent, so after "Text:" the indented block (no blank line in between) would be read as
+    # paragraph text and the rule above never fires. Text lines in a reply are one-line paragraphs
+    # instead (inline markup still applies); lines that start a Markdown block (list item, heading,
+    # fence, quote, table, thematic break, reference, math) are left to Markdown.
+    - match: '^(?=[ \t]{0,3}(?![*+-][ \t]|\d{1,9}[.)](?:[ \t]|$)|(?:[-*_][ \t]*){3,}$|`{3,}|~{3,}|\[[^\]]*\]:|\$\$)[\w*_`"''(\x{80}-\x{10FFFF}])'
+      push: text_line
     - include: scope:text.html.markdown#markdown
+
+  text_line:
+    - meta_scope: meta.paragraph.markdown
+    - match: '$'
+      pop: 1
+    - include: scope:text.html.markdown#inlines
 
   diff_block:
     - meta_scope: meta.code-fence.body.markdown-gfm markup.raw.code-fence.diff.markdown-gfm source.diff
     - match: '^[ \t]*(`{3,})[ \t]*$'
       scope: meta.code-fence.definition.end.markdown-gfm punctuation.definition.raw.code-fence.end.markdown
       pop: true
-    - match: '^(?:  |)(@@\s*-\d+(?:,\d+)?\s*\+\d+(?:,\d+)?\s*@@)(.*)$'
+    # Diff lines are indented 4 spaces (2 in chats from older versions)
+    - match: '^(?:    |  |)(@@\s*-\d+(?:,\d+)?\s*\+\d+(?:,\d+)?\s*@@)(.*)$'
       scope: meta.diff.range.unified
       captures:
         1: variable.function.chatview punctuation.definition.range.diff
         2: comment.line.diff
-    - match: '^(?:  |)(-)(.*)$'
+    - match: '^(?:    |  |)(-)(.*)$'
       scope: meta.diff.line.deleted markup.deleted.diff
       captures:
         1: punctuation.definition.deleted.diff
-    - match: '^(?:  |)(\+)(.*)$'
+    - match: '^(?:    |  |)(\+)(.*)$'
       scope: meta.diff.line.inserted markup.inserted.diff
       captures:
         1: punctuation.definition.inserted.diff
-    - match: '^(?:  |) (.*)$'
+    - match: '^(?:    |  |) (.*)$'
       scope: meta.diff.line.context
 
   artifact_file_list:

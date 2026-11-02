@@ -15,6 +15,13 @@ LOG = logging.getLogger("TermMate")
 ARTIFACT_REGION_KEY = "chatview_artifact_files"
 ARTIFACT_REGION_SCOPE = "region.bluish"
 ARTIFACT_REGION_FLAGS = sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE | sublime.HIDDEN
+# "▣ N files changed" header lines: underlined, a click folds / unfolds the file list
+ARTIFACT_HEADER_KEY = "chatview_artifact_headers"
+ARTIFACT_HEADER_SCOPE = "markup.underline.link"
+ARTIFACT_HEADER_FLAGS = sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE | sublime.DRAW_SOLID_UNDERLINE
+# Matches a header line; regions don't survive a Sublime restart, the text does
+ARTIFACT_HEADER_PATTERN = r"^▣ \d+ files? changed$"
+_ARTIFACT_HEADER_RE = re.compile(ARTIFACT_HEADER_PATTERN)
 DIFF_VIEW_PATH_KEY = diffview.DIFF_VIEW_PATH_KEY
 
 
@@ -170,11 +177,13 @@ class FileChangesArtifact:
         new_regions = []
         fold_start = None
         fold_end = None
+        header_region = None
         if files:
             file_header = f"▣ {len(files)} file{'s' if len(files) != 1 else ''} changed"
             header_start = base + len(text)
             text += file_header + "\n"
             fold_start = header_start + len(file_header)
+            header_region = sublime.Region(header_start, fold_start)
 
             for abs_path in files:
                 entry = self.file_changes.pop(abs_path, {})
@@ -199,8 +208,53 @@ class FileChangesArtifact:
         self.plan_regions.extend(new_plan_regions)
         self.file_regions.extend(new_regions)
         self._redraw_regions()
+        if header_region is not None:
+            # Sublime keeps these regions in place as the view changes (and drops them on rewind)
+            view.add_regions(
+                ARTIFACT_HEADER_KEY,
+                view.get_regions(ARTIFACT_HEADER_KEY) + [header_region],
+                ARTIFACT_HEADER_SCOPE,
+                "",
+                ARTIFACT_HEADER_FLAGS
+            )
         if fold_start is not None and fold_end is not None:
             view.fold(sublime.Region(fold_start, fold_end))
+
+    def toggle_file_list_at(self, point):
+        """If point is on a "▣ N files changed" header, fold or unfold its file list. Returns True if handled."""
+        if point is None:
+            return False
+        headers = [h for h in self.view.get_regions(ARTIFACT_HEADER_KEY) if not h.empty()]
+        # A header drawn before a restart (or a chat restored from the session) has no region: match its text
+        line = self.view.line(point)
+        if _ARTIFACT_HEADER_RE.match(self.view.substr(line)):
+            headers.append(line)
+        for header in headers:
+            if not (header.begin() <= point <= header.end()):
+                continue
+            fold_start = header.end()
+            if self.view.unfold(sublime.Region(fold_start, fold_start + 1)):
+                return True
+            # Re-fold the indented file lines below the header (the range show() folded)
+            fold_end = fold_start
+            line = self.view.line(fold_start)
+            while line.end() < self.view.size():
+                line = self.view.line(line.end() + 1)
+                if not self.view.substr(line).startswith("    "):
+                    break
+                fold_end = line.end()
+            if fold_end > fold_start:
+                self.view.fold(sublime.Region(fold_start, fold_end))
+            return True
+        return False
+
+    def restore_header_regions(self):
+        """Underline headers that have no region, such as those in a chat restored after a restart."""
+        if self.view.get_regions(ARTIFACT_HEADER_KEY):
+            return
+        headers = self.view.find_all(ARTIFACT_HEADER_PATTERN)
+        if headers:
+            self.view.add_regions(ARTIFACT_HEADER_KEY, headers, ARTIFACT_HEADER_SCOPE, "", ARTIFACT_HEADER_FLAGS)
 
     def _redraw_regions(self):
         """Redraw underline regions for all artifact file name lines and plan items."""
@@ -336,3 +390,4 @@ class FileChangesArtifact:
         self.file_regions = []
         self.plan_regions = []
         self.view.erase_regions(ARTIFACT_REGION_KEY)
+        self.view.erase_regions(ARTIFACT_HEADER_KEY)

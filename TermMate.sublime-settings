@@ -48,9 +48,29 @@
     // is folded. Set to 0 to fold the entire diff block.
     "diff_preview_lines": 5,
 
+    // Fold each multi-line tool call to its first line once it is finished, and each run of tool
+    // calls in a reply under one "⏺ N tool calls" line, so the chat reads as the agent's text.
+    // Click that line (or the ⏺ of a call) to expand or collapse it.
+    "fold_tool_calls": true,
+
+    // Indent lists in agent replies by this many spaces, so they stand out from the paragraphs
+    // around them. The blank line between a text line and a list is dropped, and a line ending
+    // with ":" pulls in the paragraph or code block after it the same way. 0 keeps everything
+    // as written. Applies to new text only.
+    "list_indent": 4,
+
     // Keep the Chat View in a dedicated pane.
     // When true, files you open will not appear in the chat's pane.
     "dedicated_chat_pane": true,
+
+    // Underline file paths in agent replies (`src/main.py:42`, `src/main.py#L10-25`)
+    // that exist on disk. Hover one for an "Open" link, or double-click it.
+    // Paths inside `code` or a fenced code block are code, not links.
+    "file_links": true,
+
+    // How a file link opens: "double" (double-click; a single click still
+    // places the caret / selects as usual) or "single" (one click).
+    "file_links_click": "double",
 
     // Focus the Chat View after sending a Quick Message.
     // When false, return focus to the view where Quick Message was opened.
@@ -62,6 +82,12 @@
 
     // Whether to display the agent and model status indicator in the status bar (e.g. "▣ claude(default)").
     "show_status_indicator": true,
+
+    // Also show the plan mode, approve mode and a "⟳" while the agent is working in
+    // that status bar indicator (e.g. "⟳ ▣ claude(default) · plan:fast · approve:allow-edit").
+    // The chat's own Agent / Model / PlanMode panel scrolls away with the input line;
+    // the status bar stays visible.
+    "status_indicator_modes": true,
 
     // Path or command name for the coding CLI executable.
     "claude_command": "",
