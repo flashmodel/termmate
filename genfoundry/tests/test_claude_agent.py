@@ -1,12 +1,15 @@
 import asyncio
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from genfoundry.claude_agent import ClaudeCodeAgent
+from genfoundry import claude_agent
+from genfoundry.claude_agent import ClaudeCodeAgent, delete_session
 from genfoundry.base_agent import AgentOptions
 
 
@@ -299,6 +302,66 @@ class TestClaudeAgentTokenUsageExtraction(unittest.TestCase):
         queued = self.agent._message_queue.get_nowait()
         self.assertEqual(queued.type, "token_usage")
         self.assertEqual(queued.content["last"]["inputTokens"], 100)
+
+
+class TestDeleteSession(unittest.TestCase):
+    SESSION = "0a1b2c3d-1111-4222-8333-444455556666"
+    OTHER = "9f8e7d6c-1111-4222-8333-444455556666"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cwd = os.path.realpath(os.path.join(self.tmp.name, "work"))
+        os.makedirs(self.cwd)
+        config = os.path.join(self.tmp.name, "config")
+        patcher = patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": config})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.project = os.path.join(config, "projects", claude_agent._sanitize_path(self.cwd))
+        os.makedirs(self.project)
+        for session_id in (self.SESSION, self.OTHER):
+            with open(os.path.join(self.project, f"{session_id}.jsonl"), "w") as f:
+                f.write('{"type": "user"}\n')
+
+        self.trash_dir = os.path.join(self.tmp.name, "trash")
+        os.makedirs(self.trash_dir)
+
+    def trash(self, path):
+        shutil.move(path, self.trash_dir)
+
+    def files(self):
+        return sorted(os.listdir(self.project))
+
+    def test_trashes_only_that_session(self):
+        self.assertTrue(delete_session(self.SESSION, self.cwd, self.trash))
+        self.assertEqual(self.files(), [f"{self.OTHER}.jsonl"])
+        with open(os.path.join(self.trash_dir, f"{self.SESSION}.jsonl")) as f:
+            self.assertEqual(f.read(), '{"type": "user"}\n')
+
+    def test_trashes_its_folder_too(self):
+        for session_id in (self.SESSION, self.OTHER):
+            os.makedirs(os.path.join(self.project, session_id, "subagents"))
+        self.assertTrue(delete_session(self.SESSION, self.cwd, self.trash))
+        self.assertEqual(self.files(), sorted([self.OTHER, f"{self.OTHER}.jsonl"]))
+        self.assertEqual(sorted(os.listdir(self.trash_dir)), sorted([self.SESSION, f"{self.SESSION}.jsonl"]))
+
+    def test_not_found_or_invalid_changes_nothing(self):
+        before = self.files()
+        self.assertFalse(delete_session("11111111-1111-4111-8111-111111111111", self.cwd, self.trash))
+        self.assertFalse(delete_session("../../etc/passwd", self.cwd, self.trash))
+        self.assertFalse(delete_session(self.SESSION, os.path.join(self.tmp.name, "elsewhere"), self.trash))
+        self.assertEqual(self.files(), before)
+
+    def test_failed_trash_changes_nothing(self):
+        def broken(path):
+            raise OSError("no trash")
+        before = self.files()
+        self.assertFalse(delete_session(self.SESSION, self.cwd, broken))
+        self.assertEqual(self.files(), before)
+
+    def test_second_delete_is_a_no_op(self):
+        self.assertTrue(delete_session(self.SESSION, self.cwd, self.trash))
+        self.assertFalse(delete_session(self.SESSION, self.cwd, self.trash))
 
 
 if __name__ == "__main__":
