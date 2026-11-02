@@ -205,7 +205,7 @@ To reset the current conversation history and start a completely fresh context, 
 
 **2. Resume Previous Conversation**
 
-Run **`TermMate: Resume Session`** from the command palette to continue a past conversation. A quick panel lists previous sessions for the current workspace, each showing a short summary and timestamp. Select one and the agent picks up exactly where it left off.
+Run **`TermMate: Resume Session`** from the command palette to continue a past conversation. A quick panel lists previous sessions for the current workspace, each showing a short summary and timestamp. Sessions are filtered by the current workspace folder, listing only conversations relevant to your active project. Select one and the agent picks up exactly where it left off.
 
 **3. Rewind Conversation**
 
