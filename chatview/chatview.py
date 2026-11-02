@@ -59,6 +59,8 @@ CHAT_THINK_LEVEL = "chatview_think_level"
 CHAT_PLAN_MODE = "chatview_plan_mode"
 CHAT_AGENT = "chatview_agent_provider"
 CHAT_SESSION_ID = "chatview_session_id"
+CHAT_LAST_Y = "chatview_last_y"
+CHAT_AUTOSCROLL = "chatview_autoscroll"
 CHAT_VIEW_NAME = "Chat View"
 CHAT_STATUS_KEY = "termmate.agent_model"
 PACKAGE_NAME = "TermMate"
@@ -2099,6 +2101,9 @@ class ChatSession:
     def _append_resume_history(self, agent, session_id, session_info):
         """Render resume banner and recent turns to the chat view. Pure display — no I/O."""
         import datetime
+        self.chat_view.settings().set(CHAT_AUTOSCROLL, True)
+        self.chat_view.settings().erase(CHAT_LAST_Y)
+
         self.chat_view.run_command("term_chat_output_append",
             {"text": f"\n[Resuming session for {agent}]\n\n"})
 
@@ -2692,10 +2697,43 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
 
 class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
 
+    def _should_follow(self):
+        """Determine if streaming output should auto-scroll the viewport."""
+        _, y = self.view.viewport_position()
+        last_y = self.view.settings().get(CHAT_LAST_Y)
+        autoscroll = self.view.settings().get(CHAT_AUTOSCROLL, True)
+
+        # 1. Upward motion detection: user actively scrolling up disengages follow.
+        # A small threshold (~3px) filters layout jitter
+        scroll_up_threshold = 3.0
+        if last_y is not None and (y < last_y - scroll_up_threshold):
+            self.view.settings().set(CHAT_AUTOSCROLL, False)
+            return False
+
+        # 2. If detached, re-engage only when user scrolls back to the bottom
+        if not autoscroll and self.view.visible_region().end() >= self.view.size():
+            self.view.settings().set(CHAT_AUTOSCROLL, True)
+            return True
+
+        return autoscroll
+
+    def _update_scroll(self, follow):
+        """Update viewport position and track y coordinate for direction sensing."""
+        if follow:
+            self.view.show(self.view.size())
+            sublime.set_timeout(
+                lambda: self.view.settings().set(
+                    CHAT_LAST_Y, self.view.viewport_position()[1]
+                ),
+                0,
+            )
+        else:
+            _, y = self.view.viewport_position()
+            self.view.settings().set(CHAT_LAST_Y, y)
+
     def run(self, edit, text, html_tables=None):
-        # Follow the reply only while the end of the chat is on screen: scrolled up to
-        # read back, the view stays put until you scroll down to the end again
-        follow = self.view.visible_region().end() >= self.view.size()
+        follow = self._should_follow()
+
         insert_at = get_input_start(self.view, 0) - 1
         inserted = self.view.insert(edit, insert_at, text)
         # The anchor region shifts with the insert; re-set to keep the
@@ -2720,8 +2758,8 @@ class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
         for start, end in diff_folds:
             if end > start:
                 self.view.fold(sublime.Region(insert_at + start, insert_at + end))
-        if follow:
-            self.view.show(self.view.size())
+
+        self._update_scroll(follow)
 
 
 class TermChatInputPromptCommand(sublime_plugin.TextCommand):
@@ -2748,6 +2786,10 @@ class TermChatInputPromptCommand(sublime_plugin.TextCommand):
         end = self.view.size()
         self.view.sel().clear()
         self.view.sel().add(sublime.Region(end))
+
+        # Reset autoscroll tracker so new turn follows from bottom
+        self.view.settings().set(CHAT_AUTOSCROLL, True)
+        self.view.settings().erase(CHAT_LAST_Y)
 
         if window and window.id() in chatview_clients:
             chatview_clients[window.id()].input_marker.update()
