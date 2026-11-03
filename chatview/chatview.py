@@ -54,6 +54,7 @@ CHAT_QUICK_PROMPT_FLAG = "chatview_quick_prompt"
 CHAT_INPUT_START = "chatview_input_start"
 CHAT_INPUT_ANCHOR = "chatview_input_anchor"
 CHAT_WORKSPACE = "chatview_active_workspace"
+CHAT_CWD = "chatview_cwd"
 CHAT_MODEL = "chatview_model"
 CHAT_THINK_LEVEL = "chatview_think_level"
 CHAT_PLAN_MODE = "chatview_plan_mode"
@@ -303,7 +304,12 @@ def get_all_folders(view):
 def get_best_dir(view):
     window = view.window()
     if window:
-        # Check for explicitly set workspace
+        # Check for cwd associated with the specific chat view
+        chat_cwd = view.settings().get(CHAT_CWD)
+        if chat_cwd and os.path.isdir(chat_cwd):
+            return chat_cwd
+
+        # Check for explicitly set workspace on the window
         custom_cwd = window.settings().get(CHAT_WORKSPACE)
         if custom_cwd and os.path.isdir(custom_cwd):
             return custom_cwd
@@ -312,6 +318,35 @@ def get_best_dir(view):
         if folders:
             return folders[0]
     return ""
+
+
+def get_top_level_dir(window, path):
+    """Finds the top-level directory for a given path from the window's folders.
+
+    Returns the matching workspace folder if found; otherwise returns the path
+    itself (if a directory) or its parent directory.
+    """
+    if not path or not window:
+        return ""
+
+    norm_path = os.path.abspath(os.path.expanduser(path))
+
+    custom_cwd = window.settings().get(CHAT_WORKSPACE)
+    if custom_cwd and os.path.isdir(custom_cwd):
+        norm_custom = os.path.abspath(custom_cwd)
+        if norm_path == norm_custom or norm_path.startswith(norm_custom + os.sep):
+            return custom_cwd
+
+    folders = window.folders()
+    if folders:
+        for folder in folders:
+            norm_folder = os.path.abspath(folder)
+            if norm_path == norm_folder or norm_path.startswith(norm_folder + os.sep):
+                return folder
+
+    if os.path.isdir(norm_path):
+        return norm_path
+    return os.path.dirname(norm_path)
 
 
 class AgentThread(threading.Thread):
@@ -2145,7 +2180,7 @@ class TermChatCliCommand(sublime_plugin.WindowCommand):
     """
     A Sublime Text plugin command for calling the ChatView
     """
-    def run(self, initial_msg="", send_immediate=False):
+    def run(self, initial_msg="", send_immediate=False, cwd=""):
         # Try to find and focus existing chat view
         for view in self.window.views():
             if view.settings().get(CHAT_VIEW_FLAG, False):
@@ -2183,11 +2218,12 @@ class TermChatCliCommand(sublime_plugin.WindowCommand):
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
         share_folders = settings.get("share_workspace_folders", False)
 
-        cwd = get_best_dir(chat_view)
+        resolved_cwd = cwd or get_best_dir(chat_view)
         add_dirs = get_all_folders(chat_view) if share_folders else []
 
-        if cwd:
-            chat_view.run_command("append", {"characters": f"cwd: {cwd}\n"})
+        if resolved_cwd:
+            chat_view.settings().set(CHAT_CWD, resolved_cwd)
+            chat_view.run_command("append", {"characters": f"cwd: {resolved_cwd}\n"})
 
         chat_view.run_command("append", {"characters": welcome_text})
 
@@ -2195,7 +2231,7 @@ class TermChatCliCommand(sublime_plugin.WindowCommand):
         set_input_start(chat_view, chat_view.size())
 
         # Create and start the ChatSession
-        session = ChatSession(self.window, chat_view, cwd, add_dirs=add_dirs)
+        session = ChatSession(self.window, chat_view, resolved_cwd, add_dirs=add_dirs)
         window_id = self.window.id()
         chatview_clients[window_id] = session
         update_agent_model_status(self.window)
@@ -2855,7 +2891,17 @@ class TermChatAddContextCommand(sublime_plugin.WindowCommand):
                 break
 
         if not chat_view:
-            self.window.run_command("term_chat_cli", {"initial_msg": tags})
+            target_path = None
+            if paths:
+                target_path = paths[0]
+            elif view and view.file_name():
+                target_path = view.file_name()
+
+            top_level_dir = get_top_level_dir(self.window, target_path) if target_path else ""
+            kwargs = {"initial_msg": tags}
+            if top_level_dir:
+                kwargs["cwd"] = top_level_dir
+            self.window.run_command("term_chat_cli", kwargs)
         else:
             self.window.focus_view(chat_view)
             if not insert_text:
@@ -2983,7 +3029,7 @@ class TermChatPromptCommand(sublime_plugin.WindowCommand):
             # Start a new session and send immediately
             self.window.run_command("term_chat_cli", {
                 "initial_msg": prompt,
-                "send_immediate": True
+                "send_immediate": True,
             })
             for view in self.window.views():
                 if view.settings().get(CHAT_VIEW_FLAG, False):
