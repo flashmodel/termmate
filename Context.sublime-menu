@@ -1,6 +1,6 @@
 [
     {
-        "caption": "TermMate: Chat with Agent",
+        "caption": "TermMate: Chat with Agent @This",
         "command": "term_chat_add_context"
     },
     {
