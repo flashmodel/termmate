@@ -56,6 +56,11 @@
     // When false, return focus to the view where Quick Message was opened.
     "quick_message_focus_chatview": true,
 
+    // Target chat view when adding file or directory context.
+    //   "primary"     — always target the primary Chat View (launches it if not open)
+    //   "last_active" — send to the most recently active/focused Chat View (primary or task thread)
+    "add_context_target": "primary",
+
     // Maximum number of recent conversation turns loaded by Resume Session.
     // Set to 0 to load the full conversation history.
     "session_history_limit": 50,

@@ -5,8 +5,19 @@
         "args": {"files": [], "dirs": []}
     },
     {
-        "caption": "TermMate: Set Working Directory",
-        "command": "term_chat_set_workspace",
-        "args": {"files": [], "dirs": []}
+        "caption": "TermMate",
+        "children": [
+            {
+                "caption": "New Chat Thread Here",
+                "command": "term_chat_new_task",
+                "args": {"dirs": []}
+            },
+            {
+                "caption": "Set Working Directory",
+                "command": "term_chat_set_workspace",
+                "args": {"files": [], "dirs": []}
+            }
+        ]
     }
 ]
+

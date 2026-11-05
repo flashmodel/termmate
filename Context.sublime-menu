@@ -7,8 +7,12 @@
         "caption": "TermMate",
         "children": [
             {
-                "caption": "Quick Message to Agent…",
-                "command": "term_chat_prompt"
+                "caption": "New Chat Thread",
+                "command": "term_chat_new_task"
+            },
+            {
+                "caption": "Switch Chat Thread…",
+                "command": "term_chat_switch_thread"
             },
             {
                 "caption": "-"
@@ -20,6 +24,13 @@
             {
                 "caption": "Clear Session",
                 "command": "term_chat_clear_session"
+            },
+            {
+                "caption": "-"
+            },
+            {
+                "caption": "Quick Message to Agent…",
+                "command": "term_chat_prompt"
             },
             {
                 "caption": "-"
