@@ -408,13 +408,18 @@ class BaseChatMessageProcessor:
         name = block.get("name")
         return f"⏺ {name}" if name else ""
 
-    def append_content(self, text, flush=False):
+    def append_content(self, text, flush=False, is_tool=False):
         """Append Markdown content through the chat session."""
         if text:
             raw = text.replace("\r", "")
             if raw:
                 self._ends_with_newline = raw.endswith("\n")
-        self.session.append_markdown(text, flush=flush)
+        if not is_tool and text and text.strip().startswith("⏺"):
+            is_tool = True
+        if is_tool:
+            self.session.append_markdown(text, flush=flush, is_tool=True)
+        else:
+            self.session.append_markdown(text, flush=flush)
 
     def ensure_trailing_newline(self):
         """Ensure the chat content ends with a newline, without adding extra blank lines."""
@@ -531,28 +536,24 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
         if message.type == "assistant":
             self.session.start_loading()
 
-            # Extract text content
-            text_content = ""
             if hasattr(message, "content"):
                 for block in message.content:
                     if hasattr(block, "text"):
                         if self.last_is_tool_call:
-                            text_content += "\n"
+                            self.append_content("\n")
                         self.last_is_tool_call = False
-
-                        text_content += block.text
+                        self.append_content(block.text)
 
                     elif isinstance(block, dict) and block.get("type") == "tool_use":
                         if block.get("name") in ("Edit", "Write"):
                             pass  # defer to tool_use_result
                         else:
                             if not self.last_is_tool_call:
-                                text_content += "\n"
+                                self.append_content("\n", is_tool=True)
                             self.last_is_tool_call = True
-                            text_content += self._format_tool_block(block)
-
-            if text_content:
-                self.append_content(text_content + "\n")
+                            self.append_content(
+                                self._format_tool_block(block) + "\n", is_tool=True
+                            )
         elif message.type == "system":
             raw = getattr(message, "raw_data", {}) or {}
             if raw.get("subtype") == "status" and raw.get("status") == "compacting":
@@ -602,7 +603,7 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
                 rendered = self._format_edit_result(tool_use_result)
                 if rendered:
                     self.last_is_tool_call = True
-                    self.append_content("\n" + rendered + "\n")
+                    self.append_content("\n" + rendered + "\n", is_tool=True)
                 self._record_file_change(tool_use_result)
 
         elif message.type == "error":
@@ -792,9 +793,11 @@ class CodexMessageProcessor(BaseChatMessageProcessor):
         elif message.type == "tool_use":
             self.session.start_loading()
             if not self.last_is_tool_call:
-                self.append_content("\n")
+                self.append_content("\n", is_tool=True)
             self.last_is_tool_call = True
-            self.append_content(self._format_tool_block(message.content) + "\n")
+            self.append_content(
+                self._format_tool_block(message.content) + "\n", is_tool=True
+            )
             if message.content.get("name") == "fileChange":
                 self._record_file_changes(message.content)
 
@@ -1029,10 +1032,12 @@ class OpenCodeMessageProcessor(BaseChatMessageProcessor):
             if not self.last_is_tool_call:
                 needed = max(0, 2 - self._text_trailing_newlines)
                 if needed > 0:
-                    self.append_content("\n" * needed)
+                    self.append_content("\n" * needed, is_tool=True)
             self.last_is_tool_call = True
             self._text_trailing_newlines = 0
-            self.append_content(self._format_tool_block(message.content) + "\n")
+            self.append_content(
+                self._format_tool_block(message.content) + "\n", is_tool=True
+            )
             if message.content.get("name") == "fileChange":
                 self._record_file_changes(message.content)
         elif message.type == "error":
@@ -1341,11 +1346,11 @@ class PiMessageProcessor(BaseChatMessageProcessor):
                             # defer to toolResult
                         else:
                             if not self.last_is_tool_call:
-                                self.append_content("\n")
+                                self.append_content("\n", is_tool=True)
                             self.last_is_tool_call = True
                             content = self._format_tool_block(block)
                             if content:
-                                self.append_content(content + "\n")
+                                self.append_content(content + "\n", is_tool=True)
 
         elif message.type == "system":
             if hasattr(message, "content") and isinstance(message.content, dict):
@@ -1406,7 +1411,7 @@ class PiMessageProcessor(BaseChatMessageProcessor):
                 rendered = self._format_pi_edit_result(pending, data)
                 if rendered:
                     self.last_is_tool_call = True
-                    self.append_content("\n" + rendered + "\n")
+                    self.append_content("\n" + rendered + "\n", is_tool=True)
 
             if isinstance(message.content, dict) and message.content.get("customType") == "proposed-plan":
                 plan_text = message.content.get("content", "")
@@ -1777,9 +1782,11 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
                 self._pending_tool_params.pop(tool_id, None)
 
             if not self.last_is_tool_call:
-                self.append_content("\n")
+                self.append_content("\n", is_tool=True)
             self.last_is_tool_call = True
-            self.append_content(self._format_tool_block(content_data) + "\n")
+            self.append_content(
+                self._format_tool_block(content_data) + "\n", is_tool=True
+            )
 
             if self._is_user_artifact(content_data):
                 params = content_data.get("parameters") or {}

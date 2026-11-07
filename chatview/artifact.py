@@ -194,7 +194,7 @@ class FileChangesArtifact:
             # The char below is (NBSP): renders blank, not indent whitespace.
             text += " "
 
-        view.run_command("term_chat_output_append", {"text": text})
+        view.run_command("term_chat_output_append", {"text": text, "is_tool": True})
 
         self.plan_regions.extend(new_plan_regions)
         self.file_regions.extend(new_regions)

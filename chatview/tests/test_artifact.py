@@ -246,7 +246,9 @@ class TestArtifact(unittest.TestCase):
         handled = self.artifact.open_artifact_at(15)
         self.assertTrue(handled)
         mock_sublime.ok_cancel_dialog.assert_called_with("Implement plan.md?", "Execute")
-        self.mock_window.run_command.assert_called_with("term_chat_implement_plan")
+        self.mock_window.run_command.assert_called_with(
+            "term_chat_implement_plan", {"view_id": self.mock_view.id()}
+        )
 
         # Cancellation test
         self.mock_window.run_command.reset_mock()

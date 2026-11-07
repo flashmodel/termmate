@@ -33,6 +33,10 @@
                 "command": "term_chat_prompt"
             },
             {
+                "caption": "Rename Chat Thread…",
+                "command": "term_chat_rename_thread"
+            },
+            {
                 "caption": "-"
             },
             {
