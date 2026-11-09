@@ -66,7 +66,6 @@ CHAT_AGENT = "chatview_agent_provider"
 CHAT_SESSION_ID = "chatview_session_id"
 CHAT_LAST_Y = "chatview_last_y"
 CHAT_AUTOSCROLL = "chatview_autoscroll"
-CHAT_VIEW_NAME = "Chat View"
 CHAT_STATUS_KEY = "termmate.agent_model"
 PACKAGE_NAME = "TermMate"
 PROMPT_PREFIX = "\n❯ "  # transcript prefix for submitted prompts; the live input line uses InputPromptMarker instead
@@ -76,10 +75,12 @@ preferences_redraw_scheduled = False
 
 from .chatthread import (
     SessionRole,
-    CHAT_ROLE_KEY,
-    CHAT_TASK_COUNTER,
-    CHAT_TASK_ID,
-    CHAT_TASK_TITLE,
+    CHAT_VIEW_NAME,
+    CHAT_THREAD_NAME,
+    CHAT_THREAD_LABEL,
+    CHAT_THREAD_COUNTER,
+    CHAT_THREAD_ID,
+    CHAT_THREAD_TITLE,
     ChatThreadSet,
     chat_threads,
     chatview_sessions,
@@ -90,7 +91,7 @@ from .chatthread import (
     get_chat_view_role,
     is_primary_chat_view,
     is_task_chat_view,
-    TermChatNewTaskCommand,
+    TermChatNewThreadCommand,
     TermChatSwitchThreadCommand,
     TermChatRenameThreadCommand,
 )
@@ -901,7 +902,7 @@ class ModelPanel:
             task_tag_html = (
                 f'<span class="model-divider">│</span>'
                 f'<a href="switch_thread" class="model-tag">'
-                f'<span class="label">chat</span>'
+                f'<span class="label">Chats</span>'
                 f'<span class="thread-count">+{len(other_sessions)}</span></a>'
             )
 
@@ -958,7 +959,7 @@ class ModelPanel:
                     line-height: 1.2;
                 }}
                 .icon {{
-                    padding-right: 2px;
+                    padding-right: 4px;
                 }}
                 .label {{
                     opacity: 0.7;
@@ -1440,7 +1441,7 @@ class ChatSession:
                 role = SessionRole.PRIMARY
         self.role = role
         if self.chat_view:
-            self.chat_view.settings().set(CHAT_ROLE_KEY, self.role.value)
+            self.chat_view.settings().set(CHAT_THREAD_LABEL, self.role.value)
         self._reset_markdown_formatter()
         self.cwd = cwd
         self.add_dirs = add_dirs or []
@@ -2343,7 +2344,7 @@ def _create_chat_view_and_session(
     # Don't draw the NBSP fold terminator appended after the artifact list
     chat_view.settings().set("draw_unicode_white_space", "none")
     chat_view.settings().set(CHAT_VIEW_FLAG, True)
-    chat_view.settings().set(CHAT_ROLE_KEY, role.value)
+    chat_view.settings().set(CHAT_THREAD_LABEL, role.value)
 
     shortcut = "Command+Enter" if sublime.platform() == "osx" else "Ctrl+Enter"
     welcome_text = "\nType your message and press %s to send.\n" % shortcut
@@ -2636,7 +2637,7 @@ class ChatViewListener(sublime_plugin.EventListener):
         if not is_chat:
             return
 
-        role = view.settings().get(CHAT_ROLE_KEY, SessionRole.PRIMARY.value)
+        role = view.settings().get(CHAT_THREAD_LABEL, SessionRole.PRIMARY.value)
         session = chat_threads.unregister(view_id)
         if session is not None:
             try:
@@ -2651,7 +2652,7 @@ class ChatViewListener(sublime_plugin.EventListener):
                 for v in window.views()
             )
             if not has_remaining_tasks:
-                window.settings().set(CHAT_TASK_COUNTER, 0)
+                window.settings().set(CHAT_THREAD_COUNTER, 0)
             update_agent_model_status(window)
             chat_threads.update_window_model_phantoms(window)
             LOG.info(f"Exit {role} ChatView CLI for window {window.id()} (view {view_id})")

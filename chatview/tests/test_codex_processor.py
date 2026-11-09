@@ -220,6 +220,35 @@ class TestCodexToolCallFormatting(unittest.TestCase):
 
         self.assertEqual(output, "⏺ imageGeneration")
 
+    def test_claude_assistant_text_and_tool_use_separation(self):
+        for text, expected_text_arg, expected_extra_nl in [
+            ("Checking file", "Checking file\n", True),
+            ("Checking file\n", "Checking file\n", True),
+            ("Checking file\n\n", "Checking file\n\n", False),
+        ]:
+            session = SimpleNamespace(
+                cwd="/Users/sino/workbench/codeform",
+                agent_thread=None,
+                start_loading=MagicMock(),
+                append_markdown=MagicMock(),
+            )
+            processor = ClaudeMessageProcessor(session)
+            msg = Message(
+                "assistant",
+                [
+                    SimpleNamespace(text=text),
+                    {"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}},
+                ],
+            )
+            processor.handle_message(msg)
+            expected_calls = [
+                unittest.mock.call(expected_text_arg, flush=False),
+            ]
+            if expected_extra_nl:
+                expected_calls.append(unittest.mock.call("\n", flush=False, is_tool=True))
+            expected_calls.append(unittest.mock.call("⏺ Read a.py\n", flush=False, is_tool=True))
+            self.assertEqual(session.append_markdown.call_args_list, expected_calls)
+
 
 class TestOpenCodeMessageProcessor(unittest.TestCase):
 

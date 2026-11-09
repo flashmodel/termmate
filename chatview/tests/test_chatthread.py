@@ -3,10 +3,10 @@ import sys
 import unittest
 from unittest.mock import MagicMock
 
-# Allow importing codeform as a top-level package
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
+# Allow importing chatview when running this test file directly
+repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if repo_dir not in sys.path:
+    sys.path.insert(0, repo_dir)
 
 
 class MockWindowCommand:
@@ -19,22 +19,21 @@ class MockTextCommand:
         self.view = view
 
 
-mock_sublime = MagicMock()
+mock_sublime = sys.modules.setdefault("sublime", MagicMock())
 mock_sublime.platform.return_value = "osx"
 
-mock_sublime_plugin = MagicMock()
+mock_sublime_plugin = sys.modules.setdefault("sublime_plugin", MagicMock())
 mock_sublime_plugin.WindowCommand = MockWindowCommand
 mock_sublime_plugin.TextCommand = MockTextCommand
 
-sys.modules["sublime"] = mock_sublime
-sys.modules["sublime_plugin"] = mock_sublime_plugin
-
-from codeform.chatview.chatthread import (
+from chatview.chatthread import (
     SessionRole,
-    CHAT_ROLE_KEY,
-    CHAT_TASK_COUNTER,
-    CHAT_TASK_ID,
-    CHAT_TASK_TITLE,
+    CHAT_VIEW_NAME,
+    CHAT_THREAD_NAME,
+    CHAT_THREAD_LABEL,
+    CHAT_THREAD_COUNTER,
+    CHAT_THREAD_ID,
+    CHAT_THREAD_TITLE,
     ChatThreadSet,
     chat_threads,
     chatview_sessions,
@@ -44,6 +43,7 @@ from codeform.chatview.chatthread import (
     get_chat_view_role,
     is_primary_chat_view,
     is_task_chat_view,
+    TermChatNewThreadCommand,
     TermChatRenameThreadCommand,
 )
 
@@ -56,9 +56,9 @@ class TestChatThread(unittest.TestCase):
     def test_session_role_and_view_identification(self):
         primary_view = MagicMock()
         primary_view.settings.return_value.get.side_effect = (
-            lambda k, d=None: SessionRole.PRIMARY.value if k == CHAT_ROLE_KEY else True
+            lambda k, d=None: SessionRole.PRIMARY.value if k == CHAT_THREAD_LABEL else True
         )
-        primary_view.name.return_value = "Chat View"
+        primary_view.name.return_value = CHAT_VIEW_NAME
 
         self.assertTrue(is_chat_view(primary_view))
         self.assertEqual(get_chat_view_role(primary_view), SessionRole.PRIMARY)
@@ -67,9 +67,9 @@ class TestChatThread(unittest.TestCase):
 
         task_view = MagicMock()
         task_view.settings.return_value.get.side_effect = (
-            lambda k, d=None: SessionRole.TASK.value if k == CHAT_ROLE_KEY else True
+            lambda k, d=None: SessionRole.TASK.value if k == CHAT_THREAD_LABEL else True
         )
-        task_view.name.return_value = "Term Chat #1 Bugfix"
+        task_view.name.return_value = f"{CHAT_THREAD_NAME} #1 Bugfix"
 
         self.assertTrue(is_chat_view(task_view))
         self.assertEqual(get_chat_view_role(task_view), SessionRole.TASK)
@@ -83,16 +83,16 @@ class TestChatThread(unittest.TestCase):
         primary_view = MagicMock()
         primary_view.id.return_value = 101
         primary_view.settings.return_value.get.side_effect = (
-            lambda k, d=None: SessionRole.PRIMARY.value if k == CHAT_ROLE_KEY else True
+            lambda k, d=None: SessionRole.PRIMARY.value if k == CHAT_THREAD_LABEL else True
         )
-        primary_view.name.return_value = "Chat View"
+        primary_view.name.return_value = CHAT_VIEW_NAME
 
         task_view = MagicMock()
         task_view.id.return_value = 102
         task_view.settings.return_value.get.side_effect = (
-            lambda k, d=None: SessionRole.TASK.value if k == CHAT_ROLE_KEY else True
+            lambda k, d=None: SessionRole.TASK.value if k == CHAT_THREAD_LABEL else True
         )
-        task_view.name.return_value = "Term Chat #1"
+        task_view.name.return_value = f"{CHAT_THREAD_NAME} #1"
 
         primary_session = MagicMock()
         primary_session.role = SessionRole.PRIMARY
@@ -122,19 +122,19 @@ class TestChatThread(unittest.TestCase):
         cmd = TermChatRenameThreadCommand(window)
 
         task_view = MagicMock()
-        task_settings = {CHAT_ROLE_KEY: SessionRole.TASK.value, CHAT_TASK_ID: 2}
+        task_settings = {CHAT_THREAD_LABEL: SessionRole.TASK.value, CHAT_THREAD_ID: 2}
         task_view.settings.return_value.get.side_effect = (
             lambda k, d=None: task_settings.get(k, d)
         )
         task_view.settings.return_value.set.side_effect = (
             lambda k, v: task_settings.__setitem__(k, v)
         )
-        task_view.name.return_value = "Term Chat #2"
+        task_view.name.return_value = f"{CHAT_THREAD_NAME} #2"
 
         cmd._apply_rename(task_view, "Fix authentication bug")
 
-        task_view.set_name.assert_called_with("Term Chat #2 Fix authentication bug")
-        self.assertEqual(task_settings[CHAT_TASK_TITLE], "Fix authentication bug")
+        task_view.set_name.assert_called_with(f"{CHAT_THREAD_NAME} #2 Fix authentication bug")
+        self.assertEqual(task_settings[CHAT_THREAD_TITLE], "Fix authentication bug")
 
 
 if __name__ == "__main__":

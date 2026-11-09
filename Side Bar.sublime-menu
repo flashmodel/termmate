@@ -9,7 +9,7 @@
         "children": [
             {
                 "caption": "New Chat Thread Here",
-                "command": "term_chat_new_task",
+                "command": "term_chat_new_thread",
                 "args": {"dirs": []}
             },
             {

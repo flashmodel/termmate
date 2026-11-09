@@ -14,13 +14,14 @@ LOG = logging.getLogger("TermMate")
 PACKAGE_NAME = "TermMate"
 CHAT_VIEW_FLAG = "chatview_chat"
 CHAT_VIEW_NAME = "Chat View"
+CHAT_THREAD_NAME = "TermChat"
 CHAT_AGENT = "chatview_agent_provider"
 
 # Thread settings keys
-CHAT_ROLE_KEY = "chatview_role"
-CHAT_TASK_COUNTER = "chatview_task_counter"
-CHAT_TASK_ID = "chatview_task_id"
-CHAT_TASK_TITLE = "chatview_task_title"
+CHAT_THREAD_LABEL = "chatview_thread_label"
+CHAT_THREAD_COUNTER = "chatview_thread_counter"
+CHAT_THREAD_ID = "chatview_thread_id"
+CHAT_THREAD_TITLE = "chatview_thread_title"
 
 
 class SessionRole(enum.Enum):
@@ -41,7 +42,7 @@ def get_chat_view_role(view):
     """Return SessionRole for a chat view, or None if not a chat view."""
     if not is_chat_view(view):
         return None
-    role_val = view.settings().get(CHAT_ROLE_KEY)
+    role_val = view.settings().get(CHAT_THREAD_LABEL)
     if role_val == SessionRole.TASK.value:
         return SessionRole.TASK
     return SessionRole.PRIMARY
@@ -220,9 +221,9 @@ window_last_active_chat = chat_threads.window_last_active_chat
 chatview_clients = chat_threads.clients
 
 
-class TermChatNewTaskCommand(sublime_plugin.WindowCommand):
+class TermChatNewThreadCommand(sublime_plugin.WindowCommand):
     """
-    Starts an independent Task Chat session in a new tab (`Term Chat #<id> <title>`).
+    Starts an independent Task Chat session in a new tab (`TermChat #<id> <title>`).
     Closing the tab directly terminates the task session.
     """
     def run(
@@ -294,25 +295,25 @@ class TermChatNewTaskCommand(sublime_plugin.WindowCommand):
         return active_group
 
     def _next_task_number(self):
-        counter = self.window.settings().get(CHAT_TASK_COUNTER, 0)
+        counter = self.window.settings().get(CHAT_THREAD_COUNTER, 0)
         if not isinstance(counter, int) or counter < 0:
             counter = 0
         for v in self.window.views():
             if is_task_chat_view(v):
-                num = v.settings().get(CHAT_TASK_ID)
+                num = v.settings().get(CHAT_THREAD_ID)
                 if isinstance(num, int) and num > counter:
                     counter = num
         counter += 1
-        self.window.settings().set(CHAT_TASK_COUNTER, counter)
+        self.window.settings().set(CHAT_THREAD_COUNTER, counter)
         return counter
 
     def _start_task(self, title, initial_msg, send_immediate, cwd, target_group):
         task_num = self._next_task_number()
         clean_title = (title or "").strip()
         if clean_title:
-            view_name = f"Term Chat #{task_num} {clean_title}"
+            view_name = f"{CHAT_THREAD_NAME} #{task_num} {clean_title}"
         else:
-            view_name = f"Term Chat #{task_num}"
+            view_name = f"{CHAT_THREAD_NAME} #{task_num}"
 
         from .chatview import _create_chat_view_and_session
         chat_view = _create_chat_view_and_session(
@@ -324,9 +325,9 @@ class TermChatNewTaskCommand(sublime_plugin.WindowCommand):
             cwd=cwd,
             target_group=target_group,
         )
-        chat_view.settings().set(CHAT_TASK_ID, task_num)
+        chat_view.settings().set(CHAT_THREAD_ID, task_num)
         if clean_title:
-            chat_view.settings().set(CHAT_TASK_TITLE, clean_title)
+            chat_view.settings().set(CHAT_THREAD_TITLE, clean_title)
 
 
 class TermChatSwitchThreadCommand(sublime_plugin.WindowCommand):
@@ -355,7 +356,7 @@ class TermChatSwitchThreadCommand(sublime_plugin.WindowCommand):
             and s.chat_view and s.chat_view.is_valid()
         ]
         if not sessions:
-            sublime.status_message("No active ChatView sessions")
+            sublime.status_message(f"No active {CHAT_VIEW_NAME} sessions")
             return
 
         active_view = window.active_view()
@@ -371,7 +372,7 @@ class TermChatSwitchThreadCommand(sublime_plugin.WindowCommand):
             is_cur = 0 if (current_vid and s.chat_view.id() == current_vid) else 1
             if s.role == SessionRole.PRIMARY:
                 return (is_cur, 0, 0)
-            task_id = s.chat_view.settings().get(CHAT_TASK_ID, 0)
+            task_id = s.chat_view.settings().get(CHAT_THREAD_ID, 0)
             return (is_cur, 1, task_id if isinstance(task_id, int) else 999)
 
         sessions.sort(key=_sort_key)
@@ -382,11 +383,11 @@ class TermChatSwitchThreadCommand(sublime_plugin.WindowCommand):
             is_current = bool(current_vid and vid == current_vid)
 
             if s.role == SessionRole.PRIMARY:
-                raw_title = "Chat View (Primary)"
+                raw_title = f"{CHAT_VIEW_NAME} (Primary)"
             else:
                 raw_title = (
                     s.chat_view.name()
-                    or f"Term Chat #{s.chat_view.settings().get(CHAT_TASK_ID, '')}"
+                    or f"{CHAT_THREAD_NAME} #{s.chat_view.settings().get(CHAT_THREAD_ID, '')}"
                 )
 
             icon, status, annotation = self._get_session_thread_status(
@@ -438,7 +439,7 @@ class TermChatSwitchThreadCommand(sublime_plugin.WindowCommand):
 
 class TermChatRenameThreadCommand(sublime_plugin.WindowCommand):
     """
-    Rename the current Task Chat thread tab (`Term Chat #<id> <title>`).
+    Rename the current Task Chat thread tab (`chatview #<id> <title>`).
     Primary Chat View cannot be renamed.
     """
     def _resolve_target_view(self, group=-1, index=-1, view_id=None):
@@ -471,7 +472,7 @@ class TermChatRenameThreadCommand(sublime_plugin.WindowCommand):
             return
 
         if is_primary_chat_view(target_view):
-            sublime.status_message("Primary Chat View cannot be renamed")
+            sublime.status_message(f"Primary {CHAT_VIEW_NAME} cannot be renamed")
             return
 
         if not is_task_chat_view(target_view):
@@ -482,7 +483,7 @@ class TermChatRenameThreadCommand(sublime_plugin.WindowCommand):
             self._apply_rename(target_view, title)
             return
 
-        current_title = target_view.settings().get(CHAT_TASK_TITLE, "")
+        current_title = target_view.settings().get(CHAT_THREAD_TITLE, "")
         panel = self.window.show_input_panel(
             "Rename Chat Thread:",
             current_title,
@@ -495,23 +496,26 @@ class TermChatRenameThreadCommand(sublime_plugin.WindowCommand):
     def _apply_rename(self, view, title):
         clean_title = (title or "").strip()
         clean_title = re.sub(
-            r"^(?:Term\s*Chat|TermChat)\s*#\d+\s*", "", clean_title
+            rf"^(?:{re.escape(CHAT_THREAD_NAME)}|{re.escape(CHAT_VIEW_NAME)}|term\s*chat)\s*#\d+\s*",
+            "",
+            clean_title,
+            flags=re.IGNORECASE,
         ).strip()
-        task_num = view.settings().get(CHAT_TASK_ID)
+        task_num = view.settings().get(CHAT_THREAD_ID)
         if task_num is not None:
             view_name = (
-                f"Term Chat #{task_num} {clean_title}"
+                f"{CHAT_THREAD_NAME} #{task_num} {clean_title}"
                 if clean_title
-                else f"Term Chat #{task_num}"
+                else f"{CHAT_THREAD_NAME} #{task_num}"
             )
         else:
-            view_name = clean_title or "Term Chat"
+            view_name = clean_title or CHAT_THREAD_NAME
 
         view.set_name(view_name)
         if clean_title:
-            view.settings().set(CHAT_TASK_TITLE, clean_title)
+            view.settings().set(CHAT_THREAD_TITLE, clean_title)
         else:
-            view.settings().erase(CHAT_TASK_TITLE)
+            view.settings().erase(CHAT_THREAD_TITLE)
 
         chat_threads.update_window_model_phantoms(self.window)
         sublime.status_message(f"Renamed thread to: {view_name}")

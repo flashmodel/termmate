@@ -136,15 +136,15 @@ class QuickOutputPopup:
     def _calculate_dimensions(self):
         """Calculate responsive max_width and max_height based on viewport extent."""
         if not self.source_view or not self.source_view.is_valid():
-            return 800, 320
+            return 800, 420
 
         try:
             viewport_w, viewport_h = self.source_view.viewport_extent()
             max_w = min(850, max(400, int(viewport_w - 40)))
-            max_h = min(420, max(240, int(viewport_h * 0.40)))
+            max_h = min(560, max(260, int(viewport_h * 0.50)))
             return max_w, max_h
         except Exception:
-            return 800, 320
+            return 800, 420
 
     def _get_anchor_point(self):
         if self.source_view and self.source_view.is_valid():
@@ -165,9 +165,44 @@ class QuickOutputPopup:
             pass
         return None
 
+    def _ensure_visible_space(self):
+        """Scroll anchor to center if remaining space below is insufficient."""
+        if not self.source_view or not self.source_view.is_valid():
+            return
+        try:
+            point = self._get_anchor_point()
+            layout_pos = self.source_view.text_to_layout(point)
+            if not isinstance(layout_pos, (tuple, list)) or len(layout_pos) < 2:
+                return
+            point_y = layout_pos[1]
+            vp = self.source_view.viewport_position()
+            ve = self.source_view.viewport_extent()
+            if (
+                not isinstance(vp, (tuple, list))
+                or len(vp) < 2
+                or not isinstance(ve, (tuple, list))
+                or len(ve) < 2
+            ):
+                return
+            vy, vh = vp[1], ve[1]
+            if (
+                not isinstance(point_y, (int, float))
+                or not isinstance(vy, (int, float))
+                or not isinstance(vh, (int, float))
+            ):
+                return
+            space_below = vh - (point_y - vy)
+            if space_below < self.full_height + 40:
+                offset_px = 60
+                target_vy = max(0.0, point_y - (vh * 0.50 - offset_px))
+                self.source_view.set_viewport_position((vp[0], target_vy), False)
+        except Exception:
+            pass
+
     def open(self):
         if not HAS_MDPOPUPS or not self.source_view or not self.source_view.is_valid():
             return
+        self._ensure_visible_space()
         self._do_render()
 
     def resume(self):
@@ -186,7 +221,7 @@ class QuickOutputPopup:
         self.popup_css = self._build_popup_css()
 
     def append(self, text):
-        if not self.is_active or self.user_dismissed:
+        if not self.is_active or self.is_finished or self.user_dismissed:
             return
         self.buffer += text
         if not self.is_expanded and self.buffer.strip():
@@ -286,12 +321,16 @@ class QuickOutputPopup:
             title = f"TermMate · {self.chat_title}"
 
         status = "Done" if self.is_finished else "Generating..."
+        title_box = (
+            f'<span class="quick-title-box">'
+            f"<strong>[{title}]</strong> <em>{status}</em>"
+            f"</span>"
+        )
         header = (
-            f"**[{title}]** *{status}*"
-            '<span style="padding-left: 20px;">'
-            '<a class="quick-btn" href="action:chat">Open in Chat</a>'
-            '</span>\u00a0'
-            '<a class="quick-btn" href="action:close">✕ Close</a>'
+            f"{title_box}"
+            '<a class="quick-btn quick-btn-chat" href="action:chat">Open in Chat</a>'
+            '<a class="quick-btn quick-btn-close" href="action:close">Close</a>'
+            '<span class="quick-spacer">&nbsp;</span>'
         )
 
         body = self.buffer.strip()
@@ -302,16 +341,41 @@ class QuickOutputPopup:
 
     def _build_popup_css(self):
         min_h = max(50, self.slot_height - 16)
-        return (
-            f".termmate-quick-popup {{ padding: 8px 12px; min-height: {min_h}px; }}\n"
-            ".termmate-quick-popup a { text-decoration: none; }\n"
-            ".termmate-quick-popup .quick-btn {\n"
-            "    padding: 1px 7px;\n"
-            "    border: 1px solid color(var(--foreground) alpha(0.22));\n"
-            "    border-radius: 3px;\n"
-            "    background-color: color(var(--foreground) alpha(0.04));\n"
-            "}\n"
-        )
+        return f"""
+        .termmate-quick-popup {{ padding: 8px 12px; min-height: {min_h}px; }}
+        .termmate-quick-popup a {{ text-decoration: none; }}
+        .termmate-quick-popup .quick-title-box {{
+            display: inline-block;
+            width: 210px;
+            white-space: nowrap;
+            overflow: hidden;
+            vertical-align: middle;
+        }}
+        .termmate-quick-popup .quick-btn {{
+            display: inline-block;
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 0.85em;
+            font-weight: bold;
+            vertical-align: middle;
+        }}
+        .termmate-quick-popup .quick-btn-chat {{
+            margin-left: 20px;
+            background-color: var(--foreground);
+            color: var(--background);
+            border: 1px solid var(--foreground);
+        }}
+        .termmate-quick-popup .quick-btn-close {{
+            margin-left: 29px;
+            background-color: color(var(--background) blend(var(--foreground) 75%));
+            color: var(--foreground);
+            border: 1px solid color(var(--foreground) alpha(0.2));
+        }}
+        .termmate-quick-popup .quick-spacer {{
+            display: inline-block;
+            padding-left: 30px;
+        }}
+        """
 
     def _do_render(self):
         if not self.source_view or not self.source_view.is_valid() or not HAS_MDPOPUPS:
@@ -427,6 +491,8 @@ class QuickOutputPopup:
             point = self._get_anchor_point()
             if self._is_point_visible(point):
                 self._schedule_scroll_restore()
+            elif self.is_finished:
+                self.close()
             return
 
         # Hide while source view and anchor are visible means user dismissed

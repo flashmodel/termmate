@@ -66,6 +66,11 @@ class TestQuickPopup(unittest.TestCase):
             self.assertIsNotNone(popup.phantom_set)
             self.assertTrue(popup.phantom_set.update.called)
             saved_height = popup.slot_height
+            saved_buffer = popup.buffer
+
+            # Subsequent appends after finish() must be ignored
+            popup.append("\nLater turn output")
+            self.assertEqual(popup.buffer, saved_buffer)
 
             # Simulate scrolling away (anchor point 25 outside visible_region 100..200)
             mock_view.visible_region.return_value = MagicMock(begin=lambda: 100, end=lambda: 200)
@@ -95,6 +100,45 @@ class TestQuickPopup(unittest.TestCase):
             # Clean up
             manager.close(999)
             self.assertIsNone(manager.get(999))
+
+    def test_scroll_away_after_finish_cleans_up_phantom(self):
+        mock_view = MagicMock()
+        mock_view.is_valid.return_value = True
+        mock_view.sel.return_value = [
+            MagicMock(begin=lambda: 10, end=lambda: 25, empty=lambda: False)
+        ]
+        mock_view.visible_region.return_value = MagicMock(begin=lambda: 0, end=lambda: 100)
+        mock_region = MagicMock()
+        mock_region.begin.return_value = 10
+        mock_region.end.return_value = 25
+        mock_region.b = 25
+        mock_view.get_regions.return_value = [mock_region]
+        mock_view.viewport_position.return_value = (0.0, 0.0)
+
+        mock_window = MagicMock()
+        mock_mdpopups = MagicMock()
+        mock_mdpopups.is_popup_visible.return_value = True
+
+        with patch("chatview.chatrender.HAS_MDPOPUPS", True), \
+             patch("chatview.chatrender.mdpopups", mock_mdpopups):
+            manager = QuickOutputPopupManager()
+            popup = manager.start(mock_window, mock_view, chat_view_id=1001, prompt="Test prompt")
+            popup.append("Done output")
+            popup.finish()
+            self.assertTrue(popup.is_finished)
+            self.assertTrue(popup.is_active)
+
+            # User scrolls down so anchor is outside visible viewport
+            mock_view.viewport_position.return_value = (0.0, 500.0)
+            mock_view.visible_region.return_value = MagicMock(begin=lambda: 200, end=lambda: 400)
+            popup._on_hide()
+
+            # When finished and scrolled out of view, popup must be completely closed
+            # and slot phantom removed to prevent orphan gap in editor
+            self.assertFalse(popup.is_active)
+            self.assertFalse(popup.is_visible)
+            popup.phantom_set.update.assert_called_with([])
+            mock_view.erase_regions.assert_called_with("termmate_quick_popup_anchor")
 
 
 if __name__ == "__main__":

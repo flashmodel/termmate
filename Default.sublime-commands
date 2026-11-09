@@ -5,7 +5,7 @@
     },
     {
         "caption": "TermMate: New Chat Thread\tparallel conversation",
-        "command": "term_chat_new_task"
+        "command": "term_chat_new_thread"
     },
     {
         "caption": "TermMate: Switch Chat Thread\tshow active conversations",

@@ -536,24 +536,41 @@ class ClaudeMessageProcessor(BaseChatMessageProcessor):
         if message.type == "assistant":
             self.session.start_loading()
 
+            text_content = ""
             if hasattr(message, "content"):
                 for block in message.content:
                     if hasattr(block, "text"):
                         if self.last_is_tool_call:
-                            self.append_content("\n")
+                            text_content += "\n"
                         self.last_is_tool_call = False
-                        self.append_content(block.text)
+                        text_content += block.text
 
                     elif isinstance(block, dict) and block.get("type") == "tool_use":
+                        if text_content:
+                            trailing = len(text_content) - len(text_content.rstrip("\n"))
+                            if trailing == 0:
+                                text_content += "\n"
+                                trailing = 1
+                            self.append_content(text_content)
+                            text_content = ""
+                            need_newline = (trailing < 2)
+                        else:
+                            need_newline = False
+
                         if block.get("name") in ("Edit", "Write"):
                             pass  # defer to tool_use_result
                         else:
-                            if not self.last_is_tool_call:
+                            if not self.last_is_tool_call and need_newline:
                                 self.append_content("\n", is_tool=True)
                             self.last_is_tool_call = True
                             self.append_content(
                                 self._format_tool_block(block) + "\n", is_tool=True
                             )
+
+            if text_content:
+                if not text_content.endswith("\n"):
+                    text_content += "\n"
+                self.append_content(text_content)
         elif message.type == "system":
             raw = getattr(message, "raw_data", {}) or {}
             if raw.get("subtype") == "status" and raw.get("status") == "compacting":
