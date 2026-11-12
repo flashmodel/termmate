@@ -16,6 +16,7 @@ TermMate's main agentic features include:
 - **autonomous coding workflow** - let agents explore your codebase, run commands, edit files, and complete tasks directly in Sublime Text.
 - **editor-native chat** - plan tasks, follow tool execution, approve agent actions, and review changes in an editor-native interface.
 - **workspace awareness** - reference files, line ranges, selections, and multi-level directory paths with cascading smart `@` completion and sidebar actions.
+- **multi-tab chat thread** - run multiple independent conversations in parallel tabs (e.g. Main Chat and Task Threads) with isolated agent states.
 - **session management** - start fresh, resume previous conversations, or rewind and branch from earlier prompt.
 
 ## Getting Started
@@ -135,11 +136,24 @@ Right-click on any folder in the sidebar and select **Set Working Directory** to
 
 For sublime projects with multi-folder open in the same workspace, TermMate keeps the selected folder as the `cwd` and gives the agent access to the other folders as additional directories. This is equivalent to agent's `add-dir` option.
 
-**4. Quick Message**
+**4. Multi-Tab Chat Thread (Parallel Conversations)**
+
+Run multiple independent agent sessions concurrently in Sublime Text tabs, complete with real-time status tracking and seamless switching:
+
+- **Main Chat vs Task Threads**:
+  - **Main Chat (`Chat View`)**: The primary conversation for global project architecture and ongoing development.
+  - **Task Threads (`TermChat`)**: Dedicated tabs for isolated tasks. Each thread runs in its own subprocess with its own history, plan mode, and approve mode.
+
+- **To Start a New Thread**:
+  - **Sidebar Context Menu**: Right-click a folder in the sidebar → **TermMate** → **New Chat Thread Here** to target that directory.
+  - **Editor Context Menu**: Right-click in the editor → **TermMate** → **New Chat Thread**.
+  - **Command Palette**: `TermMate: New Chat Thread` (prompts for an optional task title).
+
+**5. Quick Message**
 
 Run `TermMate: Quick Message` from the command palette to compose and send a message directly from the current tab. If text is selected, TermMate automatically includes its file and line range as context. The message is sent to the existing chat, or a new chat is started if needed.
 
-**5. Split Chat Window**
+**6. Split Chat Window**
 
 You can use the command palette (`TermMate: Split Chat Window`) or right-click the chat view tab and select **TermMate: Split Chat Window** to split the editor layout and place the chat view into its own dedicated pane. By default, this pane is isolated so opening other files will not overwrite the chat view. This isolation behavior can be configured via the `dedicated_chat_pane` setting.
 
@@ -219,6 +233,8 @@ When confirmed, TermMate forks the session at the selected prompt, removes all s
 | :--- | :--- | :--- | :--- |
 | **Install Agent** | - | - | `TermMate: Install Agent` |
 | **Start New Chat** | - | - | `TermMate: Start Chat` |
+| **New Chat Thread** | - | - | `TermMate: New Chat Thread` |
+| **Rename Chat Thread** | - | - | `TermMate: Rename Chat Thread` |
 | **Quick Message** | - | - | `TermMate: Quick Message` |
 | **Split Chat Window** | - | - | `TermMate: Split Chat Window` |
 | **Send Message** | `Cmd+Enter` | `Ctrl+Enter` | - |
