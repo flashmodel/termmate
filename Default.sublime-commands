@@ -4,6 +4,14 @@
         "command": "term_chat_cli"
     },
     {
+        "caption": "TermMate: New Chat Thread\tparallel conversation",
+        "command": "term_chat_new_thread"
+    },
+    {
+        "caption": "TermMate: Switch Chat Thread\tshow active conversations",
+        "command": "term_chat_switch_thread"
+    },
+    {
         "caption": "TermMate: Quick Message\tsend message directly",
         "command": "term_chat_prompt"
     },

@@ -194,7 +194,7 @@ class FileChangesArtifact:
             # The char below is (NBSP): renders blank, not indent whitespace.
             text += " "
 
-        view.run_command("term_chat_output_append", {"text": text})
+        view.run_command("term_chat_output_append", {"text": text, "is_tool": True})
 
         self.plan_regions.extend(new_plan_regions)
         self.file_regions.extend(new_regions)
@@ -249,7 +249,10 @@ class FileChangesArtifact:
                 if action == "execute":
                     name = item.get("name") or os.path.basename(abs_path) or "plan"
                     if sublime.ok_cancel_dialog(f"Implement {name}?", "Execute"):
-                        self.window.run_command("term_chat_implement_plan")
+                        self.window.run_command(
+                            "term_chat_implement_plan",
+                            {"view_id": self.view.id()},
+                        )
                     return True
                 elif action == "view":
                     self._open_plan_view(abs_path, item)

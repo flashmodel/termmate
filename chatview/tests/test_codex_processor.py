@@ -220,6 +220,35 @@ class TestCodexToolCallFormatting(unittest.TestCase):
 
         self.assertEqual(output, "⏺ imageGeneration")
 
+    def test_claude_assistant_text_and_tool_use_separation(self):
+        for text, expected_text_arg, expected_extra_nl in [
+            ("Checking file", "Checking file\n", True),
+            ("Checking file\n", "Checking file\n", True),
+            ("Checking file\n\n", "Checking file\n\n", False),
+        ]:
+            session = SimpleNamespace(
+                cwd="/Users/sino/workbench/codeform",
+                agent_thread=None,
+                start_loading=MagicMock(),
+                append_markdown=MagicMock(),
+            )
+            processor = ClaudeMessageProcessor(session)
+            msg = Message(
+                "assistant",
+                [
+                    SimpleNamespace(text=text),
+                    {"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}},
+                ],
+            )
+            processor.handle_message(msg)
+            expected_calls = [
+                unittest.mock.call(expected_text_arg, flush=False),
+            ]
+            if expected_extra_nl:
+                expected_calls.append(unittest.mock.call("\n", flush=False, is_tool=True))
+            expected_calls.append(unittest.mock.call("⏺ Read a.py\n", flush=False, is_tool=True))
+            self.assertEqual(session.append_markdown.call_args_list, expected_calls)
+
 
 class TestOpenCodeMessageProcessor(unittest.TestCase):
 
@@ -331,21 +360,21 @@ class TestOpenCodeMessageProcessor(unittest.TestCase):
 
     def test_tool_after_text_without_newline_ensures_blank_line(self):
         appended = []
-        self.session.append_markdown = lambda text, flush=False: appended.append(text)
+        self.session.append_markdown = lambda text, flush=False, **kw: appended.append(text)
         self.processor.handle_message(Message("text", "Let's use the edit tool."))
         self.processor.handle_message(Message("tool_use", {"name": "edit"}))
         self.assertEqual(appended, ["Let's use the edit tool.", "\n\n", "⏺ edit\n"])
 
     def test_tool_after_text_with_one_newline_adds_single_newline(self):
         appended = []
-        self.session.append_markdown = lambda text, flush=False: appended.append(text)
+        self.session.append_markdown = lambda text, flush=False, **kw: appended.append(text)
         self.processor.handle_message(Message("text", "Let's use the edit tool.\n"))
         self.processor.handle_message(Message("tool_use", {"name": "edit"}))
         self.assertEqual(appended, ["Let's use the edit tool.\n", "\n", "⏺ edit\n"])
 
     def test_tool_after_text_with_two_newlines_adds_no_extra_newline(self):
         appended = []
-        self.session.append_markdown = lambda text, flush=False: appended.append(text)
+        self.session.append_markdown = lambda text, flush=False, **kw: appended.append(text)
         self.processor.handle_message(Message("text", "Let's use the edit tool.\n\n"))
         self.processor.handle_message(Message("tool_use", {"name": "edit"}))
         self.assertEqual(appended, ["Let's use the edit tool.\n\n", "⏺ edit\n"])

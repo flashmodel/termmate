@@ -1,6 +1,11 @@
 [
     { "caption": "-" },
     {
+        "caption": "TermMate: Rename Chat Thread…",
+        "command": "term_chat_rename_thread",
+        "args": {"group": "$group", "index": "$index"}
+    },
+    {
         "caption": "TermMate: Split Chat Window",
         "command": "term_chat_split_chat",
         "args": {"group": "$group", "index": "$index"}
