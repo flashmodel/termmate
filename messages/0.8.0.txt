@@ -1,0 +1,7 @@
+TermMate 0.8.0
+==============
+
+- Multi-Tab Chat Threads (Parallel Conversations)
+  Run multiple chat sessions concurrently across separate editor tabs.
+  Each thread maintains its own agent provider, model selection,
+  workspace directory, and conversation context.
