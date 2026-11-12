@@ -3,7 +3,7 @@
         "caption": "-"
     },
     {
-        "caption": "TermMate: Chat (@This)",
+        "caption": "TermMate: Chat on (@This)",
         "command": "term_chat_add_context"
     },
     {

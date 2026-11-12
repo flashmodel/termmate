@@ -113,7 +113,7 @@ Have questions or feedback, join the [Sublime Forum discussion](https://forum.su
 
 **1. Chat with Agent about Current File or Selection**
 
-Right-click on any file or text selection and choose **Chat with Agent** or **Chat @This** to send it as context for your next prompt. This will:
+Right-click on any file or text selection and choose **Chat with Agent** or **Chat on (@This)** to send it as context for your next prompt. This will:
 
 - Open the TermMate chat view (if not already open).
 - Insert a reference to the file (`@filename`) or selected line range (`@filename#L1-10`) into the message prompt.
@@ -128,7 +128,7 @@ Tag files in your prompt to give the agent precise project context. Typing `@` i
 - 📦 Multi-root workspaces — drill into secondary workspace folders
 - 📂 Open files — files currently open in editor tabs
 
-A tag can point at a file (`@src/main.py`), a line or range (`@src/main.py#L42`, `@src/main.py#L10-25`), or a directory (`@src/`). Tagged files are sent to the agent as context along with your message. **Chat @This** and the sidebar context menu can also insert tags for you.
+A tag can point at a file (`@src/main.py`), a line or range (`@src/main.py#L42`, `@src/main.py#L10-25`), or a directory (`@src/`). Tagged files are sent to the agent as context along with your message. **Chat on (@This)** and the sidebar context menu can also insert tags for you.
 
 **3. Set Working Directory**
 
