@@ -4,6 +4,8 @@ import unicodedata
 
 import sublime
 
+from .inline_math import render_inline_math
+
 
 class MarkdownFormatter:
     """
@@ -195,6 +197,10 @@ class MarkdownFormatter:
             return None
         while len(alignments) < max_cols:
             alignments.append(None)
+        for i, row in enumerate(rows):
+            if i == separator_idx:
+                continue
+            rows[i] = [render_inline_math(cell) for cell in row]
         return rows, separator_idx, alignments
 
     def format_table(self, lines):
@@ -632,6 +638,9 @@ class MarkdownFormatter:
                 output_lines.append(line)
                 continue
 
+            line = render_inline_math(line)
+            stripped = line.strip()
+
             # Detect table rows - must start with | and have at least one more |
             if stripped.startswith('|') and '|' in stripped[1:]:
                 self.table_buffer.append(line)
@@ -641,11 +650,13 @@ class MarkdownFormatter:
 
         if flush:
             if self.remaining_text:
-                if self.remaining_text.strip().startswith('|'):
-                    self.table_buffer.append(self.remaining_text)
+                rem = (render_inline_math(self.remaining_text)
+                       if not self.in_code_block else self.remaining_text)
+                if rem.strip().startswith('|'):
+                    self.table_buffer.append(rem)
                 else:
                     flush_buffer()
-                    output_lines.append(self.remaining_text)
+                    output_lines.append(rem)
                 self.remaining_text = ""
             flush_buffer()
 
