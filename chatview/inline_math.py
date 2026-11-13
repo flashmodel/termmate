@@ -11,6 +11,9 @@ _SINGLE_LINE_BLOCK_MATH_RE = re.compile(
 _INLINE_MATH_RE = re.compile(
     r'(?<![\$\\\d])\$(?!\s)((?:\\.|[^$\\\n])+?)(?<!\s)\$(?![0-9\$])'
 )
+_PAREN_MATH_RE = re.compile(
+    r'(?<!\\)\\\(((?:\\.|[^\\])+?)\\\)'
+)
 _COMMAND_RE = re.compile(r'\\([a-zA-Z]+)')
 
 COMMAND_MAP = {
@@ -48,14 +51,37 @@ COMMAND_MAP = {
     'Rightarrow': '⇒', 'Leftarrow': '⇐', 'Leftrightarrow': '⇔', 'iff': '⇔',
     'implies': '⇒', 'impliedby': '⇐',
     'uparrow': '↑', 'downarrow': '↓',
-    'infty': '∞', 'partial': '∂', 'nabla': '∇',
+    'infty': '∞', 'partial': '∂', 'nabla': '∇', 'hbar': 'ℏ', 'ell': 'ℓ',
     'sum': '∑', 'prod': '∏', 'int': '∫', 'oint': '∮',
     'dots': '…', 'cdots': '⋯', 'ldots': '…',
     'quad': '  ', 'qquad': '    ', 'mid': '∣', 'vert': '∣',
+    'Vert': '‖', 'lVert': '‖', 'rVert': '‖',
+    'langle': '⟨', 'rangle': '⟩',
+    'lfloor': '⌊', 'rfloor': '⌋', 'lceil': '⌈', 'rceil': '⌉',
+    'odot': '⊙', 'oplus': '⊕', 'otimes': '⊗',
+    'top': '⊤', 'bot': '⊥',
 }
 
 BLACKBOARD_BOLD = {
     'R': 'ℝ', 'N': 'ℕ', 'Z': 'ℤ', 'Q': 'ℚ', 'C': 'ℂ', 'P': 'ℙ', 'E': '𝔼'
+}
+
+MATHCAL_MAP = {
+    'A': '𝒜', 'B': 'ℬ', 'C': '𝒞', 'D': '𝒟', 'E': 'ℰ', 'F': 'ℱ', 'G': '𝒢',
+    'H': 'ℋ', 'I': 'ℐ', 'J': '𝒥', 'K': '𝒦', 'L': 'ℒ', 'M': 'ℳ', 'N': '𝒩',
+    'O': '𝒪', 'P': '𝒫', 'Q': '𝒬', 'R': 'ℛ', 'S': '𝒮', 'T': '𝒯', 'U': '𝒰',
+    'V': '𝒱', 'W': '𝒲', 'X': '𝒳', 'Y': '𝒴', 'Z': '𝒵'
+}
+
+ACCENT_MAP = {
+    'hat': '\u0302',
+    'widehat': '\u0302',
+    'bar': '\u0304',
+    'tilde': '\u0303',
+    'widetilde': '\u0303',
+    'vec': '\u20d7',
+    'dot': '\u0307',
+    'ddot': '\u0308',
 }
 
 SUPERSCRIPT_MAP = {
@@ -67,6 +93,10 @@ SUPERSCRIPT_MAP = {
     'k': 'ᵏ', 'l': 'ˡ', 'm': 'ᵐ', 'n': 'ⁿ', 'o': 'ᵒ',
     'p': 'ᵖ', 'r': 'ʳ', 's': 'ˢ', 't': 'ᵗ', 'u': 'ᵘ',
     'v': 'ᵛ', 'w': 'ʷ', 'x': 'ˣ', 'y': 'ʸ', 'z': 'ᶻ',
+    'A': 'ᴬ', 'B': 'ᴮ', 'D': 'ᴰ', 'E': 'ᴱ', 'H': 'ᴴ',
+    'I': 'ᴵ', 'J': 'ᴶ', 'K': 'ᴷ', 'L': 'ᴸ', 'M': 'ᴹ',
+    'N': 'ᴺ', 'P': 'ᴾ', 'R': 'ᴿ', 'T': 'ᵀ', 'U': 'ᵁ',
+    'W': 'ᵂ',
 }
 
 SUBSCRIPT_MAP = {
@@ -124,15 +154,15 @@ def latex_to_unicode(latex):
         return ""
     s = latex.strip()
 
-    # 1. Escaped punctuation
+    # Escaped punctuation
     s = s.replace(r'\%', '%').replace(r'\&', '&').replace(r'\$', '$').replace(r'\_', '_')
     s = s.replace(r'\|', '∥')
     s = s.replace(r'\{', '\uFFF0').replace(r'\}', '\uFFF1').replace(r'\,', ' ').replace(r'\;', ' ')
 
-    # 2. Strip sizing delimiters \left and \right
+    # Strip sizing delimiters \left and \right
     s = re.sub(r'\\(left|right)\b', '', s)
 
-    # 3. Formatting macros: \text{...}, \mathbf{...}, \mathrm{...} (resolve nested from inside out)
+    # Formatting macros: \text{...}, \mathbf{...}, \mathrm{...} (resolve nested from inside out)
     for _ in range(5):
         if not re.search(r'\\(text|mathrm|mathbf|mathit|textbf|textit|operatorname)\{', s):
             break
@@ -143,7 +173,38 @@ def latex_to_unicode(latex):
         )
     s = re.sub(r' {2,}', ' ', s)
 
-    # 4. Fractions \frac{num}{den} (resolve from innermost out)
+    # Combining accents: \hat{y}, \bar{x}, \vec{w}, \dot{x}, \ddot{x}, \tilde{x}
+    def _apply_accent(name, inner):
+        accent = ACCENT_MAP.get(name, '')
+        rendered = latex_to_unicode(inner)
+        if not rendered or not accent:
+            return rendered
+        return f"{rendered}{accent}"
+
+    s = re.sub(
+        r'\\(hat|widehat|bar|tilde|widetilde|vec|dot|ddot)\{([^{}]+)\}',
+        lambda m: _apply_accent(m.group(1), m.group(2)),
+        s
+    )
+    s = re.sub(
+        r'\\(hat|widehat|bar|tilde|widetilde|vec|dot|ddot)\s*(\\[a-zA-Z]+|[a-zA-Z0-9])',
+        lambda m: _apply_accent(m.group(1), m.group(2)),
+        s
+    )
+
+    # Script / Calligraphic \mathcal{L}
+    s = re.sub(
+        r'\\mathcal\{([^{}]+)\}',
+        lambda m: ''.join(MATHCAL_MAP.get(c, c) for c in m.group(1)),
+        s
+    )
+    s = re.sub(
+        r'\\mathcal\s*([A-Za-z])',
+        lambda m: MATHCAL_MAP.get(m.group(1), m.group(1)),
+        s
+    )
+
+    # Fractions \frac{num}{den} (resolve from innermost out)
     for _ in range(5):
         if r'\frac' not in s:
             break
@@ -157,7 +218,7 @@ def latex_to_unicode(latex):
 
         s = re.sub(r'\\frac\{([^{}]+)\}\{([^{}]+)\}', replace_frac, s)
 
-    # 5. Square roots \sqrt[n]{x} and \sqrt{x}
+    # Square roots \sqrt[n]{x} and \sqrt{x}
     s = re.sub(
         r'\\sqrt\[([^{}]+)\]\{([^{}]+)\}',
         lambda m: (
@@ -168,20 +229,20 @@ def latex_to_unicode(latex):
     )
     s = re.sub(r'\\sqrt\{([^{}]+)\}', lambda m: f"√({latex_to_unicode(m.group(1))})", s)
 
-    # 6. Blackboard bold \mathbb{R}
+    # Blackboard bold \mathbb{R}
     s = re.sub(
         r'\\mathbb\{([A-Za-z])\}',
         lambda m: BLACKBOARD_BOLD.get(m.group(1), m.group(1)),
         s
     )
 
-    # 7. Function names like \log, \sin
+    # Function names like \log, \sin
     s = re.sub(r'\\(log|ln|exp|sin|cos|tan|min|max|lim|det)(?![a-zA-Z])', r'\1', s)
 
-    # 8. Command symbols with word boundaries
+    # Command symbols with word boundaries
     s = _COMMAND_RE.sub(lambda m: COMMAND_MAP.get(m.group(1), m.group(0)), s)
 
-    # 9. Superscripts
+    # Superscripts
     def replace_sup(m):
         content = m.group(1) or m.group(2)
         if all(c in SUPERSCRIPT_MAP for c in content):
@@ -192,7 +253,7 @@ def latex_to_unicode(latex):
 
     s = re.sub(r'\^\{([^{}]+)\}|\^([0-9a-zA-Z+-=()])', replace_sup, s)
 
-    # 10. Subscripts
+    # Subscripts
     def replace_sub(m):
         content = m.group(1) or m.group(2)
         if all(c in SUBSCRIPT_MAP for c in content):
@@ -203,7 +264,7 @@ def latex_to_unicode(latex):
 
     s = re.sub(r'_\{([^{}]+)\}|_([0-9a-zA-Z+-=()])', replace_sub, s)
 
-    # 11. Remove grouping braces and restore literal escaped braces
+    # Remove grouping braces and restore literal escaped braces
     s = re.sub(r'\{([^{}]+)\}', r'\1', s)
     s = s.replace('\uFFF0', '{').replace('\uFFF1', '}')
 
@@ -216,7 +277,7 @@ def render_inline_math(markdown_text):
     Replaces them with Unicode equivalents.
     Fenced code blocks, code spans, and multi-line block math are left untouched.
     """
-    if not markdown_text or '$' not in markdown_text:
+    if not markdown_text or ('$' not in markdown_text and r'\(' not in markdown_text):
         return markdown_text
 
     parts = _PROTECTED_PATTERN.split(markdown_text)
@@ -229,4 +290,9 @@ def render_inline_math(markdown_text):
             lambda m: latex_to_unicode(m.group(1)),
             parts[i]
         )
+        if r'\(' in parts[i]:
+            parts[i] = _PAREN_MATH_RE.sub(
+                lambda m: latex_to_unicode(m.group(1)),
+                parts[i]
+            )
     return ''.join(parts)

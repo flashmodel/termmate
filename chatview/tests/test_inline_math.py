@@ -58,6 +58,44 @@ class TestInlineMath(unittest.TestCase):
         self.assertEqual(latex_to_unicode(r"\text{count} \le 5"), "count ≤ 5")
         self.assertEqual(latex_to_unicode(r"\log_2(n) + \sin(\theta)"), "log₂(n) + sin(θ)")
 
+    def test_combining_accents(self):
+        self.assertEqual(latex_to_unicode(r"\hat{y}"), "ŷ")
+        self.assertEqual(latex_to_unicode(r"\hat y"), "ŷ")
+        self.assertEqual(latex_to_unicode(r"\widehat{y}"), "ŷ")
+        self.assertEqual(latex_to_unicode(r"\bar{x}"), "x̄")
+        self.assertEqual(latex_to_unicode(r"\vec{w}"), "w⃗")
+        self.assertEqual(latex_to_unicode(r"\dot{x} + \ddot{x}"), "ẋ + ẍ")
+        self.assertEqual(latex_to_unicode(r"\tilde{x}"), "x̃")
+        self.assertEqual(latex_to_unicode(r"\hat{\theta}_0"), "θ̂₀")
+        self.assertEqual(latex_to_unicode(r"\hat{y}_i"), "ŷᵢ")
+        self.assertEqual(latex_to_unicode(r"\vec{w}^T"), "w⃗ᵀ")
+
+    def test_script_and_calligraphy(self):
+        self.assertEqual(latex_to_unicode(r"\mathcal{L}"), "ℒ")
+        self.assertEqual(latex_to_unicode(r"\mathcal L"), "ℒ")
+        self.assertEqual(latex_to_unicode(r"\mathcal{D}"), "𝒟")
+        self.assertEqual(latex_to_unicode(r"\mathcal{N}(\mu, \sigma^2)"), "𝒩(μ, σ²)")
+        self.assertEqual(latex_to_unicode(r"\mathcal{H}"), "ℋ")
+
+    def test_delimiters_and_advanced_operators(self):
+        self.assertEqual(latex_to_unicode(r"\langle x, y \rangle"), "⟨ x, y ⟩")
+        self.assertEqual(latex_to_unicode(r"\Vert x \Vert"), "‖ x ‖")
+        self.assertEqual(
+            latex_to_unicode(r"\lfloor x \rfloor \le \lceil x \rceil"),
+            "⌊ x ⌋ ≤ ⌈ x ⌉"
+        )
+        self.assertEqual(latex_to_unicode(r"\hbar \omega"), "ℏ ω")
+        self.assertEqual(latex_to_unicode(r"A \odot B \oplus C \otimes D"), "A ⊙ B ⊕ C ⊗ D")
+
+    def test_parentheses_delimiters(self):
+        md = (
+            r"The loss \( \mathcal{L} \) and prediction "
+            r"\( \hat{y} = \mathbf{w}^T \mathbf{x} + b \)"
+        )
+        res = render_inline_math(md)
+        self.assertIn("ℒ", res)
+        self.assertIn("ŷ = wᵀ x + b", res)
+
     def test_code_spans_and_blocks_protected(self):
         md = (
             "Inline `$code$` and ```\necho $VAR\n``` should not change, "
