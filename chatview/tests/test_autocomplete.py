@@ -102,6 +102,43 @@ class TestAutocomplete(unittest.TestCase):
             self.assertEqual(sub_dirs_f, ["components"])
             self.assertEqual(sub_files_f, [])
 
+    def test_get_workspace_info_view_cwd_priority(self):
+        from unittest.mock import MagicMock
+
+        mock_window = MagicMock()
+        mock_window.folders.return_value = ["/ws/folder1", "/ws/folder2"]
+        mock_window.settings().get.return_value = "/ws/custom_window"
+
+        # 1. When view has its own chatview_cwd, it takes priority over window settings and folders
+        mock_view = MagicMock()
+        mock_view.settings().get.side_effect = (
+            lambda key, default=None: "/ws/view_specific_cwd" if key == "chatview_cwd" else default
+        )
+
+        with tempfile.TemporaryDirectory() as view_dir, tempfile.TemporaryDirectory() as win_dir:
+            mock_view.settings().get.side_effect = (
+                lambda key, default=None: view_dir if key == "chatview_cwd" else default
+            )
+            mock_window.settings().get.side_effect = (
+                lambda key, default=None: win_dir if key == "chatview_active_workspace" else default
+            )
+            mock_window.folders.return_value = [win_dir]
+
+            active_cwd, other = AutoComplete.get_workspace_info(mock_window, view=mock_view)
+            self.assertEqual(active_cwd, view_dir)
+
+        # 2. When view has no chatview_cwd, fallback to window settings
+        mock_view_no_cwd = MagicMock()
+        mock_view_no_cwd.settings().get.return_value = None
+        with tempfile.TemporaryDirectory() as win_dir:
+            mock_window.settings().get.side_effect = (
+                lambda key, default=None: win_dir if key == "chatview_active_workspace" else default
+            )
+            mock_window.folders.return_value = [win_dir]
+
+            active_cwd, other = AutoComplete.get_workspace_info(mock_window, view=mock_view_no_cwd)
+            self.assertEqual(active_cwd, win_dir)
+
 
 if __name__ == "__main__":
     unittest.main()

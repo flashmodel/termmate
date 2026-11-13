@@ -94,24 +94,33 @@ class AutoComplete:
     @staticmethod
     def get_workspace_info(
         window,
-        chat_workspace_key: str = "chatview_active_workspace"
+        chat_workspace_key: str = "chatview_active_workspace",
+        view=None,
+        chat_cwd_key: str = "chatview_cwd"
     ) -> Tuple[Optional[str], List[str]]:
         """
         Resolves (active_cwd, other_workspaces).
-        - active_cwd: The agent's current working directory (window custom setting or first folder).
+        - active_cwd: The agent's current working directory (view custom cwd,
+          window custom setting, or first folder).
         - other_workspaces: Any other folders in window.folders().
         """
         if not window:
             return None, []
 
         folders = window.folders() or []
-        custom_cwd = window.settings().get(chat_workspace_key)
 
         active_cwd = None
-        if custom_cwd and os.path.isdir(custom_cwd):
-            active_cwd = os.path.normpath(custom_cwd)
-        elif folders:
-            active_cwd = os.path.normpath(folders[0])
+        if view:
+            view_cwd = view.settings().get(chat_cwd_key)
+            if view_cwd and os.path.isdir(view_cwd):
+                active_cwd = os.path.normpath(view_cwd)
+
+        if not active_cwd:
+            custom_cwd = window.settings().get(chat_workspace_key)
+            if custom_cwd and os.path.isdir(custom_cwd):
+                active_cwd = os.path.normpath(custom_cwd)
+            elif folders:
+                active_cwd = os.path.normpath(folders[0])
 
         if not active_cwd:
             return None, []
@@ -268,7 +277,9 @@ class AutoComplete:
         if not window:
             return None
 
-        active_cwd, other_workspaces = cls.get_workspace_info(window, chat_workspace_key)
+        active_cwd, other_workspaces = cls.get_workspace_info(
+            window, chat_workspace_key=chat_workspace_key, view=view
+        )
 
         # Dynamic completions flag: inhibit buffer words and explicit/snippet completions
         flags = sublime.INHIBIT_WORD_COMPLETIONS
