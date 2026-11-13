@@ -2580,6 +2580,10 @@ class TermChatHistoryDownCommand(sublime_plugin.TextCommand):
 
 
 class ChatViewListener(sublime_plugin.EventListener):
+    def __init__(self):
+        super().__init__()
+        self._reverting_output = False
+
     def on_load(self, view):
         window = view.window()
         if not window:
@@ -2658,39 +2662,51 @@ class ChatViewListener(sublime_plugin.EventListener):
             LOG.info(f"Exit {role} ChatView CLI for window {window.id()} (view {view_id})")
         LOG.info(f"ChatView closed (role={role}, view={view_id})")
 
-    def on_selection_modified(self, view):
-        """
-        Restrict cursor movement to the editable area.
-        Allows selecting history for copy, but prevents placing the caret in history.
-        """
-        if not is_chat_view(view):
+    def on_modified(self, view):
+        if (self._reverting_output
+                or not is_chat_view(view)
+                or not view.settings().has(CHAT_INPUT_START)):
             return
-        if not view.settings().has(CHAT_INPUT_START):
+
+        command, args, _ = view.command_history(0)
+        if not command or command.startswith("term_chat"):
+            return
+
+        sel = view.sel()
+        if not sel:
             return
 
         editable_start = input_editable_start(view)
+        chars = (args or {}).get("characters") if command == "insert" else None
 
-        new_sel = []
-        changed = False
+        # Check whether the modification occurred in the output area
+        in_output = (
+            (sel[0].end() - len(chars) < editable_start)
+            if chars and len(sel) == 1
+            else any(r.begin() < editable_start for r in sel)
+        )
+        if not in_output:
+            return
 
-        for sel in view.sel():
-            # Only restrict empty regions (cursor carets), allowing user to select history to copy
-            if sel.empty() and sel.begin() < editable_start:
-                new_sel.append(sublime.Region(editable_start))
-                changed = True
-            else:
-                new_sel.append(sel)
+        self._reverting_output = True
+        try:
+            view.run_command("soft_undo")
+        finally:
+            self._reverting_output = False
 
-        if changed:
-            view.sel().clear()
-            view.sel().add_all(new_sel)
+        if chars:
+            sublime.set_timeout(
+                lambda: self._redirect_cursor(view, "insert", {"characters": chars}), 0
+            )
 
-    def _redirect_cursor(self, view):
-        """Helper to move cursor to the end of the view."""
+    def _redirect_cursor(self, view, command_name=None, args=None):
+        """Helper to move cursor to the end of the view and optionally replay a command."""
         end_pos = view.size()
         view.sel().clear()
         view.sel().add(sublime.Region(end_pos))
         view.show(end_pos)
+        if command_name:
+            view.run_command(command_name, args or {})
 
     def on_text_command(self, view, command_name, args):
         """Intercept text commands to protect content before prompt area."""
@@ -2736,7 +2752,8 @@ class ChatViewListener(sublime_plugin.EventListener):
                             return ("noop", {})
                     elif is_word_select:
                         line_text = view.substr(view.line(click_point))
-                        if session.message_processor.open_tool_file(line_text, window, view=view, point=click_point):
+                        if session.message_processor.open_tool_file(
+                                line_text, window, view=view, point=click_point):
                             return ("noop", {})
                         if session.message_processor.open_local_file_link(
                                 line_text, window, view, click_point):
@@ -2745,58 +2762,61 @@ class ChatViewListener(sublime_plugin.EventListener):
                             return ("noop", {})
 
         editable_start = input_editable_start(view)
+        return self._guard_buffer_command(view, command_name, args, editable_start)
 
-        # Handle move commands for history navigation
-        if command_name == "move" and args and args.get("by") == "lines":
-            # Don't intercept if auto-complete is active, so user can select items
-            if not view.is_auto_complete_visible():
-                is_up = not args.get("forward", True)
-                if len(view.sel()) > 0:
-                    sel = view.sel()[0]
-                    if sel.empty():
-                        if is_up:
-                            row_sel, _ = view.rowcol(sel.begin())
-                            row_start, _ = view.rowcol(editable_start)
-                            if row_sel == row_start:
-                                return ("term_chat_history_up", {})
-                        else:
-                            row_sel, _ = view.rowcol(sel.end())
-                            row_last, _ = view.rowcol(view.size())
-                            if row_sel == row_last:
-                                return ("term_chat_history_down", {})
-
-        # Handle deletion commands - block if they affect content before prompt
-        delete_commands = ("left_delete", "right_delete", "delete_word", "delete_word_backward",
-                          "delete_to_mark", "run_macro_file", "cut",)
-
-        if command_name in delete_commands:
-            for sel in view.sel():
-                # Block deletion if cursor is in protected area
-                if sel.begin() < editable_start:
-                    self._redirect_cursor(view)
-                    return ("noop", {})
-
-                # Special case for backspace: if at the exact boundary,
-                # it deletes backward into protected area
-                if (command_name in ("left_delete", "delete_word_backward") and
-                    sel.empty() and sel.begin() == editable_start):
-                    self._redirect_cursor(view)
-                    return ("noop", {})
-
-        # Handle insert/modification commands - redirect to end if in protected area
-        mod_commands = ("insert", "paste", "insert_characters", "insert_snippet",
-                       "append", "yank", "paste_and_indent", "clipboard_history_paste")
-
-        if command_name in mod_commands:
-            should_redirect = False
-            for sel in view.sel():
-                if sel.begin() < editable_start:
-                    should_redirect = True
-                    break
-
-            if should_redirect:
-                self._redirect_cursor(view)
+    def _guard_buffer_command(self, view, command_name, args, editable_start):
+        """Intercept buffer editing commands to guard output area and manage input behavior."""
+        # Output area protection: cursor/selection is in the transcript / agent output
+        if any(sel.begin() < editable_start for sel in view.sel()):
+            delete_commands = (
+                "left_delete", "right_delete", "delete_word", "delete_word_backward",
+                "delete_to_mark", "run_macro_file", "cut",
+                "undo", "soft_undo", "redo", "soft_redo",
+            )
+            if command_name in delete_commands:
                 return ("noop", {})
+
+            mod_commands = (
+                "insert", "paste", "insert_characters", "insert_snippet",
+                "append", "yank", "paste_and_indent", "clipboard_history_paste",
+            )
+            if command_name in mod_commands:
+                cmd_args = dict(args) if args else {}
+                if command_name == "insert" and cmd_args.get("characters") in ("\n", "\r\n"):
+                    sublime.set_timeout(lambda: self._redirect_cursor(view), 0)
+                    return ("noop", {})
+                sublime.set_timeout(
+                    lambda: self._redirect_cursor(view, command_name, cmd_args), 0
+                )
+                return ("noop", {})
+
+            return None
+
+        # Input area constraints: cursor is within the prompt area
+        if command_name == "move" and args and args.get("by") == "lines":
+            # History navigation on line boundaries (top line Up / bottom line Down)
+            # Suppressed in Vintagecommand mode so k/j can navigate
+            if (not view.settings().get("command_mode", False)
+                    and not view.is_auto_complete_visible()
+                    and len(view.sel()) > 0):
+                sel = view.sel()[0]
+                if sel.empty():
+                    is_up = not args.get("forward", True)
+                    if is_up:
+                        row_sel, _ = view.rowcol(sel.begin())
+                        row_start, _ = view.rowcol(editable_start)
+                        if row_sel == row_start:
+                            return ("term_chat_history_up", {})
+                    else:
+                        row_sel, _ = view.rowcol(sel.end())
+                        row_last, _ = view.rowcol(view.size())
+                        if row_sel == row_last:
+                            return ("term_chat_history_down", {})
+
+        if command_name in ("left_delete", "delete_word_backward"):
+            for sel in view.sel():
+                if sel.empty() and sel.begin() == editable_start:
+                    return ("noop", {})
 
         return None
 
