@@ -72,6 +72,9 @@ class TestInlineMath(unittest.TestCase):
         md = "Costs $50 and $20, or \\$100 total."
         self.assertEqual(render_inline_math(md), md)
 
+        md_bold = "**$65.76**, experiencing a sharp decline of **$29.77 (-31.16%)**"
+        self.assertEqual(render_inline_math(md_bold), md_bold)
+
     def test_single_line_block_math(self):
         self.assertEqual(render_inline_math(r"$$ E = mc^2 $$"), "E = mc²")
 
@@ -83,6 +86,15 @@ class TestInlineMath(unittest.TestCase):
             render_inline_math(md),
             "Foundry Valuation = 190 billion USD (base revenue) "
             "× 3.5 = 665 billion ~ 700 billion USD"
+        )
+
+        dcf = (
+            r"$$\text{DCF Value} = \frac{100 \text{ billion}}{9\% - 3\%} "
+            r"\approx \mathbf{2,400 \text{ billion ~ 2,600 billion}}$$"
+        )
+        self.assertEqual(
+            render_inline_math(dcf),
+            "DCF Value = (100 billion)/(9% - 3%) ≈ 2,400 billion ~ 2,600 billion"
         )
 
         multi = r"$$x = 1$$ and $$y = 2$$"

@@ -9,7 +9,7 @@ _SINGLE_LINE_BLOCK_MATH_RE = re.compile(
     r'(?<!\\)\$\$((?:\\.|[^$\\\n])+?)\$\$'
 )
 _INLINE_MATH_RE = re.compile(
-    r'(?<![\$\\])\$(?!\s)((?:\\.|[^$\\\n])+?)(?<!\s)\$(?!\$)'
+    r'(?<![\$\\\d])\$(?!\s)((?:\\.|[^$\\\n])+?)(?<!\s)\$(?![0-9\$])'
 )
 _COMMAND_RE = re.compile(r'\\([a-zA-Z]+)')
 
@@ -132,7 +132,18 @@ def latex_to_unicode(latex):
     # 2. Strip sizing delimiters \left and \right
     s = re.sub(r'\\(left|right)\b', '', s)
 
-    # 3. Fractions \frac{num}{den} (resolve from innermost out)
+    # 3. Formatting macros: \text{...}, \mathbf{...}, \mathrm{...} (resolve nested from inside out)
+    for _ in range(5):
+        if not re.search(r'\\(text|mathrm|mathbf|mathit|textbf|textit|operatorname)\{', s):
+            break
+        s = re.sub(
+            r'\\(text|mathrm|mathbf|mathit|textbf|textit|operatorname)\{([^{}]+)\}',
+            r'\2',
+            s
+        )
+    s = re.sub(r' {2,}', ' ', s)
+
+    # 4. Fractions \frac{num}{den} (resolve from innermost out)
     for _ in range(5):
         if r'\frac' not in s:
             break
@@ -146,7 +157,7 @@ def latex_to_unicode(latex):
 
         s = re.sub(r'\\frac\{([^{}]+)\}\{([^{}]+)\}', replace_frac, s)
 
-    # 4. Square roots \sqrt[n]{x} and \sqrt{x}
+    # 5. Square roots \sqrt[n]{x} and \sqrt{x}
     s = re.sub(
         r'\\sqrt\[([^{}]+)\]\{([^{}]+)\}',
         lambda m: (
@@ -157,23 +168,12 @@ def latex_to_unicode(latex):
     )
     s = re.sub(r'\\sqrt\{([^{}]+)\}', lambda m: f"√({latex_to_unicode(m.group(1))})", s)
 
-    # 5. Blackboard bold \mathbb{R}
+    # 6. Blackboard bold \mathbb{R}
     s = re.sub(
         r'\\mathbb\{([A-Za-z])\}',
         lambda m: BLACKBOARD_BOLD.get(m.group(1), m.group(1)),
         s
     )
-
-    # 6. Formatting macros: \text{...}, \mathbf{...}, \mathrm{...} (resolve nested from inside out)
-    for _ in range(5):
-        if not re.search(r'\\(text|mathrm|mathbf|mathit|textbf|textit|operatorname)\{', s):
-            break
-        s = re.sub(
-            r'\\(text|mathrm|mathbf|mathit|textbf|textit|operatorname)\{([^{}]+)\}',
-            r'\2',
-            s
-        )
-    s = re.sub(r' {2,}', ' ', s)
 
     # 7. Function names like \log, \sin
     s = re.sub(r'\\(log|ln|exp|sin|cos|tan|min|max|lim|det)(?![a-zA-Z])', r'\1', s)
