@@ -53,31 +53,25 @@ class TestAutocomplete(unittest.TestCase):
             other_ws_dir = os.path.join(base_tmp, "backend")
             os.makedirs(os.path.join(cwd_dir, "src", "components"), exist_ok=True)
             os.makedirs(os.path.join(other_ws_dir, "cmd", "server"), exist_ok=True)
-
             other_workspaces = [other_ws_dir]
 
-            # 1. CWD root
-            resolved_cwd_root = AutoComplete.resolve_target_dir(cwd_dir, other_workspaces, "")
-            self.assertEqual(resolved_cwd_root, cwd_dir)
+            resolve = lambda path: AutoComplete.resolve_target_dir(cwd_dir, other_workspaces, path)
 
-            # 2. CWD subdirectory (e.g. "@src/components/")
-            resolved_cwd_sub = AutoComplete.resolve_target_dir(cwd_dir, other_workspaces, "src/components/")
-            self.assertEqual(resolved_cwd_sub, os.path.join(cwd_dir, "src", "components"))
+            # 1. CWD root and subdirectories (direct and prefixed with self project name)
+            self.assertEqual(resolve(""), cwd_dir)
+            self.assertEqual(resolve("frontend/"), cwd_dir)
+            src_dir = os.path.join(cwd_dir, "src", "components")
+            self.assertEqual(resolve("src/components/"), src_dir)
+            self.assertEqual(resolve("frontend/src/components/"), src_dir)
 
-            # 3. Other workspace root (e.g. "@backend/")
-            resolved_other_root = AutoComplete.resolve_target_dir(cwd_dir, other_workspaces, "backend/")
-            self.assertEqual(resolved_other_root, other_ws_dir)
+            # 2. Other workspace root and subdirectories
+            self.assertEqual(resolve("backend/"), other_ws_dir)
+            server_dir = os.path.join(other_ws_dir, "cmd", "server")
+            self.assertEqual(resolve("backend/cmd/server/"), server_dir)
 
-            # 4. Other workspace subdirectory (e.g. "@backend/cmd/server/")
-            resolved_other_sub = AutoComplete.resolve_target_dir(cwd_dir, other_workspaces, "backend/cmd/server/")
-            self.assertEqual(resolved_other_sub, os.path.join(other_ws_dir, "cmd", "server"))
-
-            # 5. Sandbox boundary protection (traversal outside project)
-            invalid_traversal = AutoComplete.resolve_target_dir(cwd_dir, other_workspaces, "../../etc/")
-            self.assertIsNone(invalid_traversal)
-
-            invalid_other_traversal = AutoComplete.resolve_target_dir(cwd_dir, other_workspaces, "backend/../../etc/")
-            self.assertIsNone(invalid_other_traversal)
+            # 3. Sandbox boundary protection (traversal outside project)
+            for bad_path in ["../../etc/", "backend/../../etc/", "frontend/../../etc/"]:
+                self.assertIsNone(resolve(bad_path))
 
     def test_scan_directory_and_sorting(self):
         with tempfile.TemporaryDirectory() as tmpdir:

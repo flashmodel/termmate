@@ -150,7 +150,19 @@ class AutoComplete:
 
         first_seg, sep, remaining = dir_part.partition('/')
 
-        # 1. Check if first_seg routes to an other workspace folder
+        # 1. Check if first_seg routes to current workspace
+        active_name = os.path.basename(active_cwd.rstrip('/\\'))
+        if active_name == first_seg:
+            sub_path = remaining if sep else ""
+            target = os.path.normpath(os.path.join(active_cwd, sub_path))
+            try:
+                if (os.path.commonpath([target, active_cwd]) == active_cwd
+                        and os.path.isdir(target)):
+                    return target
+            except ValueError:
+                pass
+
+        # 2. Check if first_seg routes to an other workspace folder
         for ws_folder in other_workspaces:
             ws_name = os.path.basename(ws_folder.rstrip('/\\'))
             if ws_name == first_seg:
@@ -319,7 +331,16 @@ class AutoComplete:
                     kind=sublime.KIND_VARIABLE
                 ))
 
-            # 1.3 Priority 3: Other Workspace Root Folders
+            # 1.3 Priority 3: Workspace Root Folders
+            active_name = os.path.basename(active_cwd.rstrip('/\\'))
+            if not query.file_filter or active_name.lower().startswith(query.file_filter.lower()):
+                completions.append(sublime.CompletionItem(
+                    trigger=active_name + "/",
+                    annotation=f"📦 {active_name} (current)",
+                    completion=active_name + "/",
+                    kind=sublime.KIND_NAMESPACE
+                ))
+
             for ws_folder in other_workspaces:
                 ws_name = os.path.basename(ws_folder.rstrip('/\\'))
                 if query.file_filter and not ws_name.lower().startswith(query.file_filter.lower()):
