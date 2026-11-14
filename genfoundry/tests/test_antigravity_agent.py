@@ -107,31 +107,18 @@ class TestAntigravityAgentCommand(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("--effort", args)
 
     async def test_connect_model_requires_effort_defaults(self):
-        opts = AgentOptions(
-            cli_path="/mock/bin/agy",
-            cwd="/workspace",
-            model="gemini-3.8-flash",
-            think_level=None,
-        )
-        agent = AntigravityAgent(options=opts)
-        args = await self._connect_with_mocks(agent)
-        self.assertIn("--model", args)
-        self.assertIn("--effort", args)
-        idx_effort = args.index("--effort")
-        self.assertEqual(args[idx_effort + 1], "medium")
-
-        opts_pro = AgentOptions(
-            cli_path="/mock/bin/agy",
-            cwd="/workspace",
-            model="gemini-3.1-pro",
-            think_level=None,
-        )
-        agent_pro = AntigravityAgent(options=opts_pro)
-        args_pro = await self._connect_with_mocks(agent_pro)
-        self.assertIn("--model", args_pro)
-        self.assertIn("--effort", args_pro)
-        idx_effort_pro = args_pro.index("--effort")
-        self.assertEqual(args_pro[idx_effort_pro + 1], "high")
+        # Neither auto/default nor None should auto-infer --effort on Antigravity CLI
+        for model_id in ("gemini-3.8-flash", "gemini-3.1-pro"):
+            for think_level in ("auto", "default", None):
+                opts = AgentOptions(
+                    cli_path="/mock/bin/agy",
+                    cwd="/workspace",
+                    model=model_id,
+                    think_level=think_level,
+                )
+                args = await self._connect_with_mocks(AntigravityAgent(options=opts))
+                self.assertIn("--model", args)
+                self.assertNotIn("--effort", args)
 
     async def test_connect_approve_mode_accept_all(self):
         opts = AgentOptions(
@@ -959,11 +946,12 @@ class TestAntigravityModelLifecycle(unittest.IsolatedAsyncioTestCase):
             "⠋ Fetching available models...gemini-3.8-flash-high     Gemini 3.8 Flash (High)\n"
             "gemini-3.8-flash-medium   Gemini 3.8 Flash (Medium)\n"
             "gemini-3.8-flash-low      Gemini 3.8 Flash (Low)\n"
+            "gemini-pro-orchestrator-g1-pro  Orchestrator (Argon)\n"
             "claude-sonnet-5-5-high    Claude Sonnet 5.5 (High)\n"
             "custom-tool-model         Custom Tool Model\n"
         )
         parsed = AntigravityAgent._parse_models_output(raw)
-        self.assertEqual(len(parsed), 3)
+        self.assertEqual(len(parsed), 4)
 
         flash = next((m for m in parsed if m["modelId"] == "gemini-3.8-flash"), None)
         self.assertIsNotNone(flash)
@@ -972,6 +960,14 @@ class TestAntigravityModelLifecycle(unittest.IsolatedAsyncioTestCase):
             flash["supportedReasoningEfforts"], ["high", "medium", "low"]
         )
         self.assertEqual(flash["displayName"], "Gemini 3.8 Flash")
+
+        orch = next(
+            (m for m in parsed if m["modelId"] == "gemini-pro-orchestrator-g1-pro"), None
+        )
+        self.assertIsNotNone(orch)
+        self.assertEqual(orch["displayName"], "Orchestrator (Argon)")
+        self.assertFalse(orch["supportsEffort"])
+        self.assertEqual(orch["supportedReasoningEfforts"], [])
 
         sonnet = next((m for m in parsed if m["modelId"] == "claude-sonnet-5-5"), None)
         self.assertIsNotNone(sonnet)
@@ -986,56 +982,90 @@ class TestAntigravityModelLifecycle(unittest.IsolatedAsyncioTestCase):
         self.agent.available_models = [
             {"modelId": "model-with-effort", "supportsEffort": True},
             {"modelId": "model-without-effort", "supportsEffort": False},
+            {
+                "modelId": "gpt-oss-120b",
+                "supportsEffort": True,
+                "supportedReasoningEfforts": ["medium"],
+            },
         ]
         self.assertTrue(self.agent._model_supports_effort("model-with-effort"))
         self.assertFalse(self.agent._model_supports_effort("model-without-effort"))
+        self.assertTrue(self.agent._model_supports_effort("gpt-oss-120b", "medium"))
+        self.assertFalse(self.agent._model_supports_effort("gpt-oss-120b", "high"))
         # Cleaned suffix
         self.assertTrue(self.agent._model_supports_effort("model-with-effort-high"))
-        # Fallback heuristic
-        self.assertTrue(self.agent._model_supports_effort("gemini-3.8-flash"))
-        self.assertTrue(self.agent._model_supports_effort("claude-sonnet-5-5"))
+        # Unlisted models return False once available_models is populated
+        self.assertFalse(self.agent._model_supports_effort("gemini-pro-orchestrator-g1-pro"))
+        self.assertFalse(self.agent._model_supports_effort("gemini-3.8-flash"))
+        self.assertFalse(self.agent._model_supports_effort("claude-sonnet-5-5"))
         self.assertFalse(self.agent._model_supports_effort("default"))
         self.assertFalse(self.agent._model_supports_effort(None))
+        # Before models are loaded, explicit effort is allowed conservatively
+        self.agent.available_models = []
+        self.assertTrue(self.agent._model_supports_effort("gemini-3.8-flash", "high"))
+
+    async def _spawn_with_mocks(self, model, think_level=None, available_models=None):
+        opts = AgentOptions(
+            cli_path="/mock/bin/agy",
+            cwd="/workspace",
+            model=model,
+            think_level=think_level,
+        )
+        agent = AntigravityAgent(options=opts)
+        if available_models is not None:
+            agent.available_models = available_models
+        fake_proc = AsyncMock()
+        fake_proc.returncode = None
+        with patch("asyncio.create_subprocess_exec", return_value=fake_proc) as mock_exec, \
+             patch.object(agent, "_read_stdout", new_callable=AsyncMock), \
+             patch.object(agent, "_read_stderr", new_callable=AsyncMock):
+            await agent._spawn_process()
+            return mock_exec.call_args[0]
 
     async def test_spawn_process_strips_effort_suffix(self):
-        opts = AgentOptions(
-            cli_path="/mock/bin/agy",
-            cwd="/workspace",
-            model="gemini-3.8-flash-high",
-            think_level=None,
-        )
-        agent = AntigravityAgent(options=opts)
-        fake_proc = AsyncMock()
-        fake_proc.returncode = None
-        with patch("asyncio.create_subprocess_exec", return_value=fake_proc) as mock_exec, \
-             patch.object(agent, "_read_stdout", new_callable=AsyncMock), \
-             patch.object(agent, "_read_stderr", new_callable=AsyncMock):
-            await agent._spawn_process()
-            cmd = mock_exec.call_args[0]
-            self.assertIn("--model", cmd)
-            idx_m = cmd.index("--model")
-            self.assertEqual(cmd[idx_m + 1], "gemini-3.8-flash")
-            self.assertIn("--effort", cmd)
-            idx_e = cmd.index("--effort")
-            self.assertEqual(cmd[idx_e + 1], "high")
+        cmd = await self._spawn_with_mocks("gemini-3.8-flash-high")
+        self.assertEqual(cmd[cmd.index("--model") + 1], "gemini-3.8-flash")
+        self.assertEqual(cmd[cmd.index("--effort") + 1], "high")
 
     async def test_spawn_process_overrides_effort_from_think_level(self):
-        opts = AgentOptions(
-            cli_path="/mock/bin/agy",
-            cwd="/workspace",
-            model="gemini-3.8-flash-high",
-            think_level="low",
-        )
-        agent = AntigravityAgent(options=opts)
-        fake_proc = AsyncMock()
-        fake_proc.returncode = None
-        with patch("asyncio.create_subprocess_exec", return_value=fake_proc) as mock_exec, \
-             patch.object(agent, "_read_stdout", new_callable=AsyncMock), \
-             patch.object(agent, "_read_stderr", new_callable=AsyncMock):
-            await agent._spawn_process()
-            cmd = mock_exec.call_args[0]
-            idx_e = cmd.index("--effort")
-            self.assertEqual(cmd[idx_e + 1], "low")
+        cmd = await self._spawn_with_mocks("gemini-3.8-flash-high", think_level="low")
+        self.assertEqual(cmd[cmd.index("--effort") + 1], "low")
+
+        cmd_off = await self._spawn_with_mocks("gemini-3.8-flash-high", think_level="off")
+        self.assertNotIn("--effort", cmd_off)
+
+    async def test_spawn_process_omits_effort_when_unset_or_unsupported(self):
+        models = [
+            {
+                "modelId": "gpt-oss-120b",
+                "supportsEffort": True,
+                "supportedReasoningEfforts": ["medium"],
+            },
+            {
+                "modelId": "gemini-4-argon",
+                "supportsEffort": True,
+                "supportedReasoningEfforts": ["low", "medium", "high"],
+            },
+            {
+                "modelId": "gemini-pro-orchestrator-g1-pro",
+                "supportsEffort": False,
+                "supportedReasoningEfforts": [],
+            },
+        ]
+        cases = [
+            ("gemini-pro-orchestrator-g1-pro", "high", models),
+            ("gemini-pro-orchestrator-g1-pro", "auto", None),
+            ("gemini-4-argon", None, None),
+            ("gemini-3.1-pro", None, None),
+            ("gpt-oss-120b", "high", models),
+            ("gemini-4-argon", "xhigh", models),
+        ]
+        for model_id, think_level, avail in cases:
+            cmd = await self._spawn_with_mocks(
+                model_id, think_level=think_level, available_models=avail
+            )
+            self.assertEqual(cmd[cmd.index("--model") + 1], model_id)
+            self.assertNotIn("--effort", cmd)
 
     async def test_fetch_models_updates_available_models_and_emits_message(self):
         mock_output = b"gemini-3.8-flash-high Gemini 3.8 Flash (High)\n"

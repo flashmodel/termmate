@@ -192,7 +192,7 @@ class AntigravityAgent(BaseAgent):
             self._restart_pending = True
             LOG.info(f"Antigravity pending model switched to: {model}")
 
-    def set_think_level(self, level: str) -> None:
+    def set_think_level(self, level: Optional[str]) -> None:
         """Dynamically switch reasoning effort (low, medium, high); takes effect on next turn."""
         if self.options.think_level != level:
             self.options.think_level = level
@@ -246,15 +246,22 @@ class AntigravityAgent(BaseAgent):
 
         return list(models.values())
 
-    def _model_supports_effort(self, model_id: Optional[str]) -> bool:
-        """Check if the given model supports the reasoning effort flag."""
+    def _model_supports_effort(
+        self, model_id: Optional[str], effort: Optional[str] = None
+    ) -> bool:
+        """Check if the given model supports the reasoning effort flag (and optional level)."""
         if not model_id or model_id == "default":
             return False
         clean_id = re.sub(r"-(high|medium|low|xhigh|max)$", "", model_id)
+        if not self.available_models:
+            return True
         for m in self.available_models:
             if m.get("value") in (model_id, clean_id) or m.get("modelId") in (model_id, clean_id):
-                return bool(m.get("supportsEffort"))
-        return any(k in clean_id.lower() for k in ("gemini", "claude", "sonnet", "opus", "gpt"))
+                if not m.get("supportsEffort"):
+                    return False
+                allowed = m.get("supportedReasoningEfforts") or []
+                return not effort or not allowed or effort in allowed
+        return False
 
     async def _fetch_models(self) -> None:
         """Asynchronously fetch available models from `agy models`."""
@@ -347,29 +354,23 @@ class AntigravityAgent(BaseAgent):
 
         # Model selection
         model = self.options.model
+        suffix_effort = None
         if model:
             if "/" in model:
                 model = model.split("/")[-1]
             effort_suffix_match = re.search(r'-(high|medium|low|xhigh|max)$', model)
             if effort_suffix_match:
-                effort = effort_suffix_match.group(1)
-                model = model[:-len(effort)-1]
-                if not self.options.think_level:
-                    self.options.think_level = effort
+                suffix_effort = effort_suffix_match.group(1)
+                model = model[:-len(suffix_effort) - 1]
             cmd.extend(["--model", model])
 
         # Reasoning effort
-        effort = None
+        effort = suffix_effort
         if self.options.think_level:
             level = self.options.think_level.lower()
-            if level in ("low", "medium", "high", "xhigh", "max"):
-                effort = level
-            elif level in ("auto", "default") and model and self._model_supports_effort(model):
-                effort = "high" if "pro" in model.lower() else "medium"
-        elif model and self._model_supports_effort(model):
-            effort = "high" if "pro" in model.lower() else "medium"
+            effort = level if level in ("low", "medium", "high", "xhigh", "max") else None
 
-        if effort and (not model or self._model_supports_effort(model)):
+        if effort and (not model or self._model_supports_effort(model, effort)):
             cmd.extend(["--effort", effort])
 
         # Session / conversation resumption

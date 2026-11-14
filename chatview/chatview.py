@@ -3761,7 +3761,16 @@ class TermChatSetModelCommand(sublime_plugin.WindowCommand):
             self.window, session, f"chatview_think_level_{agent_provider}"
         )
 
-        if model == curr_model and (not level or level == curr_level):
+        models = getattr(session, "available_models", None) or [] if session else []
+        active_model = next((m for m in models if m.get("value") == model), None)
+        presets = BaseChatMessageProcessor.for_provider(agent_provider).get_think_presets(
+            active_model
+        )
+        allowed_levels = {p["value"] for p in presets}
+        curr_valid = bool(curr_level and presets and curr_level in allowed_levels)
+        next_level = level or (curr_level if curr_valid else None)
+
+        if model == curr_model and next_level == curr_level:
             return
 
         chat_threads.set_setting_for_session(
@@ -3771,12 +3780,16 @@ class TermChatSetModelCommand(sublime_plugin.WindowCommand):
 
         config_updates = {"model": model}
 
-        if level:
+        if level or next_level != curr_level:
             chat_threads.set_setting_for_session(
-                self.window, session, f"chatview_think_level_{agent_provider}", level
+                self.window, session, f"chatview_think_level_{agent_provider}", next_level
             )
-            chat_threads.set_setting_for_session(self.window, session, CHAT_THINK_LEVEL, level)
-            config_updates["think_level"] = level
+            chat_threads.set_setting_for_session(
+                self.window, session, CHAT_THINK_LEVEL, next_level
+            )
+            config_updates["think_level"] = next_level
+
+        if level:
             term = "thinking" if agent_provider == "claude" else "reasoning"
             sublime.status_message(f"{PACKAGE_NAME} model set to: {model} ({term}: {level})")
         else:
