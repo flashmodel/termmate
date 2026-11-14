@@ -2,7 +2,12 @@
 Chat view rendering helpers and quick popup manager for TermMate.
 """
 
+import html
+import webbrowser
+
 import sublime
+
+from .md_render import preprocess_response_markdown
 
 try:
     import mdpopups
@@ -557,3 +562,407 @@ class QuickOutputPopupManager:
 
 
 quick_popup_manager = QuickOutputPopupManager()
+
+
+RESPONSE_PHANTOM_KEY = "chatview_responses"
+
+RESPONSE_CSS = """
+.termmate-response-preview {
+    border-left: 3px solid color(var(--accent) alpha(0.65));
+    background-color: color(var(--foreground) alpha(0.04));
+    border-radius: 0 4px 4px 0;
+    padding: 0.45rem 0.75rem 0.45rem 0.85rem;
+    margin: 0.35rem 0 0.65rem 0;
+    line-height: 1.35;
+    font-size: 1rem;
+}
+.termmate-response-preview p {
+    margin: 0.45rem 0;
+    line-height: 1.35;
+}
+.termmate-response-preview h1,
+.termmate-response-preview h2,
+.termmate-response-preview h3,
+.termmate-response-preview h4,
+.termmate-response-preview h5,
+.termmate-response-preview h6 {
+    font-weight: bold;
+    line-height: 1.3;
+    color: var(--foreground);
+}
+.termmate-response-preview h1 {
+    font-size: 1.45rem;
+    margin: 0.9rem 0 0.55rem 0;
+    padding-bottom: 0.25rem;
+    border-bottom: 1px solid color(var(--foreground) alpha(0.18));
+}
+.termmate-response-preview h2 {
+    font-size: 1.25rem;
+    margin: 0.8rem 0 0.45rem 0;
+    padding-bottom: 0.2rem;
+    border-bottom: 1px solid color(var(--foreground) alpha(0.14));
+}
+.termmate-response-preview h3 {
+    font-size: 1.1rem;
+    margin: 0.7rem 0 0.4rem 0;
+}
+.termmate-response-preview h4,
+.termmate-response-preview h5,
+.termmate-response-preview h6 {
+    font-size: 1rem;
+    margin: 0.6rem 0 0.35rem 0;
+}
+.termmate-response-preview ul,
+.termmate-response-preview ol {
+    margin: 0.45rem 0;
+    padding-left: 1.25rem;
+}
+.termmate-response-preview li {
+    margin: 0.2rem 0;
+    line-height: 1.35;
+}
+.termmate-response-preview li > p {
+    margin: 0.25rem 0;
+}
+.termmate-response-preview code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    background-color: color(var(--background) blend(var(--foreground) 90%));
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+}
+.termmate-response-preview pre {
+    background-color: color(var(--background) blend(var(--foreground) 93%));
+    border: 1px solid color(var(--foreground) alpha(0.12));
+    border-radius: 5px;
+    padding: 0.65rem 0.85rem;
+    margin: 0.65rem 0;
+    line-height: 1.4;
+}
+.termmate-response-preview pre code {
+    background-color: transparent;
+    padding: 0;
+    border-radius: 0;
+    font-size: 0.92em;
+}
+.termmate-response-preview blockquote {
+    margin: 0.65rem 0;
+    padding: 0.4rem 0.85rem;
+    border-left: 3px solid color(var(--foreground) alpha(0.28));
+    color: color(var(--foreground) blend(var(--background) 70%));
+    background-color: color(var(--background) blend(var(--foreground) 96%));
+    border-radius: 0 3px 3px 0;
+}
+.termmate-response-preview hr {
+    border: 0;
+    height: 1px;
+    background-color: color(var(--foreground) alpha(0.16));
+    margin: 1rem 0;
+}
+.termmate-response-preview a {
+    color: var(--accent);
+    text-decoration: underline;
+}
+.termmate-response-preview .chat-tool-line {
+    margin: 0.25rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+}
+.termmate-response-preview .chat-tool-bullet {
+    color: var(--accent);
+    padding-right: 2px;
+}
+.termmate-response-preview .chat-tool-name {
+    color: var(--bluish);
+    font-weight: bold;
+}
+.termmate-response-preview a.chat-tool-link {
+    color: var(--cyanish);
+    text-decoration: none;
+}
+.termmate-response-preview .chat-response-top-bar {
+    text-align: right;
+    margin: 0 0 0.35rem 0;
+    padding: 0;
+    line-height: 1;
+}
+.termmate-response-preview .chat-response-bottom-bar {
+    text-align: right;
+    margin: 0.65rem 0 0.15rem 0;
+    padding-top: 0.35rem;
+    border-top: 1px dashed color(var(--foreground) alpha(0.14));
+    line-height: 1;
+}
+.termmate-response-preview a.chat-toggle-link {
+    display: inline-block;
+    font-size: 0.82em;
+    line-height: 1;
+    color: color(var(--foreground) alpha(0.45));
+    text-decoration: none;
+    border: 1px solid color(var(--foreground) alpha(0.2));
+    border-radius: 3px;
+    padding: 0.08rem 0.32rem;
+}
+.termmate-response-preview a.chat-toggle-link:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+"""
+
+
+def _raw_toggle_html(key, is_top=True):
+    """Build a subtle inline or block toggle button for raw mode."""
+    esc_key = html.escape(key, quote=True)
+    if is_top:
+        return (
+            '<body id="chatview-raw-toggle-top" style="margin:0;padding:0">'
+            "<style>"
+            "a.chat-toggle-link {"
+            " display: inline-block;"
+            " font-size: 0.82em;"
+            " line-height: 1;"
+            " color: color(var(--foreground) alpha(0.45));"
+            " text-decoration: none;"
+            " border: 1px solid color(var(--foreground) alpha(0.2));"
+            " border-radius: 3px;"
+            " padding: 0.08rem 0.32rem;"
+            " margin-left: 0.5rem;"
+            "}"
+            "a.chat-toggle-link:hover {"
+            " color: var(--accent);"
+            " border-color: var(--accent);"
+            "}"
+            "</style>"
+            f'<a class="chat-toggle-link" href="toggle:{esc_key}" '
+            'title="Show Markdown preview">preview</a>'
+            "</body>"
+        )
+    return (
+        '<body id="chatview-raw-toggle-bottom" style="margin:0;padding:0">'
+        "<style>"
+        "a.chat-toggle-link {"
+        " display: inline-block;"
+        " font-size: 0.82em;"
+        " line-height: 1;"
+        " color: color(var(--foreground) alpha(0.45));"
+        " text-decoration: none;"
+        " border: 1px solid color(var(--foreground) alpha(0.2));"
+        " border-radius: 3px;"
+        " padding: 0.12rem 0.38rem;"
+        "}"
+        "a.chat-toggle-link:hover {"
+        " color: var(--accent);"
+        " border-color: var(--accent);"
+        "}"
+        "</style>"
+        '<div style="text-align:right;margin:0.45rem 0 0.15rem 0;'
+        'padding-top:0.35rem;border-top:1px dashed color(var(--foreground) alpha(0.14));'
+        'line-height:1;">'
+        f'<a class="chat-toggle-link" href="toggle:{esc_key}" '
+        'title="Show Markdown preview">preview</a>'
+        "</div>"
+        "</body>"
+    )
+
+
+class ResponsePhantomManager:
+    """Own folded agent response regions and their rendered Markdown phantoms."""
+
+    REGION_PREFIX = "term_chat_response_"
+
+    def __init__(self, view, max_width_getter=None, on_navigate_link=None):
+        self.view = view
+        self.max_width_getter = max_width_getter
+        self.on_navigate_link = on_navigate_link
+        self.entries = []
+        self.next_id = 0
+        self.phantom_set = (
+            sublime.PhantomSet(view, RESPONSE_PHANTOM_KEY)
+            if hasattr(sublime, "PhantomSet")
+            else None
+        )
+
+    @property
+    def is_available(self):
+        return bool(HAS_MDPOPUPS and self.phantom_set is not None)
+
+    def _get_max_width(self):
+        if self.max_width_getter is not None:
+            try:
+                value = (
+                    self.max_width_getter()
+                    if callable(self.max_width_getter)
+                    else self.max_width_getter
+                )
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                    return value
+            except Exception:
+                pass
+        return 100
+
+    def _prepare_markdown(self, key, md_text):
+        body = preprocess_response_markdown(
+            md_text,
+            max_width=self._get_max_width(),
+        ).strip()
+        esc_key = html.escape(key, quote=True)
+        top_bar = (
+            '<div class="chat-response-top-bar">'
+            f'<a class="chat-toggle-link" href="toggle:{esc_key}" '
+            'title="Show raw Markdown">raw</a>'
+            '</div>'
+        )
+        bottom_bar = (
+            '<div class="chat-response-bottom-bar">'
+            f'<a class="chat-toggle-link" href="toggle:{esc_key}" '
+            'title="Show raw Markdown">raw</a>'
+            '</div>'
+        )
+        return f"{top_bar}\n\n{body}\n\n{bottom_bar}\n"
+
+    def _render_preview_html(self, processed_md):
+        """Render processed markdown into styled minihtml."""
+        rendered = None
+        if HAS_MDPOPUPS and hasattr(mdpopups, "md2html"):
+            try:
+                rendered = mdpopups.md2html(
+                    self.view,
+                    processed_md,
+                    wrapper_class="termmate-response-preview",
+                )
+            except Exception as e:
+                LOG.error(f"Error rendering markdown preview via md2html: {e}")
+        if not rendered:
+            rendered = (
+                f'<div class="termmate-response-preview">'
+                f"<pre>{html.escape(processed_md)}</pre>"
+                "</div>"
+            )
+        elif "termmate-response-preview" not in rendered:
+            rendered = f'<div class="termmate-response-preview">{rendered}</div>'
+        return (
+            '<body id="termmate-response-preview" style="margin:0;padding:0">'
+            f"<style>{RESPONSE_CSS}</style>"
+            f"{rendered}"
+            "</body>"
+        )
+
+    def add(self, region, md_text):
+        """Register the agent response region and render its toggle/preview phantoms."""
+        if not self.is_available or not md_text or not md_text.strip():
+            return None
+        if region.empty():
+            return None
+
+        key = f"{self.REGION_PREFIX}{self.next_id}"
+        self.next_id += 1
+        self.view.add_regions(key, [region], flags=sublime.HIDDEN)
+        processed_md = self._prepare_markdown(key, md_text)
+        self.entries.append({
+            "key": key,
+            "md_text": md_text,
+            "processed_md": processed_md,
+            "raw_mode": True,
+        })
+        self.view.unfold(region)
+        self._update()
+        return key
+
+    def toggle_entry(self, key):
+        """Toggle a single response entry between rendered preview and raw text."""
+        target = next((e for e in self.entries if e["key"] == key), None)
+        if target is None:
+            return
+        target["raw_mode"] = not target["raw_mode"]
+        regions = self.view.get_regions(key)
+        if regions:
+            if target["raw_mode"]:
+                self.view.unfold(regions[0])
+            else:
+                self.view.unfold(regions[0])
+                self.view.fold(regions[0])
+        self._update()
+
+    def _on_navigate(self, href):
+        if href.startswith("toggle:"):
+            self.toggle_entry(href.split(":", 1)[1])
+        elif self.on_navigate_link:
+            self.on_navigate_link(href)
+        elif href.startswith(("http://", "https://", "mailto:")):
+            webbrowser.open_new_tab(href)
+
+    def _update(self):
+        if not self.is_available or not self.view:
+            return
+        if hasattr(self.view, "is_valid") and not self.view.is_valid():
+            return
+        phantoms = []
+        active_entries = []
+        for entry in self.entries:
+            key = entry["key"]
+            regions = self.view.get_regions(key)
+            if not regions:
+                continue
+            region = regions[0]
+            active_entries.append(entry)
+            if entry["raw_mode"]:
+                top_pt = self.view.line(region.begin()).end()
+                top_anchor = sublime.Region(top_pt, top_pt)
+                phantoms.append(sublime.Phantom(
+                    top_anchor,
+                    _raw_toggle_html(key, is_top=True),
+                    sublime.LAYOUT_INLINE,
+                    on_navigate=self._on_navigate,
+                ))
+                bot_pt = region.end()
+                bot_anchor = sublime.Region(bot_pt, bot_pt)
+                phantoms.append(sublime.Phantom(
+                    bot_anchor,
+                    _raw_toggle_html(key, is_top=False),
+                    sublime.LAYOUT_BLOCK,
+                    on_navigate=self._on_navigate,
+                ))
+            else:
+                anchor = sublime.Region(region.end(), region.end())
+                preview_html = self._render_preview_html(entry["processed_md"])
+                phantoms.append(sublime.Phantom(
+                    anchor,
+                    preview_html,
+                    sublime.LAYOUT_BLOCK,
+                    on_navigate=self._on_navigate,
+                ))
+        self.entries = active_entries
+        self.phantom_set.update(phantoms)
+
+    def refresh(self):
+        """Re-render all response phantoms (e.g. after theme/width changes)."""
+        for entry in self.entries:
+            entry["processed_md"] = self._prepare_markdown(entry["key"], entry["md_text"])
+        self._update()
+
+    def truncate(self, cut_point):
+        """Unfold and drop response entries at or after cut_point (rewind)."""
+        kept = []
+        for entry in self.entries:
+            key = entry["key"]
+            regions = self.view.get_regions(key)
+            if regions and regions[0].end() < cut_point:
+                kept.append(entry)
+            else:
+                if regions:
+                    self.view.unfold(regions[0])
+                self.view.erase_regions(key)
+        self.entries = kept
+        self._update()
+
+    def clear(self):
+        """Unfold and remove all response regions and phantoms."""
+        for entry in self.entries:
+            key = entry["key"]
+            regions = self.view.get_regions(key)
+            if regions:
+                self.view.unfold(regions[0])
+            self.view.erase_regions(key)
+        self.entries = []
+        if self.phantom_set is not None:
+            self.phantom_set.update([])

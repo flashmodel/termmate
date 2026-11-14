@@ -16,13 +16,14 @@ class MarkdownFormatter:
     _HTML_LINE_BREAK_RE = re.compile(r'<br\s*/?\s*>', re.IGNORECASE)
     _EXPLICIT_LINE_BREAK = '\n'
 
-    def __init__(self, max_width_getter=None):
+    def __init__(self, max_width_getter=None, table_style_getter=None):
         self.table_buffer = []
         self.in_code_block = False
         self.code_fence_char = None
         self.code_fence_len = 0
         self.remaining_text = ""
         self.max_width_getter = max_width_getter
+        self.table_style_getter = table_style_getter
         self._html_tables = []
 
     def reset(self):
@@ -262,6 +263,17 @@ class MarkdownFormatter:
 
     def _get_table_style(self):
         """Return the configured table style."""
+        if self.table_style_getter is not None:
+            try:
+                value = (
+                    self.table_style_getter()
+                    if callable(self.table_style_getter)
+                    else self.table_style_getter
+                )
+                if isinstance(value, str) and value:
+                    return value
+            except Exception:
+                pass
         try:
             settings = sublime.load_settings("TermMate.sublime-settings")
             return settings.get("table_style", "bordered")
@@ -494,8 +506,8 @@ class MarkdownFormatter:
         plain = frozenset()
         return ([(' ', plain)] * left + chars + [(' ', plain)] * right)
 
-    def _render_html_table(self, parsed):
-        """Render a parsed table using minihtml-compatible block elements."""
+    def _render_table_inner_html(self, parsed):
+        """Render a parsed table as minihtml <style> + <div class='table'> markup."""
         rows, separator_idx, alignments = parsed
         display_rows = []
         natural_widths = [3] * len(rows[0])
@@ -541,7 +553,6 @@ class MarkdownFormatter:
                 ''.join(visual_lines) + '</div>')
 
         return (
-            '<body id="term-chat-table" style="margin:0;padding:0">'
             '<style>'
             '.table{color:var(--foreground);font-family:monospace;'
             'font-size:1rem;line-height:1.25rem;white-space:pre;'
@@ -556,11 +567,19 @@ class MarkdownFormatter:
             'color(var(--foreground) alpha(0.35))}'
             '.last-row{border-bottom-width:0}'
             '.visual-row{margin:0;padding:0}'
-            'code{font-family:monospace;color:var(--cyanish);'
+            '.table code{font-family:monospace;color:var(--cyanish);'
             'background-color:color(var(--foreground) alpha(0.08))}'
-            'strong{font-weight:bold}'
+            '.table strong{font-weight:bold}'
             '</style><div class="table">' + ''.join(rendered) +
-            '</div></body>'
+            '</div>'
+        )
+
+    def _render_html_table(self, parsed):
+        """Render a parsed table using minihtml-compatible block elements."""
+        return (
+            '<body id="term-chat-table" style="margin:0;padding:0">'
+            + self._render_table_inner_html(parsed)
+            + '</body>'
         )
 
     def format(self, text, flush=False):
@@ -677,3 +696,224 @@ class MarkdownFormatter:
                 res += '\n'
             return res
         return ""
+
+
+_LIST_ITEM_RE = re.compile(r'^(\s*)([-*+]|\d+[.)])(\s+.*)$')
+_TOOL_FILE_LINE_RE = re.compile(
+    r'^⏺\s+(Read|Edit|Write|read|edit|write|fileChange|'
+    r'ViewFile|ReadFile|EditFile|WriteFile)\s+(\S+)(.*)$'
+)
+
+
+def normalize_markdown_list_indentation(text):
+    """Normalize 2-space or irregular list indentation to 4-space indentation.
+
+    Ensures Python-Markdown (used by mdpopups) recognizes nested sub-lists
+    written with 2-space or 3-space indentation, leaving fenced code blocks,
+    horizontal rules, and non-list content untouched.
+    """
+    if not text:
+        return text
+
+    lines = text.split('\n')
+    new_lines = []
+    in_fence = False
+    fence_char = None
+    fence_len = 0
+    indent_stack = []
+    consecutive_blanks = 0
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped.startswith(('```', '~~~')):
+            char = stripped[0]
+            count = len(stripped) - len(stripped.lstrip(char))
+            info = stripped[count:].strip()
+            if not in_fence and count >= 3 and not (char == '`' and '`' in info):
+                in_fence = True
+                fence_char = char
+                fence_len = count
+                if line.startswith(char * 3):
+                    indent_stack.clear()
+                new_lines.append(line)
+                consecutive_blanks = 0
+                continue
+            if (in_fence and char == fence_char
+                    and count >= fence_len and info == ""):
+                in_fence = False
+                fence_char = None
+                fence_len = 0
+                new_lines.append(line)
+                consecutive_blanks = 0
+                continue
+
+        if in_fence:
+            new_lines.append(line)
+            consecutive_blanks = 0
+            continue
+
+        if not stripped:
+            consecutive_blanks += 1
+            if consecutive_blanks >= 2:
+                indent_stack.clear()
+            new_lines.append(line)
+            continue
+        consecutive_blanks = 0
+
+        clean = stripped.replace(' ', '')
+        if len(clean) >= 3 and set(clean) in ({'-'}, {'*'}, {'_'}):
+            indent_stack.clear()
+            new_lines.append(line)
+            continue
+
+        m = _LIST_ITEM_RE.match(line)
+        if m:
+            raw_spaces, marker, rest = m.groups()
+            raw_len = len(raw_spaces.expandtabs(4))
+
+            if not indent_stack:
+                indent_stack.append((raw_len, 0))
+                norm_len = 0
+            elif raw_len - indent_stack[-1][0] >= 2:
+                norm_len = len(indent_stack) * 4
+                indent_stack.append((raw_len, norm_len))
+            else:
+                while indent_stack and indent_stack[-1][0] > raw_len:
+                    indent_stack.pop()
+                if indent_stack and indent_stack[-1][0] == raw_len:
+                    norm_len = indent_stack[-1][1]
+                elif not indent_stack:
+                    indent_stack.append((raw_len, 0))
+                    norm_len = 0
+                else:
+                    norm_len = indent_stack[-1][1]
+
+            new_lines.append((' ' * norm_len) + marker + rest)
+        else:
+            raw_indent = len(line) - len(line.lstrip())
+            if indent_stack and raw_indent > 0:
+                while indent_stack and indent_stack[-1][0] > raw_indent:
+                    indent_stack.pop()
+                if indent_stack:
+                    diff = indent_stack[-1][1] - indent_stack[-1][0]
+                    new_indent = max(0, raw_indent + diff)
+                    new_lines.append((' ' * new_indent) + line.lstrip())
+                else:
+                    new_lines.append(line)
+            else:
+                indent_stack.clear()
+                new_lines.append(line)
+
+    return '\n'.join(new_lines)
+
+
+def _render_tool_line_html(line):
+    """Render a ⏺ tool-call line as an isolated minihtml block with file links."""
+    match = _TOOL_FILE_LINE_RE.match(line)
+    if match:
+        tool_name, target, rest = match.group(1), match.group(2), match.group(3)
+        esc_name = html.escape(tool_name, quote=True)
+        esc_target = html.escape(target, quote=True)
+        esc_rest = html.escape(rest, quote=True)
+        body = (
+            f'<span class="chat-tool-bullet">⏺</span> '
+            f'<span class="chat-tool-name">{esc_name}</span> '
+            f'<a class="chat-tool-link" href="toolfile:{esc_target}">'
+            f'{esc_target}</a>{esc_rest}'
+        )
+    else:
+        after_bullet = line[1:].lstrip()
+        parts = after_bullet.split(None, 1)
+        if parts:
+            esc_name = html.escape(parts[0], quote=True)
+            rest = f' {html.escape(parts[1], quote=True)}' if len(parts) > 1 else ''
+            body = (
+                f'<span class="chat-tool-bullet">⏺</span> '
+                f'<span class="chat-tool-name">{esc_name}</span>{rest}'
+            )
+        else:
+            body = '<span class="chat-tool-bullet">⏺</span>'
+    return f'<div class="chat-tool-line">{body}</div>'
+
+
+def preprocess_response_markdown(text, max_width=100):
+    """Preprocess an agent response Markdown string for mdpopups rendering."""
+    if not text:
+        return ""
+
+    width = (
+        max_width
+        if isinstance(max_width, int) and not isinstance(max_width, bool) and max_width > 0
+        else 100
+    )
+    formatter = MarkdownFormatter(max_width_getter=width)
+
+    lines = text.expandtabs(4).split('\n')
+    output = []
+    table_buffer = []
+    in_code_block = False
+    fence_char = None
+    fence_len = 0
+    in_diff_block = False
+
+    def flush_tables():
+        if not table_buffer:
+            return
+        parsed = formatter._parse_table(table_buffer)
+        if parsed is not None:
+            output.append('')
+            output.append(formatter._render_table_inner_html(parsed))
+            output.append('')
+        else:
+            output.extend(table_buffer)
+        table_buffer.clear()
+
+    for line in lines:
+        stripped = line.strip()
+
+        if not in_code_block:
+            if stripped.startswith(('```', '~~~')):
+                char = stripped[0]
+                count = len(stripped) - len(stripped.lstrip(char))
+                info = stripped[count:].strip()
+                if count >= 3 and not (char == '`' and '`' in info):
+                    flush_tables()
+                    in_code_block = True
+                    fence_char = char
+                    fence_len = count
+                    lang = info.split(None, 1)[0].lower() if info else ""
+                    if lang == "diff":
+                        in_diff_block = True
+                        continue
+                    output.append(line)
+                    continue
+        else:
+            if stripped.startswith(fence_char * fence_len):
+                count = len(stripped) - len(stripped.lstrip(fence_char))
+                if count >= fence_len and stripped[count:].strip() == "":
+                    in_code_block = False
+                    fence_char = None
+                    fence_len = 0
+                    if in_diff_block:
+                        in_diff_block = False
+                        continue
+            if in_diff_block:
+                continue
+            output.append(line)
+            continue
+
+        if stripped.startswith('|') and '|' in stripped[1:]:
+            table_buffer.append(line)
+        elif stripped.startswith("⏺"):
+            flush_tables()
+            output.append('')
+            output.append(_render_tool_line_html(stripped))
+            output.append('')
+        else:
+            flush_tables()
+            output.append(line)
+
+    flush_tables()
+
+    return normalize_markdown_list_indentation('\n'.join(output))
