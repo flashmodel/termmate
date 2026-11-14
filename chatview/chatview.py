@@ -2694,17 +2694,19 @@ class ChatViewListener(sublime_plugin.EventListener):
         finally:
             self._reverting_output = False
 
-        if chars:
+        if chars and chars not in ("\n", "\r\n"):
             sublime.set_timeout(
                 lambda: self._redirect_cursor(view, "insert", {"characters": chars}), 0
             )
+        else:
+            self._redirect_cursor(view)
 
     def _redirect_cursor(self, view, command_name=None, args=None):
         """Helper to move cursor to the end of the view and optionally replay a command."""
-        end_pos = view.size()
-        view.sel().clear()
-        view.sel().add(sublime.Region(end_pos))
-        view.show(end_pos)
+        if not view.sel():
+            view.sel().add(sublime.Region(view.size()))
+        view.run_command("move_to", {"to": "eof", "extend": False})
+        view.show(view.size())
         if command_name:
             view.run_command(command_name, args or {})
 
@@ -2783,8 +2785,7 @@ class ChatViewListener(sublime_plugin.EventListener):
             if command_name in mod_commands:
                 cmd_args = dict(args) if args else {}
                 if command_name == "insert" and cmd_args.get("characters") in ("\n", "\r\n"):
-                    sublime.set_timeout(lambda: self._redirect_cursor(view), 0)
-                    return ("noop", {})
+                    return ("move_to", {"to": "eof", "extend": False})
                 sublime.set_timeout(
                     lambda: self._redirect_cursor(view, command_name, cmd_args), 0
                 )
