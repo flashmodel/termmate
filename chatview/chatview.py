@@ -35,6 +35,7 @@ from .md_render import MarkdownFormatter
 from .chatrender import (
     extract_diff_fold_ranges,
     quick_popup_manager,
+    resolve_markdown_preview_raw_mode,
     ResponsePhantomManager,
 )
 from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
@@ -1466,6 +1467,7 @@ class ChatSession:
             self.chat_view,
             max_width_getter=self._get_current_view_width,
             on_navigate_link=self._handle_response_link,
+            default_raw_mode_getter=self.is_response_preview_default_raw,
         )
         self._reset_markdown_formatter()
         self.loading_animation = LoadingAnimation(self.chat_view)
@@ -1593,11 +1595,18 @@ class ChatSession:
         )
 
     def is_response_markdown_enabled(self):
-        """Return True if full-response Markdown phantom rendering is active."""
+        """Return True if full-response Markdown preview rendering is active."""
         if not self.response_phantoms.is_available:
             return False
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
-        return bool(settings.get("render_response_markdown", True))
+        return bool(settings.get("enable_markdown_preview", True))
+
+    def is_response_preview_default_raw(self):
+        """Return True when completed responses start in raw mode."""
+        settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+        return resolve_markdown_preview_raw_mode(
+            settings.get("markdown_preview_mode", "raw")
+        )
 
     def mark_response_start(self, pos):
         """Record the start offset of the active agent response body."""
@@ -1605,7 +1614,7 @@ class ChatSession:
             self.current_resp_start = pos
 
     def finalize_response_render(self):
-        """Fold the completed agent response and render its Markdown phantom."""
+        """Register the completed agent response for Markdown preview or raw toggle."""
         resp_start = self.current_resp_start
         self.current_resp_start = None
         if resp_start is None or not self.is_response_markdown_enabled():
