@@ -30,6 +30,10 @@
     //   "preview" — fold raw Markdown and show the rendered Markdown preview
     "markdown_preview_mode": "raw",
 
+    // Show the full "raw | preview" pill toolbar above each response when
+    // "enable_markdown_preview" is true; false uses subtle icon toggles only.
+    "show_preview_toolbar": false,
+
     // How markdown tables are rendered in the chat view.
     //   "bordered" — draw tables with horizontal border lines and
     //                space-aligned columns:

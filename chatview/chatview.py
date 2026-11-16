@@ -1468,6 +1468,7 @@ class ChatSession:
             max_width_getter=self._get_current_view_width,
             on_navigate_link=self._handle_response_link,
             default_raw_mode_getter=self.is_response_preview_default_raw,
+            show_toolbar_getter=self.is_preview_toolbar_enabled,
         )
         self._reset_markdown_formatter()
         self.loading_animation = LoadingAnimation(self.chat_view)
@@ -1608,6 +1609,11 @@ class ChatSession:
             settings.get("markdown_preview_mode", "raw")
         )
 
+    def is_preview_toolbar_enabled(self):
+        """Return True when top response toggles use the full switch toolbar."""
+        settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+        return bool(settings.get("show_preview_toolbar", False))
+
     def mark_response_start(self, pos):
         """Record the start offset of the active agent response body."""
         if self.current_resp_start is None and self.is_response_markdown_enabled():
@@ -1630,7 +1636,19 @@ class ChatSession:
         md_text = self.chat_view.substr(region)
         if not md_text or not md_text.strip():
             return
+        follow = _should_autoscroll(self.chat_view)
         self.response_phantoms.add(region, md_text)
+        if follow and not self.is_response_preview_default_raw():
+            # Fold clamps y upward; clear CHAT_LAST_Y so follow-up appends stay
+            # attached, then scroll once after async phantom layout finishes.
+            self.chat_view.settings().erase(CHAT_LAST_Y)
+
+            def _scroll_bottom(v=self.chat_view):
+                if v and v.is_valid() and v.settings().get(CHAT_AUTOSCROLL, True):
+                    v.show(v.size())
+                    v.settings().set(CHAT_LAST_Y, v.viewport_position()[1])
+
+            sublime.set_timeout(_scroll_bottom, 50)
 
     def _open_file_target(self, abs_path, line, column):
         """Open a resolved file target in the session window."""
@@ -2369,11 +2387,13 @@ class ChatSession:
                     "term_chat_output_append", {"text": "\n\n[reconnecting agent...]\n\n"}
                 )
 
-    def _replay_prompt(self, prompt_text, user_message_uuid=None):
+    def _replay_prompt(self, prompt_text, user_message_uuid=None, scroll=True):
         """Append a previously-submitted prompt with gutter highlight, as if the user had just sent it."""
         text = f"{PROMPT_PREFIX}{prompt_text}\n"
         pos_before = get_input_start(self.chat_view, 0) - 1
-        self.chat_view.run_command("term_chat_output_append", {"text": text})
+        self.chat_view.run_command(
+            "term_chat_output_append", {"text": text, "scroll": scroll}
+        )
         pos_after = get_input_start(self.chat_view, 0) - 1
         region_start = pos_before + len(PROMPT_PREFIX)
         region_end = pos_after - 1  # exclude trailing \n
@@ -2442,19 +2462,24 @@ class ChatSession:
         self.chat_view.settings().set(CHAT_AUTOSCROLL, True)
         self.chat_view.settings().erase(CHAT_LAST_Y)
 
-        self.chat_view.run_command("term_chat_output_append",
-            {"text": f"\n[Resuming session for {agent}]\n\n"})
+        self.chat_view.run_command(
+            "term_chat_output_append",
+            {"text": f"\n[Resuming session for {agent}]\n\n", "scroll": False},
+        )
 
+        md_enabled = self.is_response_markdown_enabled()
         for turn in (session_info or {}).get("turns", []):
             has_prompt = bool(turn.get("prompt"))
             if has_prompt:
                 self._replay_prompt(
                     turn["prompt"],
                     user_message_uuid=turn.get("user_message_id"),
+                    scroll=False,
                 )
                 if turn.get("response"):
                     self.chat_view.run_command(
-                        "term_chat_output_append", {"text": f"\n{AGENT_SEPARATOR}\n\n"}
+                        "term_chat_output_append",
+                        {"text": f"\n{AGENT_SEPARATOR}\n\n", "scroll": False},
                     )
             if turn.get("response"):
                 resp_start = (
@@ -2462,7 +2487,7 @@ class ChatSession:
                     if has_prompt
                     else get_input_start(self.chat_view, 0) - 1
                 )
-                if self.is_response_markdown_enabled():
+                if md_enabled:
                     response = (turn["response"] + "\n\n\n").replace("\r\n", "\n")
                     html_tables = []
                 else:
@@ -2474,8 +2499,9 @@ class ChatSession:
                 self.chat_view.run_command("term_chat_output_append", {
                     "text": response,
                     "html_tables": html_tables,
+                    "scroll": False,
                 })
-                if self.is_response_markdown_enabled():
+                if md_enabled:
                     resp_end = get_input_start(self.chat_view, 0) - 1
                     while (
                         resp_end > resp_start
@@ -2486,7 +2512,11 @@ class ChatSession:
                         region = sublime.Region(resp_start, resp_end)
                         md_text = self.chat_view.substr(region)
                         if md_text and md_text.strip():
-                            self.response_phantoms.add(region, md_text)
+                            # Keep resumed history unfolded in raw mode so initial
+                            # resume avoids heavy mdpopups/fold layout cost.
+                            self.response_phantoms.add(
+                                region, md_text, raw_mode=True
+                            )
 
         if session_info and session_info.get("mtime"):
             dt = datetime.datetime.fromtimestamp(session_info["mtime"]).strftime("%Y-%m-%d %H:%M")
@@ -3135,27 +3165,33 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
             session.input_marker.update()
 
 
+def _should_autoscroll(view):
+    """Return True when streaming or finalized output should follow the bottom."""
+    _, y = view.viewport_position()
+    settings = view.settings()
+    last_y = settings.get(CHAT_LAST_Y)
+    autoscroll = settings.get(CHAT_AUTOSCROLL, True)
+
+    # 1. Upward motion detection: user actively scrolling up disengages follow.
+    # A small threshold (~3px) filters layout jitter.
+    scroll_up_threshold = 3.0
+    if last_y is not None and (y < last_y - scroll_up_threshold):
+        settings.set(CHAT_AUTOSCROLL, False)
+        return False
+
+    # 2. If detached, re-engage only when user scrolls back to the bottom.
+    if not autoscroll and view.visible_region().end() >= view.size():
+        settings.set(CHAT_AUTOSCROLL, True)
+        return True
+
+    return autoscroll
+
+
 class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
 
     def _should_follow(self):
         """Determine if streaming output should auto-scroll the viewport."""
-        _, y = self.view.viewport_position()
-        last_y = self.view.settings().get(CHAT_LAST_Y)
-        autoscroll = self.view.settings().get(CHAT_AUTOSCROLL, True)
-
-        # 1. Upward motion detection: user actively scrolling up disengages follow.
-        # A small threshold (~3px) filters layout jitter
-        scroll_up_threshold = 3.0
-        if last_y is not None and (y < last_y - scroll_up_threshold):
-            self.view.settings().set(CHAT_AUTOSCROLL, False)
-            return False
-
-        # 2. If detached, re-engage only when user scrolls back to the bottom
-        if not autoscroll and self.view.visible_region().end() >= self.view.size():
-            self.view.settings().set(CHAT_AUTOSCROLL, True)
-            return True
-
-        return autoscroll
+        return _should_autoscroll(self.view)
 
     def _update_scroll(self, follow):
         """Update viewport position and track y coordinate for direction sensing."""
@@ -3171,8 +3207,16 @@ class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
             _, y = self.view.viewport_position()
             self.view.settings().set(CHAT_LAST_Y, y)
 
-    def run(self, edit, text, html_tables=None, is_tool=False, mark_resp_start=False):
-        follow = self._should_follow()
+    def run(
+        self,
+        edit,
+        text,
+        html_tables=None,
+        is_tool=False,
+        mark_resp_start=False,
+        scroll=True,
+    ):
+        follow = self._should_follow() if scroll else False
 
         insert_at = get_input_start(self.view, 0) - 1
         inserted = self.view.insert(edit, insert_at, text)
@@ -3207,7 +3251,8 @@ class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
 
         if not is_tool:
             quick_popup_manager.append(self.view.id(), text)
-        self._update_scroll(follow)
+        if scroll:
+            self._update_scroll(follow)
 
 
 class TermChatInputPromptCommand(sublime_plugin.TextCommand):

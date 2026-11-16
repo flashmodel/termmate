@@ -809,31 +809,29 @@ def normalize_markdown_list_indentation(text):
 
 
 def _render_tool_line_html(line):
-    """Render a ⏺ tool-call line as an isolated minihtml block with file links."""
+    """Render a ⏺ tool-call line as an isolated minihtml block with uniform styling."""
+    bullet = '<span class="chat-tool-bullet">⏺</span>'
     match = _TOOL_FILE_LINE_RE.match(line)
     if match:
         tool_name, target, rest = match.group(1), match.group(2), match.group(3)
-        esc_name = html.escape(tool_name, quote=True)
-        esc_target = html.escape(target, quote=True)
-        esc_rest = html.escape(rest, quote=True)
-        body = (
-            f'<span class="chat-tool-bullet">⏺</span> '
-            f'<span class="chat-tool-name">{esc_name}</span> '
-            f'<a class="chat-tool-link" href="toolfile:{esc_target}">'
-            f'{esc_target}</a>{esc_rest}'
+        esc_attr = html.escape(target, quote=True)
+        esc_target = html.escape(target, quote=False)
+        tail = (
+            f'<a class="chat-tool-link" href="toolfile:{esc_attr}">'
+            f'{esc_target}</a>'
         )
+        if rest:
+            tail += html.escape(rest, quote=False)
     else:
         after_bullet = line[1:].lstrip()
         parts = after_bullet.split(None, 1)
-        if parts:
-            esc_name = html.escape(parts[0], quote=True)
-            rest = f' {html.escape(parts[1], quote=True)}' if len(parts) > 1 else ''
-            body = (
-                f'<span class="chat-tool-bullet">⏺</span> '
-                f'<span class="chat-tool-name">{esc_name}</span>{rest}'
-            )
-        else:
-            body = '<span class="chat-tool-bullet">⏺</span>'
+        if not parts:
+            return f'<div class="chat-tool-line">{bullet}</div>'
+        tool_name = parts[0]
+        tail = html.escape(parts[1], quote=False) if len(parts) > 1 else ''
+    esc_name = html.escape(tool_name, quote=False)
+    sep = ' ' if tail else ''
+    body = f'{bullet} <span class="chat-tool-name">{esc_name}</span>{sep}{tail}'
     return f'<div class="chat-tool-line">{body}</div>'
 
 
@@ -856,6 +854,7 @@ def preprocess_response_markdown(text, max_width=100):
     fence_char = None
     fence_len = 0
     in_diff_block = False
+    after_tool_line = False
 
     def flush_tables():
         if not table_buffer:
@@ -873,6 +872,11 @@ def preprocess_response_markdown(text, max_width=100):
         stripped = line.strip()
 
         if not in_code_block:
+            if after_tool_line:
+                if stripped == "" or line.startswith("    "):
+                    continue
+                after_tool_line = False
+
             if stripped.startswith(('```', '~~~')):
                 char = stripped[0]
                 count = len(stripped) - len(stripped.lstrip(char))
@@ -910,6 +914,7 @@ def preprocess_response_markdown(text, max_width=100):
             output.append('')
             output.append(_render_tool_line_html(stripped))
             output.append('')
+            after_tool_line = True
         else:
             flush_tables()
             output.append(line)

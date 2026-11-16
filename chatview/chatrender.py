@@ -568,25 +568,30 @@ quick_popup_manager = QuickOutputPopupManager()
 
 
 RESPONSE_PHANTOM_KEY = "chatview_responses"
-RESPONSE_RAW_PHANTOM_KEY = "chatview_responses_raw"
 
-SWITCH_CSS = """
-div.mdpopups.termmate-response-switch-bar .switch-pill,
-div.mdpopups .switch-pill,
-.termmate-response-switch-bar .switch-pill,
+TOP_SWITCH_CSS = """
+.chat-raw-top-bar,
+.chat-switch-bar-top {
+    text-align: left;
+    margin: 0;
+    padding: 2px 0 0 0;
+    line-height: 1.45;
+}
+.chat-raw-top-bar a,
+.chat-switch-bar-top a,
+a.chat-toggle-link {
+    text-decoration: none;
+}
 .switch-pill {
     display: inline-block;
     border: 1px solid color(var(--foreground) alpha(0.32));
     background-color: color(var(--background) blend(var(--foreground) 90%));
     border-radius: 3px;
-    padding: 1px;
+    padding: 2px;
     font-size: 0.72em;
     font-family: var(--font-mono);
     line-height: 1.35;
 }
-div.mdpopups.termmate-response-switch-bar .switch-active,
-div.mdpopups .switch-active,
-.termmate-response-switch-bar .switch-active,
 .switch-active {
     display: inline-block;
     padding: 1px 6px;
@@ -596,15 +601,6 @@ div.mdpopups .switch-active,
     background-color: color(var(--background) blend(var(--foreground) 76%));
     line-height: 1.35;
 }
-.termmate-response-switch-bar a,
-.chat-raw-top-bar a,
-.chat-raw-bottom-bar a,
-a.chat-toggle-link {
-    text-decoration: none;
-}
-div.mdpopups.termmate-response-switch-bar a.switch-target,
-div.mdpopups a.switch-target,
-.termmate-response-switch-bar a.switch-target,
 a.switch-target,
 .switch-target {
     display: inline-block;
@@ -616,11 +612,29 @@ a.switch-target,
     text-decoration: none;
     line-height: 1.35;
 }
-div.mdpopups.termmate-response-switch-bar a.switch-subtle,
-div.mdpopups a.switch-subtle,
-.termmate-response-switch-bar a.switch-subtle,
-.chat-raw-bottom-bar a.switch-subtle,
-.chat-switch-bar-bottom a.switch-subtle,
+"""
+
+BOTTOM_SWITCH_CSS = """
+.chat-raw-top-inline,
+.chat-preview-top-inline {
+    margin: 0;
+    padding: 0;
+    line-height: 1;
+}
+.chat-raw-bottom-bar,
+.chat-switch-bar-bottom {
+    text-align: left;
+    margin: 0;
+    padding: 1px 0 2px 0;
+    line-height: 1.3;
+}
+.chat-raw-top-inline a,
+.chat-preview-top-inline a,
+.chat-raw-bottom-bar a,
+.chat-switch-bar-bottom a,
+a.chat-toggle-link {
+    text-decoration: none;
+}
 a.switch-subtle,
 .switch-subtle {
     display: inline-block;
@@ -635,57 +649,23 @@ a.switch-subtle,
     text-decoration: none;
     line-height: 1.25;
 }
-div.mdpopups.termmate-response-switch-bar .chat-switch-bar-top,
-.termmate-response-switch-bar .chat-switch-bar-top,
-.chat-switch-bar-top {
-    text-align: left;
-    margin: 0;
-    padding: 2px 0 4px 0;
-    line-height: 1.45;
+.chat-raw-top-inline a.switch-subtle,
+.chat-raw-top-inline .switch-subtle,
+.chat-preview-top-inline a.switch-subtle,
+.chat-preview-top-inline .switch-subtle {
+    line-height: 1;
 }
-div.mdpopups.termmate-response-switch-bar .chat-switch-bar-bottom,
-.termmate-response-switch-bar .chat-switch-bar-bottom,
-.chat-switch-bar-bottom {
-    text-align: left;
-    margin: 0;
-    padding: 1px 0 2px 0;
-    line-height: 1.3;
+.chat-raw-top-inline a.switch-subtle,
+.chat-raw-top-inline .switch-subtle {
+    padding: 0 0.5em 0 1.4em;
 }
-.chat-raw-top-bar {
-    text-align: left;
-    margin: 0;
-    padding: 2px 0 4px 0;
-    line-height: 1.45;
-}
-.chat-raw-bottom-bar {
-    text-align: left;
-    margin: 0;
-    padding: 1px 0 2px 0;
-    line-height: 1.3;
+.chat-preview-top-inline a.switch-subtle,
+.chat-preview-top-inline .switch-subtle {
+    padding: 0 8px 0 0;
 }
 """
 
-PREVIEW_SWITCH_CSS = """
-.mdpopups,
-div.mdpopups {
-    padding: 0;
-    margin: 0;
-    background-color: transparent;
-}
-div.mdpopups.termmate-response-switch-bar,
-div.termmate-response-switch-bar,
-.mdpopups .termmate-response-switch-bar,
-.mdpopups.termmate-response-switch-bar,
-.termmate-response-switch-bar {
-    display: block;
-    padding: 2px 0 6px 0;
-    margin: 0;
-    border: none;
-    background-color: transparent;
-    font-size: 1rem;
-    line-height: 1.45;
-}
-""" + SWITCH_CSS
+SWITCH_CSS = TOP_SWITCH_CSS + BOTTOM_SWITCH_CSS
 
 RESPONSE_CSS = """
 .mdpopups,
@@ -709,118 +689,161 @@ div.termmate-response-preview,
     line-height: 1.35;
     font-size: 1rem;
 }
-.termmate-response-preview p {
-    margin: 0.45rem 0;
-    line-height: 1.35;
-}
-.termmate-response-preview h1,
-.termmate-response-preview h2,
-.termmate-response-preview h3,
-.termmate-response-preview h4,
-.termmate-response-preview h5,
-.termmate-response-preview h6 {
-    font-weight: bold;
-    line-height: 1.3;
-    color: var(--foreground);
-}
-.termmate-response-preview h1 {
-    font-size: 1.45rem;
-    margin: 0.9rem 0 0.55rem 0;
-    padding-bottom: 0.25rem;
-    border-bottom: 1px solid color(var(--foreground) alpha(0.18));
-}
-.termmate-response-preview h2 {
-    font-size: 1.25rem;
-    margin: 0.8rem 0 0.45rem 0;
-    padding-bottom: 0.2rem;
-    border-bottom: 1px solid color(var(--foreground) alpha(0.14));
-}
-.termmate-response-preview h3 {
-    font-size: 1.1rem;
-    margin: 0.7rem 0 0.4rem 0;
-}
-.termmate-response-preview h4,
-.termmate-response-preview h5,
-.termmate-response-preview h6 {
-    font-size: 1rem;
-    margin: 0.6rem 0 0.35rem 0;
-}
-.termmate-response-preview ul,
-.termmate-response-preview ol {
-    margin: 0.45rem 0;
-    padding-left: 1.25rem;
-}
-.termmate-response-preview li {
-    margin: 0.2rem 0;
-    line-height: 1.35;
-}
-.termmate-response-preview li > p {
-    margin: 0.25rem 0;
-}
-.termmate-response-preview code {
-    font-family: var(--font-mono);
-    font-size: 0.9em;
-    background-color: color(var(--background) blend(var(--foreground) 88%));
-    padding: 0.1rem 0.3rem;
-    border-radius: 3px;
-}
-.termmate-response-preview pre {
-    background-color: color(var(--background) blend(var(--foreground) 91%));
-    border: 1px solid color(var(--foreground) alpha(0.10));
-    border-radius: 5px;
-    padding: 0.65rem 0.85rem;
-    margin: 0.65rem 0;
-    line-height: 1.4;
-}
-.termmate-response-preview pre code {
-    background-color: transparent;
-    padding: 0;
-    border-radius: 0;
-    font-size: 0.92em;
-}
-.termmate-response-preview blockquote {
-    margin: 0.65rem 0;
-    padding: 0.4rem 0.85rem;
-    border-left: 3px solid color(var(--foreground) alpha(0.28));
-    color: color(var(--foreground) blend(var(--background) 70%));
-    background-color: color(var(--background) blend(var(--foreground) 92%));
-}
-.termmate-response-preview hr {
-    border: 0;
-    height: 1px;
-    background-color: color(var(--foreground) alpha(0.16));
-    margin: 1rem 0;
-}
-.termmate-response-preview a {
-    color: var(--accent);
+div.mdpopups .termmate-response-preview a,
+div.mdpopups .termmate-response-preview a code,
+.termmate-response-preview a,
+.termmate-response-preview a code,
+a,
+a code {
+    color: var(--bluish);
     text-decoration: underline;
 }
-.termmate-response-preview .chat-tool-line {
+.termmate-response-preview .chat-tool-line,
+.chat-tool-line {
     margin: 0.25rem 0;
-    font-family: var(--font-mono);
+    font-family: monospace;
     font-size: 0.92em;
+    color: var(--foreground);
 }
-.termmate-response-preview .chat-tool-bullet {
-    color: var(--accent);
+.termmate-response-preview .chat-tool-bullet,
+.chat-tool-line .chat-tool-bullet,
+.chat-tool-bullet,
+.termmate-response-preview .chat-tool-name,
+.chat-tool-line .chat-tool-name,
+.chat-tool-name {
+    {{ 'entity.name.function.chatview' | css('color') }}
+    {{ 'entity.name.function.chatview' | css('font-weight') }}
+}
+.termmate-response-preview .chat-tool-bullet,
+.chat-tool-line .chat-tool-bullet,
+.chat-tool-bullet {
     padding-right: 2px;
 }
-.termmate-response-preview .chat-tool-name {
-    color: var(--bluish);
-    font-weight: bold;
-}
-.termmate-response-preview a.chat-tool-link {
-    color: var(--cyanish);
+div.mdpopups .termmate-response-preview a.chat-tool-link,
+.termmate-response-preview a.chat-tool-link,
+.chat-tool-line a.chat-tool-link,
+a.chat-tool-link,
+.chat-tool-link {
+    color: var(--foreground);
     text-decoration: none;
 }
 """
 
+PREVIEW_SWITCH_CSS = """
+div.mdpopups .termmate-response-card,
+div.termmate-response-card,
+.termmate-response-card {
+    display: block;
+    padding: 0;
+    margin: 0;
+    border: none;
+    background-color: transparent;
+}
+div.mdpopups .termmate-response-top-spacer,
+div.termmate-response-top-spacer,
+.termmate-response-top-spacer {
+    display: block;
+    padding: 0.65rem 0 0 0;
+    margin: 0;
+    border: none;
+    background-color: transparent;
+}
+div.mdpopups .termmate-response-switch-bar,
+div.termmate-response-switch-bar,
+.termmate-response-switch-bar {
+    display: block;
+    padding: 2px 0 6px 0;
+    margin: 0;
+    border: none;
+    background-color: transparent;
+    font-size: 1rem;
+    line-height: 1.45rem;
+}
+.termmate-response-switch-bar .chat-switch-bar-top,
+.chat-switch-bar-top {
+    text-align: left;
+    margin: 0;
+    padding: 2px 0 4px 0;
+    line-height: 1.45rem;
+}
+.termmate-response-switch-bar .chat-switch-bar-bottom,
+.chat-switch-bar-bottom {
+    text-align: left;
+    margin: 0;
+    padding: 1px 0 2px 0;
+    line-height: 1.3rem;
+}
+.termmate-response-switch-bar a,
+.chat-switch-bar-top a,
+.chat-switch-bar-bottom a,
+a.chat-toggle-link {
+    text-decoration: none;
+}
+div.mdpopups .switch-pill,
+.termmate-response-switch-bar .switch-pill,
+.switch-pill {
+    display: inline-block;
+    border: 1px solid color(var(--foreground) alpha(0.32));
+    background-color: color(var(--background) blend(var(--foreground) 90%));
+    border-radius: 3px;
+    padding: 2px 3px;
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+    line-height: 1.05rem;
+}
+div.mdpopups .switch-active,
+.termmate-response-switch-bar .switch-active,
+.switch-active {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 2px;
+    font-weight: bold;
+    font-size: 0.72rem;
+    color: var(--accent);
+    background-color: color(var(--background) blend(var(--foreground) 76%));
+    line-height: 0.9rem;
+}
+div.mdpopups a.switch-target,
+.termmate-response-switch-bar a.switch-target,
+a.switch-target,
+.switch-target {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 2px;
+    border: none;
+    font-size: 0.72rem;
+    color: color(var(--foreground) alpha(0.60));
+    background-color: transparent;
+    text-decoration: none;
+    line-height: 0.9rem;
+}
+div.mdpopups a.switch-subtle,
+.termmate-response-switch-bar a.switch-subtle,
+a.switch-subtle,
+.switch-subtle {
+    display: inline-block;
+    margin: 0;
+    padding: 1px 10px 1px 0;
+    border: none;
+    border-radius: 2px;
+    font-size: 1.05rem;
+    font-family: var(--font-mono);
+    color: color(var(--foreground) alpha(0.30));
+    background-color: transparent;
+    text-decoration: none;
+    line-height: 1.25rem;
+}
+"""
 
-def _render_switch_html(key, is_raw=True, is_top=True):
-    """Build top segmented switch pill or bottom subtle single-target link."""
+PREVIEW_CARD_CSS = PREVIEW_SWITCH_CSS + RESPONSE_CSS
+
+
+def _render_switch_html(key, is_raw=True, is_top=True, show_toolbar=False):
+    """Build top segmented switch pill or subtle single-target icon link."""
     esc_key = html.escape(key, quote=True)
     suffix = ":top" if is_top else ":bottom"
     target_href = f"toggle:{esc_key}{suffix}"
-    if not is_top:
+    if not is_top or not show_toolbar:
         label = "◫&nbsp;&nbsp;" if is_raw else "‹›&nbsp;"
         title = "Switch to Markdown preview" if is_raw else "Switch to raw Markdown"
         return (
@@ -844,30 +867,70 @@ def _render_switch_html(key, is_raw=True, is_top=True):
     return f'<span class="switch-pill">{left}{right}</span>'
 
 
-def _raw_toggle_html(key, is_top=True):
-    """Build a segmented switch header or subtle footer toggle for raw mode."""
-    switch_html = _render_switch_html(key, is_raw=True, is_top=is_top)
-    style_block = f"<style>{SWITCH_CSS}</style>"
+def _inline_top_phantom_html(body_id, span_cls, switch_html, css):
+    """Wrap a top switch link for native minihtml LAYOUT_INLINE phantom rendering."""
+    return (
+        f'<body id="{body_id}" style="margin:0;padding:0;">'
+        f"<style>{css}</style>"
+        f'<span class="{span_cls}">{switch_html}</span>'
+        "</body>"
+    )
+
+
+def _raw_toggle_html(key, is_top=True, show_toolbar=False, inline=None):
+    """Build native minihtml toggle bar for raw mode using position-specific CSS."""
+    switch_html = _render_switch_html(
+        key, is_raw=True, is_top=is_top, show_toolbar=show_toolbar
+    )
     if is_top:
+        is_inline = (not show_toolbar) if inline is None else bool(inline)
+        if is_inline:
+            inline_css = SWITCH_CSS if show_toolbar else BOTTOM_SWITCH_CSS
+            return _inline_top_phantom_html(
+                "chatview-raw-toggle-top",
+                "chat-raw-top-inline",
+                switch_html,
+                inline_css,
+            )
+        top_css = TOP_SWITCH_CSS if show_toolbar else SWITCH_CSS
         return (
             '<body id="chatview-raw-toggle-top" style="margin:0;padding:2px 0 6px 0;">'
-            f"{style_block}"
+            f"<style>{top_css}</style>"
             f'<div class="chat-raw-top-bar">{switch_html}</div>'
             "</body>"
         )
     return (
         '<body id="chatview-raw-toggle-bottom" style="margin:0;padding:1px 0 2px 0;">'
-        f"{style_block}"
+        f"<style>{BOTTOM_SWITCH_CSS}</style>"
         f'<div class="chat-raw-bottom-bar">{switch_html}</div>'
         "</body>"
     )
 
 
-def _preview_toggle_html(key, is_top=True):
-    """Build a standalone segmented switch bar for preview mode."""
-    pill_html = _render_switch_html(key, is_raw=False, is_top=is_top)
+def _preview_toggle_html(key, is_top=True, show_toolbar=False):
+    """Build a switch bar fragment for a combined preview card phantom."""
+    pill_html = _render_switch_html(
+        key, is_raw=False, is_top=is_top, show_toolbar=show_toolbar
+    )
     bar_cls = "chat-switch-bar-top" if is_top else "chat-switch-bar-bottom"
-    return f'<div class="{bar_cls}">{pill_html}</div>'
+    return (
+        '<div class="termmate-response-switch-bar">'
+        f'<div class="{bar_cls}">{pill_html}</div>'
+        "</div>"
+    )
+
+
+def _preview_top_inline_html(key):
+    """Build native minihtml inline toggle phantom placed after ⋅⋅⋅⋯ in preview."""
+    switch_html = _render_switch_html(
+        key, is_raw=False, is_top=True, show_toolbar=False
+    )
+    return _inline_top_phantom_html(
+        "chatview-preview-toggle-top",
+        "chat-preview-top-inline",
+        switch_html,
+        BOTTOM_SWITCH_CSS,
+    )
 
 
 def resolve_markdown_preview_raw_mode(mode):
@@ -888,30 +951,31 @@ class ResponsePhantomManager:
         max_width_getter=None,
         on_navigate_link=None,
         default_raw_mode_getter=None,
+        show_toolbar_getter=None,
     ):
         self.view = view
         self.max_width_getter = max_width_getter
         self.on_navigate_link = on_navigate_link
         self.default_raw_mode_getter = default_raw_mode_getter
+        self.show_toolbar_getter = show_toolbar_getter
         self.entries = []
         self.next_id = 0
-        self.raw_phantom_set = (
-            sublime.PhantomSet(view, RESPONSE_RAW_PHANTOM_KEY)
-            if hasattr(sublime, "PhantomSet")
-            else None
-        )
-        self.phantom_set = (
-            mdpopups.PhantomSet(view, RESPONSE_PHANTOM_KEY)
-            if HAS_MDPOPUPS and hasattr(mdpopups, "PhantomSet")
-            else None
-        )
+        self.raw_phantom_sets = {}
+        self.preview_phantom_sets = {}
+        self.preview_top_phantom_sets = {}
+        self._toggle_generations = {}
+        self._pending_preview_folds = set()
 
     @property
     def is_available(self):
         return bool(
             HAS_MDPOPUPS
-            and self.phantom_set is not None
-            and self.raw_phantom_set is not None
+            and mdpopups is not None
+            and self.view is not None
+            and hasattr(sublime, "PhantomSet")
+            and hasattr(sublime, "Phantom")
+            and hasattr(mdpopups, "PhantomSet")
+            and hasattr(mdpopups, "Phantom")
         )
 
     def _get_max_width(self):
@@ -934,20 +998,23 @@ class ResponsePhantomManager:
             max_width=self._get_max_width(),
         ).strip()
 
-    def _resolve_raw_mode(self, raw_mode=None):
-        if raw_mode is not None:
-            return bool(raw_mode)
-        if self.default_raw_mode_getter is not None:
+    @staticmethod
+    def _resolve_bool_getter(getter, default):
+        if getter is not None:
             try:
-                value = (
-                    self.default_raw_mode_getter()
-                    if callable(self.default_raw_mode_getter)
-                    else self.default_raw_mode_getter
-                )
+                value = getter() if callable(getter) else getter
                 return bool(value)
             except Exception:
                 pass
-        return True
+        return default
+
+    def _resolve_raw_mode(self, raw_mode=None):
+        if raw_mode is not None:
+            return bool(raw_mode)
+        return self._resolve_bool_getter(self.default_raw_mode_getter, True)
+
+    def _resolve_show_toolbar(self):
+        return self._resolve_bool_getter(self.show_toolbar_getter, False)
 
     def _apply_fold_state(self, region, raw_mode):
         self.view.unfold(region)
@@ -965,60 +1032,85 @@ class ResponsePhantomManager:
         key = f"{self.REGION_PREFIX}{self.next_id}"
         self.next_id += 1
         self.view.add_regions(key, [region], flags=sublime.HIDDEN)
-        processed_md = self._prepare_markdown(md_text)
-        self.entries.append({
+        entry = {
             "key": key,
             "md_text": md_text,
-            "processed_md": processed_md,
             "raw_mode": use_raw,
-        })
+        }
+        self.entries.append(entry)
         self._apply_fold_state(region, use_raw)
-        self._update()
+        self._update_entry(entry)
         return key
+
+    def _entry_anchor_screen_y(self, region, is_top):
+        """Return viewport-relative Y of the top or bottom anchor before toggling."""
+        pre_vp = self._viewport_geometry()
+        if pre_vp is None:
+            return None
+        if is_top:
+            anchor_y = self._layout_y(self.view.line(region.begin()).begin())
+        else:
+            pre_bounds = self._entry_layout_bounds(region)
+            anchor_y = pre_bounds[1] if pre_bounds is not None else None
+        if anchor_y is None:
+            return None
+        return anchor_y - pre_vp[1]
+
+    def _finish_toggle(self, key, gen, is_top, pre_screen_y):
+        """Complete deferred fold (if pending) and lock viewport anchor."""
+        if (
+            not self.view
+            or (hasattr(self.view, "is_valid") and not self.view.is_valid())
+            or self._toggle_generations.get(key) != gen
+        ):
+            return
+        entry = next((e for e in self.entries if e["key"] == key), None)
+        regions = self.view.get_regions(key) if entry is not None else []
+        if entry is None or not regions:
+            return
+        reg = regions[0]
+
+        if key in self._pending_preview_folds:
+            self._pending_preview_folds.discard(key)
+            self._clear_phantom_set(self.raw_phantom_sets, key)
+            self._apply_fold_state(reg, False)
+
+        scroller = self._scroll_entry_top if is_top else self._scroll_entry_bottom
+        scroller(reg, pre_screen_y)
 
     def toggle_entry(self, key, is_top=True):
         """Toggle a single response entry between rendered preview and raw text."""
         target = next((e for e in self.entries if e["key"] == key), None)
         if target is None:
             return
+        gen = self._toggle_generations.get(key, 0) + 1
+        self._toggle_generations[key] = gen
         regions = self.view.get_regions(key)
-        pre_screen_y = None
-        if not is_top and regions:
-            pre_bounds = self._entry_layout_bounds(regions[0])
-            pre_vp = self._viewport_geometry()
-            if pre_bounds is not None and pre_vp is not None:
-                pre_screen_y = pre_bounds[1] - pre_vp[1]
+        reg = regions[0] if regions else None
+        pre_screen_y = self._entry_anchor_screen_y(reg, is_top) if reg else None
 
         target["raw_mode"] = not target["raw_mode"]
-        if regions:
-            self._apply_fold_state(regions[0], target["raw_mode"])
-        self._update()
+        defer_fold = (
+            not target["raw_mode"]
+            and reg is not None
+            and self._viewport_geometry() is not None
+            and self._layout_y(reg.end()) is not None
+        )
+        if defer_fold:
+            self._pending_preview_folds.add(key)
+            self._update_entry(target, defer_fold=True)
+            delay = 30
+        else:
+            self._pending_preview_folds.discard(key)
+            if reg is not None:
+                self._apply_fold_state(reg, target["raw_mode"])
+            self._update_entry(target)
+            delay = 0 if target["raw_mode"] else 30
 
-        def _locate(retries=0):
-            if not self.view or (
-                hasattr(self.view, "is_valid") and not self.view.is_valid()
-            ):
-                return
-            entry = next((e for e in self.entries if e["key"] == key), None)
-            if entry is None:
-                return
-            current_regions = self.view.get_regions(key)
-            if not current_regions:
-                return
-            reg = current_regions[0]
-            if is_top:
-                top_pt = self.view.line(reg.begin()).begin()
-                self.view.show(top_pt, False)
-                return
-            if not self._scroll_entry_bottom(
-                reg,
-                pre_screen_y,
-                is_raw=entry["raw_mode"],
-                can_retry=retries < 1,
-            ):
-                sublime.set_timeout(lambda: _locate(retries + 1), 30)
-
-        sublime.set_timeout(_locate, 25)
+        sublime.set_timeout(
+            lambda: self._finish_toggle(key, gen, is_top, pre_screen_y),
+            delay,
+        )
 
     @staticmethod
     def _as_float_pair(value):
@@ -1096,28 +1188,48 @@ class ResponsePhantomManager:
                 return min(target_vy, max(0.0, ext[1] - vh))
         return target_vy
 
-    def _scroll_entry_bottom(
-        self, reg, pre_screen_y, is_raw=True, can_retry=False
-    ):
+    def _scroll_entry_top(self, reg, pre_screen_y):
+        """Scroll viewport so the top of reg stays anchored across fold/phantom resize."""
+        top_pt = self.view.line(reg.begin()).begin()
+        top_y = self._layout_y(top_pt)
+        vp = self._viewport_geometry()
+        set_vp = getattr(self.view, "set_viewport_position", None)
+        if top_y is None or vp is None or not callable(set_vp):
+            self.view.show(top_pt, False)
+            return
+
+        vx, _, _, vh = vp
+        if vh <= 0:
+            self.view.show(top_pt, False)
+            return
+
+        line_h = self._line_height()
+        if pre_screen_y is not None:
+            desired = max(0.0, min(max(0.0, vh - line_h), pre_screen_y))
+        else:
+            desired = min(line_h, vh * 0.1)
+
+        target_vy = max(0.0, top_y - desired)
+        target_vy = self._clamp_scroll_past_end(target_vy, vh)
+        set_vp((vx, target_vy), False)
+
+    def _scroll_entry_bottom(self, reg, pre_screen_y):
         """Scroll viewport so the bottom of reg and its bottom toggle stay visible."""
         bounds = self._entry_layout_bounds(reg)
         vp = self._viewport_geometry()
         set_vp = getattr(self.view, "set_viewport_position", None)
         if bounds is None or vp is None or not callable(set_vp):
             self.view.show(reg.end(), False)
-            return True
+            return
 
         top_y, bot_y = bounds
         vx, _, _, vh = vp
         if vh <= 0:
             self.view.show(reg.end(), False)
-            return True
+            return
 
         line_h = self._line_height()
         msg_h = max(0.0, bot_y - top_y)
-        if not is_raw and can_retry and msg_h <= line_h * 1.5:
-            return False
-
         top_pad = min(line_h, vh * 0.1)
         bottom_pad = min(line_h * 1.5, vh * 0.15)
         max_offset = max(line_h, vh - bottom_pad)
@@ -1134,7 +1246,6 @@ class ResponsePhantomManager:
         target_vy = max(0.0, bot_y - desired)
         target_vy = self._clamp_scroll_past_end(target_vy, vh)
         set_vp((vx, target_vy), False)
-        return True
 
     def _on_navigate(self, href):
         if href.startswith("toggle:"):
@@ -1147,58 +1258,181 @@ class ResponsePhantomManager:
         elif href.startswith(("http://", "https://", "mailto:")):
             webbrowser.open_new_tab(href)
 
-    def _update(self):
+    def _render_preview_body_html(self, entry):
+        """Convert Markdown body HTML via public mdpopups.md2html."""
+        processed_md = self._prepare_markdown(entry["md_text"])
+        body_html = None
+        if HAS_MDPOPUPS and mdpopups is not None and hasattr(mdpopups, "md2html"):
+            try:
+                candidate = mdpopups.md2html(self.view, processed_md)
+                if isinstance(candidate, str):
+                    body_html = candidate
+            except Exception as e:
+                LOG.error(f"Error rendering preview via mdpopups.md2html: {e}")
+        if body_html is None:
+            body_html = f"<pre>{html.escape(processed_md)}</pre>"
+        return body_html
+
+    def _build_preview_card_html(self, entry, show_toolbar=None, include_top=True):
+        key = entry["key"]
+        if show_toolbar is None:
+            show_toolbar = self._resolve_show_toolbar()
+        body_html = self._render_preview_body_html(entry)
+        preview_block = f'<div class="termmate-response-preview">{body_html}</div>'
+        if include_top:
+            top_bar = _preview_toggle_html(key, is_top=True, show_toolbar=show_toolbar)
+            preview_section = f"{top_bar}{preview_block}"
+        else:
+            preview_section = (
+                f'<div class="termmate-response-top-spacer">{preview_block}</div>'
+            )
+        bot_bar = _preview_toggle_html(key, is_top=False)
+        return f"{preview_section}{bot_bar}"
+
+    @staticmethod
+    def _clear_phantom_set(store, key):
+        ps = store.pop(key, None)
+        if ps is not None:
+            ps.update([])
+
+    def _preview_top_inline_anchor(self, region, show_toolbar=False):
+        """Return region.end() for inline ‹› after ⋅⋅⋅⋯, or None for card bar."""
+        if show_toolbar:
+            return None
+        line_reg = self.view.line(region.begin())
+        if hasattr(self.view, "substr"):
+            line_text = self.view.substr(line_reg).strip()
+            if line_text and line_text != "⋅⋅⋅":
+                return None
+        end_pt = region.end()
+        return sublime.Region(end_pt, end_pt)
+
+    def _build_raw_top_phantom(self, key, region, show_toolbar):
+        top_anchor, top_layout = self._raw_top_layout(
+            region, show_toolbar=show_toolbar
+        )
+        return sublime.Phantom(
+            top_anchor,
+            _raw_toggle_html(
+                key,
+                is_top=True,
+                show_toolbar=show_toolbar,
+                inline=top_layout == sublime.LAYOUT_INLINE,
+            ),
+            top_layout,
+            on_navigate=self._on_navigate,
+        )
+
+    def _set_phantoms(self, store, cls, suffix, key, phantoms):
+        ps = store.get(key)
+        if ps is None:
+            ps = cls(self.view, f"{RESPONSE_PHANTOM_KEY}:{suffix}:{key}")
+            store[key] = ps
+        ps.update(phantoms)
+
+    def _sync_preview_top_phantom(self, key, region, show_toolbar):
+        top_anchor = self._preview_top_inline_anchor(
+            region, show_toolbar=show_toolbar
+        )
+        if top_anchor is None:
+            self._clear_phantom_set(self.preview_top_phantom_sets, key)
+            return True
+        top_ph = sublime.Phantom(
+            top_anchor,
+            _preview_top_inline_html(key),
+            sublime.LAYOUT_INLINE,
+            on_navigate=self._on_navigate,
+        )
+        self._set_phantoms(
+            self.preview_top_phantom_sets,
+            sublime.PhantomSet,
+            "preview_top",
+            key,
+            [top_ph],
+        )
+        return False
+
+    def _remove_entry_phantoms(self, key):
+        self._pending_preview_folds.discard(key)
+        self._toggle_generations[key] = self._toggle_generations.get(key, 0) + 1
+        for store in (
+            self.raw_phantom_sets,
+            self.preview_phantom_sets,
+            self.preview_top_phantom_sets,
+        ):
+            self._clear_phantom_set(store, key)
+
+    def _update_entry(self, entry, defer_fold=None):
         if not self.is_available or not self.view:
-            return
+            return False
         if hasattr(self.view, "is_valid") and not self.view.is_valid():
-            return
-        raw_phantoms = []
-        preview_phantoms = []
-        active_entries = []
-        for entry in self.entries:
-            key = entry["key"]
-            regions = self.view.get_regions(key)
-            if not regions:
-                continue
-            region = regions[0]
-            active_entries.append(entry)
-            if entry["raw_mode"]:
-                top_anchor, top_layout = self._raw_top_layout(region)
-                raw_phantoms.append(sublime.Phantom(
-                    top_anchor,
-                    _raw_toggle_html(key, is_top=True),
-                    top_layout,
-                    on_navigate=self._on_navigate,
-                ))
-                bot_pt = region.end()
-                bot_anchor = sublime.Region(bot_pt, bot_pt)
-                raw_phantoms.append(sublime.Phantom(
+            return False
+        key = entry["key"]
+        regions = self.view.get_regions(key)
+        if not regions:
+            self._remove_entry_phantoms(key)
+            self.entries = [e for e in self.entries if e["key"] != key]
+            return False
+        region = regions[0]
+        show_toolbar = self._resolve_show_toolbar()
+        if entry["raw_mode"]:
+            self._pending_preview_folds.discard(key)
+            self._clear_phantom_set(self.preview_phantom_sets, key)
+            self._clear_phantom_set(self.preview_top_phantom_sets, key)
+            bot_pt = region.end()
+            bot_anchor = sublime.Region(bot_pt, bot_pt)
+            phantoms = [
+                self._build_raw_top_phantom(key, region, show_toolbar),
+                sublime.Phantom(
                     bot_anchor,
                     _raw_toggle_html(key, is_top=False),
                     sublime.LAYOUT_BLOCK,
                     on_navigate=self._on_navigate,
-                ))
+                ),
+            ]
+            self._set_phantoms(
+                self.raw_phantom_sets, sublime.PhantomSet, "raw", key, phantoms
+            )
+        else:
+            if defer_fold is None:
+                defer_fold = key in self._pending_preview_folds
+            # Sync inline top ‹› before mounting block card at region.end() so
+            # Sublime lays out LAYOUT_INLINE ahead of LAYOUT_BLOCK at that point.
+            include_top = self._sync_preview_top_phantom(
+                key, region, show_toolbar
+            )
+            if defer_fold:
+                if key in self.raw_phantom_sets:
+                    self.raw_phantom_sets[key].update(
+                        [self._build_raw_top_phantom(key, region, show_toolbar)]
+                    )
             else:
-                anchor = sublime.Region(region.end(), region.end())
-                preview_phantoms.extend([
-                    self._make_preview_switch_phantom(anchor, key, is_top=True),
-                    mdpopups.Phantom(
-                        anchor,
-                        entry["processed_md"],
-                        sublime.LAYOUT_BLOCK,
-                        md=True,
-                        css=RESPONSE_CSS,
-                        on_navigate=self._on_navigate,
-                        wrapper_class="termmate-response-preview",
-                    ),
-                    self._make_preview_switch_phantom(anchor, key, is_top=False),
-                ])
-        self.entries = active_entries
-        self.raw_phantom_set.update(raw_phantoms)
-        self.phantom_set.update(preview_phantoms)
+                self._clear_phantom_set(self.raw_phantom_sets, key)
+            anchor = sublime.Region(region.end(), region.end())
+            card_phantom = mdpopups.Phantom(
+                anchor,
+                self._build_preview_card_html(
+                    entry,
+                    show_toolbar=show_toolbar,
+                    include_top=include_top,
+                ),
+                sublime.LAYOUT_BLOCK,
+                md=False,
+                css=PREVIEW_CARD_CSS,
+                on_navigate=self._on_navigate,
+                wrapper_class="termmate-response-card",
+            )
+            self._set_phantoms(
+                self.preview_phantom_sets,
+                mdpopups.PhantomSet,
+                "preview",
+                key,
+                [card_phantom],
+            )
+        return True
 
-    def _raw_top_layout(self, region):
-        """Place raw top switch as a block below ⋅⋅⋅ without adding buffer newlines."""
+    def _raw_top_layout(self, region, show_toolbar=False):
+        """Place raw top icon inline after ⋅⋅⋅, or as a block for toolbar/fallback."""
         start = region.begin()
         line_reg = self.view.line(start)
         if hasattr(self.view, "substr"):
@@ -1210,24 +1444,14 @@ class ResponsePhantomManager:
                 end_pt = line_reg.end()
                 return sublime.Region(end_pt, end_pt), sublime.LAYOUT_INLINE
         top_pt = line_reg.end()
-        return sublime.Region(top_pt, top_pt), sublime.LAYOUT_BLOCK
-
-    def _make_preview_switch_phantom(self, anchor, key, is_top=True):
-        return mdpopups.Phantom(
-            anchor,
-            _preview_toggle_html(key, is_top=is_top),
-            sublime.LAYOUT_BLOCK,
-            md=False,
-            css=PREVIEW_SWITCH_CSS,
-            on_navigate=self._on_navigate,
-            wrapper_class="termmate-response-switch-bar",
-        )
+        layout = sublime.LAYOUT_BLOCK if show_toolbar else sublime.LAYOUT_INLINE
+        return sublime.Region(top_pt, top_pt), layout
 
     def refresh(self):
-        """Re-render all response phantoms (e.g. after theme/width changes)."""
-        for entry in self.entries:
-            entry["processed_md"] = self._prepare_markdown(entry["md_text"])
-        self._update()
+        """Re-render active preview phantoms (e.g. after theme/width changes)."""
+        for entry in list(self.entries):
+            if not entry["raw_mode"]:
+                self._update_entry(entry)
 
     def truncate(self, cut_point):
         """Unfold and drop response entries at or after cut_point (rewind)."""
@@ -1238,22 +1462,19 @@ class ResponsePhantomManager:
             if regions and regions[0].end() < cut_point:
                 kept.append(entry)
             else:
+                self._remove_entry_phantoms(key)
                 if regions:
                     self.view.unfold(regions[0])
                 self.view.erase_regions(key)
         self.entries = kept
-        self._update()
 
     def clear(self):
         """Unfold and remove all response regions and phantoms."""
         for entry in self.entries:
             key = entry["key"]
+            self._remove_entry_phantoms(key)
             regions = self.view.get_regions(key)
             if regions:
                 self.view.unfold(regions[0])
             self.view.erase_regions(key)
         self.entries = []
-        if self.raw_phantom_set is not None:
-            self.raw_phantom_set.update([])
-        if self.phantom_set is not None:
-            self.phantom_set.update([])
