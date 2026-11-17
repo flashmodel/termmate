@@ -63,7 +63,6 @@ def _resolve_git_dir(path: str, base_dir: str) -> Set[str]:
     if os.path.isdir(abs_p):
         results.add(abs_p)
     elif os.path.isfile(abs_p):
-        results.add(abs_p)
         try:
             with open(abs_p, "r", encoding="utf-8", errors="ignore") as f:
                 txt = f.read().strip()
@@ -269,8 +268,16 @@ class CodexAgent(BaseAgent):
                 writable_roots.append(gd)
 
         if writable_roots:
-            # v2 native parameter
-            thread_params["runtimeWorkspaceRoots"] = writable_roots
+            # v2 runtimeWorkspaceRoots replaces the default [cwd] root, so prepend cwd.
+            runtime_roots: List[str] = []
+            if self.options.cwd:
+                runtime_roots.append(os.path.abspath(self.options.cwd))
+            for root in writable_roots:
+                abs_root = os.path.abspath(root)
+                if abs_root not in runtime_roots and not os.path.isfile(abs_root):
+                    runtime_roots.append(abs_root)
+            if runtime_roots:
+                thread_params["runtimeWorkspaceRoots"] = runtime_roots
 
         # Initialize config if we have add_dirs/git_dirs or other config-based overrides
         config_overrides = {}
@@ -338,11 +345,13 @@ class CodexAgent(BaseAgent):
             if self.options.session_id and self.thread_id:
                 try:
                     cursor = None
+                    seen_cursors: Set[str] = set()
                     while True:
                         t_params: Dict[str, Any] = {
                             "threadId": self.thread_id,
                             "itemsView": "notLoaded",
                             "sortDirection": "asc",
+                            "limit": 100,
                         }
                         if cursor:
                             t_params["cursor"] = cursor
@@ -361,8 +370,9 @@ class CodexAgent(BaseAgent):
                             else:
                                 turn_ids.append(t_id)
                         cursor = t_res.get("nextCursor")
-                        if not cursor:
+                        if not cursor or cursor in seen_cursors:
                             break
+                        seen_cursors.add(cursor)
                 except Exception as e:
                     LOG.debug(f"Failed to fetch turns via thread/turns/list: {e}")
 
@@ -770,6 +780,15 @@ class CodexAgent(BaseAgent):
                     )
 
         elif method == "thread/tokenUsage/updated":
+            if self._is_subagent(
+                thread_id=params.get("threadId"),
+                turn_id=self._extract_turn_id(params),
+            ):
+                LOG.debug(
+                    f"Subagent tokenUsage ignored for main thread: "
+                    f"threadId={params.get('threadId')}"
+                )
+                return
             usage = params.get("tokenUsage", {})
             if usage:
                 await self._message_queue.put(
@@ -836,11 +855,21 @@ class CodexAgent(BaseAgent):
             await self._message_queue.put(Message(MessageType.STOP.value))
 
         elif method == "item/plan/delta":
+            if self._is_subagent(
+                thread_id=params.get("threadId"),
+                turn_id=self._extract_turn_id(params),
+            ):
+                return
             delta = params.get("delta", "")
             if delta:
                 self._plan_text += delta
 
         elif method == "item/agentMessage/delta":
+            if self._is_subagent(
+                thread_id=params.get("threadId"),
+                turn_id=self._extract_turn_id(params),
+            ):
+                return
             delta = params.get("delta", "")
             if delta:
                 await self._message_queue.put(
@@ -849,6 +878,11 @@ class CodexAgent(BaseAgent):
                 )
 
         elif method == "item/reasoning/textDelta":
+            if self._is_subagent(
+                thread_id=params.get("threadId"),
+                turn_id=self._extract_turn_id(params),
+            ):
+                return
             delta = params.get("delta", "")
             if delta:
                 await self._message_queue.put(
@@ -894,6 +928,15 @@ class CodexAgent(BaseAgent):
             LOG.warning(f"Codex stream error: {err_text}")
 
         elif method == "codex/event/error" or method == "error":
+            if self._is_subagent(
+                thread_id=params.get("threadId"),
+                turn_id=self._extract_turn_id(params),
+            ):
+                LOG.warning(
+                    f"Subagent error ignored for main thread "
+                    f"(threadId={params.get('threadId')}): {params}"
+                )
+                return
             error = params.get("error") or params.get("msg") or params
             err_text = self._parse_codex_error(error)
             await self._message_queue.put(
@@ -1496,6 +1539,7 @@ async def _list_codex_sessions_rpc(cli_path: str, cwd: Optional[str]) -> list:
             "sortDirection": "desc",
             "archived": False,
             "useStateDbOnly": True,
+            "limit": 100,
         }
         if cwd:
             list_params["cwd"] = cwd
@@ -1547,6 +1591,39 @@ def list_codex_sessions(cwd: Optional[str] = None) -> list:
     except Exception as e:
         LOG.warning(f"list_codex_sessions RPC failed: {e}")
         return []
+
+
+def _extract_codex_turn_entry(turn: Any) -> Optional[Dict[str, Optional[str]]]:
+    """Extract normalized prompt/response pair from a Codex turn payload."""
+    if not isinstance(turn, dict):
+        return None
+    prompt_parts = []
+    response_parts = []
+    for item in turn.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        itype = item.get("type")
+        if itype == "agentMessage":
+            text = item.get("text", "").strip()
+            if text:
+                response_parts.append(text)
+        elif itype == "userMessage":
+            texts = [
+                inp.get("text", "")
+                for inp in item.get("content", [])
+                if isinstance(inp, dict) and inp.get("type") == "text"
+            ]
+            text = "".join(texts).strip()
+            if text:
+                prompt_parts.append(text)
+
+    prompt = "\n\n".join(prompt_parts) or None
+    if not prompt:
+        return None
+    return {
+        "prompt": prompt,
+        "response": "\n\n".join(response_parts) or None,
+    }
 
 
 async def _get_codex_session_info_rpc(
@@ -1650,51 +1727,64 @@ async def _get_codex_session_info_rpc(
                         updated_at = float(t.get("updatedAt") or 0)
                         break
 
-        turns_params: Dict[str, Any] = {
-            "threadId": session_id,
-            "itemsView": "summary",
-            "sortDirection": "desc",
-        }
-        if history_limit > 0:
-            turns_params["limit"] = history_limit
-        turns_result = await rpc("thread/turns/list", turns_params)
+        turns_desc = []
+        cursor = None
+        seen_cursors: Set[str] = set()
+        saw_turns_page = False
 
-        raw_turns = []
-        if turns_result and isinstance(turns_result, dict) and "data" in turns_result:
-            raw_turns = list(reversed(turns_result.get("data", [])))
+        while True:
+            turns_params: Dict[str, Any] = {
+                "threadId": session_id,
+                "itemsView": "summary",
+                "sortDirection": "desc",
+            }
+            if history_limit > 0:
+                remaining = history_limit - len(turns_desc)
+                turns_params["limit"] = min(max(remaining, 1), 100)
+            else:
+                turns_params["limit"] = 100
+            if cursor:
+                turns_params["cursor"] = cursor
+
+            turns_result = await rpc("thread/turns/list", turns_params)
+            if (
+                not turns_result
+                or not isinstance(turns_result, dict)
+                or "data" not in turns_result
+            ):
+                break
+
+            saw_turns_page = True
+            for turn in turns_result.get("data", []):
+                entry = _extract_codex_turn_entry(turn)
+                if entry:
+                    turns_desc.append(entry)
+                    if history_limit > 0 and len(turns_desc) >= history_limit:
+                        break
+
+            if history_limit > 0 and len(turns_desc) >= history_limit:
+                break
+
+            next_cursor = turns_result.get("nextCursor")
+            if not next_cursor or next_cursor in seen_cursors:
+                break
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+        if saw_turns_page:
+            turns = list(reversed(turns_desc))
         elif thread.get("turns"):
             # Backward compatibility fallback: Fall back to hydrated thread.turns
-            raw_turns = thread.get("turns", [])
+            turns = []
+            for turn in thread.get("turns", []):
+                entry = _extract_codex_turn_entry(turn)
+                if entry:
+                    turns.append(entry)
+            if history_limit > 0:
+                turns = turns[-history_limit:]
+        else:
+            turns = []
 
-        turns = []
-        for turn in raw_turns:
-            prompt_parts = []
-            response_parts = []
-            for item in turn.get("items", []):
-                itype = item.get("type")
-                if itype == "agentMessage":
-                    text = item.get("text", "").strip()
-                    if text:
-                        response_parts.append(text)
-                elif itype == "userMessage":
-                    texts = [
-                        inp.get("text", "")
-                        for inp in item.get("content", [])
-                        if isinstance(inp, dict) and inp.get("type") == "text"
-                    ]
-                    text = "".join(texts).strip()
-                    if text:
-                        prompt_parts.append(text)
-
-            prompt = "\n\n".join(prompt_parts) or None
-            if prompt:
-                turns.append({
-                    "prompt": prompt,
-                    "response": "\n\n".join(response_parts) or None,
-                })
-
-        if history_limit > 0:
-            turns = turns[-history_limit:]
         last_turn = turns[-1] if turns else {}
 
         return {

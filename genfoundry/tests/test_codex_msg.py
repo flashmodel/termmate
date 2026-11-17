@@ -773,7 +773,8 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
             target_git_dir = os.path.join(temp_dir, "real_git_dir", "worktrees", "wt1")
             common_git_dir = os.path.join(temp_dir, "real_git_dir")
             os.makedirs(target_git_dir)
-            with open(os.path.join(worktree_dir, ".git"), "w") as f:
+            worktree_git_file = os.path.join(worktree_dir, ".git")
+            with open(worktree_git_file, "w") as f:
                 f.write(f"gitdir: {target_git_dir}\n")
             with open(os.path.join(target_git_dir, "commondir"), "w") as f:
                 f.write("../..\n")
@@ -783,6 +784,7 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
             self.assertIn(os.path.join(sub_dir, ".git"), dirs)
             self.assertIn(target_git_dir, dirs)
             self.assertIn(common_git_dir, dirs)
+            self.assertNotIn(worktree_git_file, dirs)
         finally:
             shutil.rmtree(temp_dir)
 
@@ -815,6 +817,40 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
             # Workspace with no git repo around
             dirs = find_git_dirs(temp_dir)
             self.assertEqual(dirs, [])
+        finally:
+            shutil.rmtree(temp_dir)
+
+    async def test_runtime_workspace_roots_includes_cwd(self):
+        """Verify runtimeWorkspaceRoots prepends cwd when git dirs or add_dirs are present."""
+        import tempfile
+        import shutil
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            root_git = os.path.join(temp_dir, ".git")
+            os.makedirs(root_git)
+            worktree_dir = os.path.join(temp_dir, "wt")
+            os.makedirs(worktree_dir)
+            target_git_dir = os.path.join(temp_dir, "real_git", "worktrees", "wt1")
+            os.makedirs(target_git_dir)
+            worktree_git_file = os.path.join(worktree_dir, ".git")
+            with open(worktree_git_file, "w") as f:
+                f.write(f"gitdir: {target_git_dir}\n")
+
+            fake_proc = FakeProcess()
+            opts = AgentOptions(cli_path="/usr/bin/true", cwd=temp_dir)
+            agent = await self._create_agent(fake_proc, opts=opts)
+            try:
+                start_call = next(
+                    c for c in self._rpc_calls if c.get("method") == "thread/start"
+                )
+                roots = start_call["params"].get("runtimeWorkspaceRoots", [])
+                self.assertEqual(roots[0], os.path.abspath(temp_dir))
+                self.assertIn(root_git, roots)
+                self.assertIn(target_git_dir, roots)
+                self.assertNotIn(worktree_git_file, roots)
+            finally:
+                await agent.disconnect()
         finally:
             shutil.rmtree(temp_dir)
 
@@ -1193,6 +1229,101 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
         finally:
             await agent.disconnect()
 
+    async def test_subagent_streams_do_not_pollute_main_thread(self):
+        """Verify subagent plan/token/delta/error events do not leak into main thread."""
+        fake_proc = FakeProcess()
+        opts = AgentOptions(cli_path="/usr/bin/true", plan_mode=True)
+        agent = await self._create_agent(fake_proc, opts=opts)
+        try:
+            await agent.send_message("Main task")
+            await self._collect_turn(agent)
+
+            turn_2_id = "turn-main-2"
+            sub_thread_id = "subthread-leak-1"
+            fake_proc.feed({
+                "method": "turn/started",
+                "params": {
+                    "threadId": "thread-001",
+                    "turn": {"id": turn_2_id, "rootTurnId": turn_2_id},
+                },
+            })
+
+            fake_proc.feed({
+                "method": "thread/started",
+                "params": {"thread": {"id": sub_thread_id}},
+            })
+            fake_proc.feed({
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": sub_thread_id,
+                    "turnId": "subturn-1",
+                    "tokenUsage": {"total": {"totalTokens": 9999}},
+                },
+            })
+            fake_proc.feed({
+                "method": "item/plan/delta",
+                "params": {
+                    "threadId": sub_thread_id,
+                    "turnId": "subturn-1",
+                    "itemId": "subplan-1",
+                    "delta": "SUBAGENT PLAN ",
+                },
+            })
+            fake_proc.feed({
+                "method": "item/agentMessage/delta",
+                "params": {
+                    "threadId": sub_thread_id,
+                    "turnId": "subturn-1",
+                    "itemId": "submsg-1",
+                    "delta": "Subagent stream chunk",
+                },
+            })
+            fake_proc.feed({
+                "method": "item/reasoning/textDelta",
+                "params": {
+                    "threadId": sub_thread_id,
+                    "turnId": "subturn-1",
+                    "itemId": "subthink-1",
+                    "delta": "Subagent thought",
+                },
+            })
+            fake_proc.feed({
+                "method": "error",
+                "params": {
+                    "threadId": sub_thread_id,
+                    "turnId": "subturn-1",
+                    "error": {"message": "Subagent transient error"},
+                },
+            })
+            fake_proc.feed({
+                "method": "item/plan/delta",
+                "params": {
+                    "threadId": "thread-001",
+                    "turnId": turn_2_id,
+                    "itemId": "mainplan-1",
+                    "delta": "Main plan",
+                },
+            })
+            fake_proc.feed({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-001",
+                    "turn": {"id": turn_2_id, "rootTurnId": turn_2_id},
+                },
+            })
+
+            messages = await self._collect_turn(agent)
+            types = [m.type for m in messages]
+            self.assertNotIn(MessageType.TOKEN_USAGE.value, types)
+            self.assertNotIn(MessageType.ERROR.value, types)
+            self.assertNotIn(MessageType.THINKING.value, types)
+            text_msgs = [m.content for m in messages if m.type == MessageType.TEXT.value]
+            self.assertNotIn("Subagent stream chunk", text_msgs)
+            plan_msgs = [m.content for m in messages if m.type == MessageType.PLAN_DELTA.value]
+            self.assertEqual(plan_msgs, ["Main plan"])
+        finally:
+            await agent.disconnect()
+
     async def test_thread_resume_exclude_turns_and_turns_list_hydration(self):
         """Verify thread/resume sends excludeTurns: True and hydrates via thread/turns/list."""
         fake_proc = FakeProcess()
@@ -1464,6 +1595,9 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
         init_req = next((r for r in written_requests if r.get("method") == "initialize"), None)
         self.assertIsNotNone(init_req)
         self.assertEqual(init_req["params"]["clientInfo"]["name"], "TermMate")
+        list_req = next((r for r in written_requests if r.get("method") == "thread/list"), None)
+        self.assertIsNotNone(list_req)
+        self.assertEqual(list_req["params"].get("limit"), 100)
         self.assertEqual(len(threads), 1)
         self.assertEqual(threads[0]["session_id"], "t1")
 
@@ -1550,6 +1684,143 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(info["summary"], "Thread 1")
         self.assertEqual(info["prompt"], "Hello")
         self.assertEqual(info["response"], "Hi there!")
+
+    async def test_get_codex_session_info_rpc_pagination(self):
+        """Verify _get_codex_session_info_rpc paginates via nextCursor in desc order."""
+        from genfoundry.codex_agent import _get_codex_session_info_rpc
+
+        def make_turn(tid, prompt, resp):
+            items = [{"type": "agentMessage", "text": resp}] if resp else []
+            if prompt is not None:
+                items.insert(0, {
+                    "type": "userMessage",
+                    "content": [{"type": "text", "text": prompt}],
+                })
+            return {"id": tid, "items": items}
+
+        fake_proc = FakeProcess()
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return fake_proc
+
+        turns_requests = []
+        original_write = fake_proc.stdin.write
+
+        def intercept_write(payload: bytes):
+            original_write(payload)
+            for line in payload.split(b"\n"):
+                if not line.strip():
+                    continue
+                data = json.loads(line.decode("utf-8"))
+                rid = data.get("id")
+                method = data.get("method")
+                if rid is None:
+                    continue
+                if method == "initialize":
+                    fake_proc.feed({"id": rid, "result": {"capabilities": {}}})
+                elif method == "thread/read":
+                    fake_proc.feed({
+                        "id": rid,
+                        "result": {"thread": {"id": "t1", "name": "Thread 1", "updatedAt": 1.0}},
+                    })
+                elif method == "thread/turns/list":
+                    turns_requests.append(data["params"])
+                    cursor = data["params"].get("cursor")
+                    if cursor is None:
+                        fake_proc.feed({
+                            "id": rid,
+                            "result": {
+                                "data": [
+                                    make_turn("turn-3", "Third", "Ans 3"),
+                                    make_turn("turn-empty", None, "Orphan"),
+                                    make_turn("turn-2", "Second", "Ans 2"),
+                                ],
+                                "nextCursor": "c-page-2",
+                            },
+                        })
+                    elif cursor == "c-page-2":
+                        fake_proc.feed({
+                            "id": rid,
+                            "result": {
+                                "data": [make_turn("turn-1", "First", "Ans 1")],
+                                "nextCursor": None,
+                            },
+                        })
+
+        fake_proc.stdin.write = intercept_write
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
+            info = await _get_codex_session_info_rpc(
+                "/usr/bin/codex", "t1", cwd="/workspace", history_limit=0
+            )
+
+        self.assertEqual(len(turns_requests), 2)
+        self.assertEqual(turns_requests[0]["limit"], 100)
+        self.assertNotIn("cursor", turns_requests[0])
+        self.assertEqual(turns_requests[1]["cursor"], "c-page-2")
+        self.assertEqual(
+            [t["prompt"] for t in info["turns"]],
+            ["First", "Second", "Third"],
+        )
+
+        # Positive history_limit continues fetching until enough valid prompt turns arrive
+        turns_requests.clear()
+        fake_proc_2 = FakeProcess()
+
+        async def fake_exec_limited(*args, **kwargs):
+            return fake_proc_2
+
+        orig_write_2 = fake_proc_2.stdin.write
+
+        def intercept_limited(payload: bytes):
+            orig_write_2(payload)
+            for line in payload.split(b"\n"):
+                if not line.strip():
+                    continue
+                data = json.loads(line.decode("utf-8"))
+                rid = data.get("id")
+                method = data.get("method")
+                if rid is None:
+                    continue
+                if method == "initialize":
+                    fake_proc_2.feed({"id": rid, "result": {"capabilities": {}}})
+                elif method == "thread/read":
+                    fake_proc_2.feed({"id": rid, "result": {"thread": {"id": "t1"}}})
+                elif method == "thread/turns/list":
+                    turns_requests.append(data["params"])
+                    if data["params"].get("cursor") is None:
+                        fake_proc_2.feed({
+                            "id": rid,
+                            "result": {
+                                "data": [
+                                    make_turn("turn-3", "Third", "Ans 3"),
+                                    make_turn("turn-empty", None, "Orphan"),
+                                ],
+                                "nextCursor": "c2",
+                            },
+                        })
+                    else:
+                        fake_proc_2.feed({
+                            "id": rid,
+                            "result": {
+                                "data": [
+                                    make_turn("turn-2", "Second", "Ans 2"),
+                                    make_turn("turn-1", "First", "Ans 1"),
+                                ],
+                                "nextCursor": None,
+                            },
+                        })
+
+        fake_proc_2.stdin.write = intercept_limited
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec_limited):
+            info_2 = await _get_codex_session_info_rpc(
+                "/usr/bin/codex", "t1", cwd="/workspace", history_limit=2
+            )
+
+        self.assertEqual(len(turns_requests), 2)
+        self.assertEqual(turns_requests[0]["limit"], 2)
+        self.assertEqual(turns_requests[1]["limit"], 1)
+        self.assertEqual([t["prompt"] for t in info_2["turns"]], ["Second", "Third"])
 
     async def test_unhandled_server_request_handling(self):
         """Verify unhandled server requests return decline for approvals and -32601 for others."""
