@@ -14,7 +14,7 @@ See TermMate agentic coding features — **[live demo here →](https://termmate
 TermMate's main agentic features include:
 
 - **autonomous coding workflow** - let agents explore your codebase, run commands, edit files, and complete tasks directly in Sublime Text.
-- **editor-native chat** - plan tasks, follow tool execution, approve agent actions, and review changes in an editor-native interface.
+- **editor-native chat** - a REPL-inspired chat view for planning tasks, tool execution, approving agent actions, and reviewing changes. It also supports inline LaTeX math.
 - **workspace awareness** - reference files, line ranges, selections, and multi-level directory paths with cascading smart `@` completion and sidebar actions.
 - **multi-tab chat thread** - run multiple independent conversations in parallel tabs (e.g. Main Chat and Task Threads) with isolated agent states.
 - **session management** - start fresh, resume previous conversations, or rewind and branch from earlier prompt.

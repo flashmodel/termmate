@@ -1,0 +1,12 @@
+TermMate 0.9.0
+==============
+
+- Inline Math in Chat
+  Renders common LaTeX expressions as Unicode, including inline math,
+  single-line block math, symbols, fractions, roots, and scripts. Code
+  spans, fenced code blocks, and multiline formulas are left unchanged.
+
+- Codex App Server v2
+  Adds support for the Codex app-server v2 JSON-RPC protocol, including
+  thread and turn handling, session resume, mid-turn steering, approval
+  prompts, and workspace sandbox configuration.
