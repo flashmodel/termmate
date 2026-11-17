@@ -333,6 +333,8 @@ def _reconnect_chat_view(view):
 
     # Don't draw the NBSP fold terminator appended after the artifact list
     view.settings().set("draw_unicode_white_space", "none")
+    view.settings().set("highlight_gutter", False)
+    view.settings().set("highlight_line", False)
 
     session = ChatSession(
         window, view, cwd, add_dirs=add_dirs, session_id=session_id, role=role
@@ -2343,6 +2345,8 @@ def _create_chat_view_and_session(
     chat_view.settings().set("fold_buttons", True)
     # Don't draw the NBSP fold terminator appended after the artifact list
     chat_view.settings().set("draw_unicode_white_space", "none")
+    chat_view.settings().set("highlight_gutter", False)
+    chat_view.settings().set("highlight_line", False)
     chat_view.settings().set(CHAT_VIEW_FLAG, True)
     chat_view.settings().set(CHAT_THREAD_LABEL, role.value)
 
