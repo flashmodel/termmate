@@ -1463,16 +1463,17 @@ class ChatSession:
         self.current_resp_start = None
         self.cwd = cwd
         self.add_dirs = add_dirs or []
+        self.table_phantoms = TablePhantomManager(self.chat_view)
         self.response_phantoms = ResponsePhantomManager(
             self.chat_view,
             max_width_getter=self._get_current_view_width,
             on_navigate_link=self._handle_response_link,
             default_raw_mode_getter=self.is_response_preview_default_raw,
             show_toolbar_getter=self.is_preview_toolbar_enabled,
+            table_manager=self.table_phantoms,
         )
         self._reset_markdown_formatter()
         self.loading_animation = LoadingAnimation(self.chat_view)
-        self.table_phantoms = TablePhantomManager(self.chat_view)
 
         self.notice_phantom = NoticePhantom(
             self.chat_view,
@@ -1614,6 +1615,12 @@ class ChatSession:
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
         return bool(settings.get("show_preview_toolbar", False))
 
+    def _should_format_tables(self):
+        """Format tables unless preview is enabled with destructive 'bordered' style."""
+        if not self.is_response_markdown_enabled():
+            return True
+        return self.markdown_formatter._get_table_style() != "bordered"
+
     def mark_response_start(self, pos):
         """Record the start offset of the active agent response body."""
         if self.current_resp_start is None and self.is_response_markdown_enabled():
@@ -1627,6 +1634,16 @@ class ChatSession:
             return
         if not self.chat_view:
             return
+        fmt = self.markdown_formatter
+        if fmt.remaining_text or fmt.table_buffer:
+            format_tables = self._should_format_tables()
+            tail = fmt.format("", flush=True, format_tables=format_tables)
+            tail_tables = fmt.take_html_tables() if format_tables else []
+            if tail:
+                self.chat_view.run_command(
+                    "term_chat_output_append",
+                    {"text": tail, "html_tables": tail_tables, "scroll": False},
+                )
         resp_end = get_input_start(self.chat_view, 0) - 1
         while resp_end > resp_start and self.chat_view.substr(resp_end - 1) == "\n":
             resp_end -= 1
@@ -1707,12 +1724,13 @@ class ChatSession:
                 f"{AGENT_SEPARATOR}\n\n{clean}"
                 if clean else f"{AGENT_SEPARATOR}\n\n"
             )
-        if self.is_response_markdown_enabled():
-            formatted_text = text.replace("\r\n", "\n") if text else ""
-            html_tables = []
-        else:
-            formatted_text = self.markdown_formatter.format(text, flush=flush)
-            html_tables = self.markdown_formatter.take_html_tables()
+        format_tables = self._should_format_tables()
+        formatted_text = self.markdown_formatter.format(
+            text or "", flush=flush, format_tables=format_tables
+        )
+        html_tables = (
+            self.markdown_formatter.take_html_tables() if format_tables else []
+        )
         if formatted_text:
             def _append(
                 ft=formatted_text,
@@ -2209,7 +2227,6 @@ class ChatSession:
         self._redraw_prompt_highlights()
 
         self.artifact.truncate(cut_point)
-        self.table_phantoms.truncate(cut_point)
         self.current_resp_start = None
         self.response_phantoms.truncate(cut_point)
         self.token_summary_phantom.clear()
@@ -2482,20 +2499,23 @@ class ChatSession:
                         {"text": f"\n{AGENT_SEPARATOR}\n\n", "scroll": False},
                     )
             if turn.get("response"):
-                resp_start = (
-                    get_input_start(self.chat_view, 0) - 3
-                    if has_prompt
-                    else get_input_start(self.chat_view, 0) - 1
-                )
                 if md_enabled:
-                    response = (turn["response"] + "\n\n\n").replace("\r\n", "\n")
-                    html_tables = []
-                else:
-                    formatter = self.markdown_formatter
-                    response = formatter.format(
-                        turn["response"] + "\n\n\n", flush=True
+                    resp_start = (
+                        get_input_start(self.chat_view, 0) - 3
+                        if has_prompt
+                        else get_input_start(self.chat_view, 0) - 1
                     )
-                    html_tables = formatter.take_html_tables()
+                formatter = self.markdown_formatter
+                formatter.reset()
+                format_tables = self._should_format_tables()
+                response = formatter.format(
+                    turn["response"] + "\n\n\n",
+                    flush=True,
+                    format_tables=format_tables,
+                )
+                html_tables = (
+                    formatter.take_html_tables() if format_tables else []
+                )
                 self.chat_view.run_command("term_chat_output_append", {
                     "text": response,
                     "html_tables": html_tables,

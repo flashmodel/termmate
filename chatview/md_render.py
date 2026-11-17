@@ -582,15 +582,19 @@ class MarkdownFormatter:
             + '</body>'
         )
 
-    def format(self, text, flush=False):
+    def format(self, text, flush=False, format_tables=True):
         """
         Process the incoming text chunk.
         If flush is True, it returns all buffered content formatted.
+        When format_tables is False, inline math is converted while keeping
+        raw Markdown table syntax intact for downstream preview rendering.
         """
         self._html_tables = []
 
         # Combine with leftover from previous chunk
-        combined_text = (self.remaining_text + text).expandtabs(4)
+        combined_text = (
+            (self.remaining_text + text).replace("\r\n", "\n").expandtabs(4)
+        )
 
         if not flush and combined_text and not combined_text.endswith('\n'):
             last_newline = combined_text.rfind('\n')
@@ -637,7 +641,8 @@ class MarkdownFormatter:
                 if stripped.startswith(('```', '~~~')):
                     char = stripped[0]
                     count = len(stripped) - len(stripped.lstrip(char))
-                    if count >= 3:
+                    info = stripped[count:].strip()
+                    if count >= 3 and not (char == '`' and '`' in info):
                         flush_buffer()
                         self.code_fence_char = char
                         self.code_fence_len = count
@@ -657,26 +662,18 @@ class MarkdownFormatter:
                 output_lines.append(line)
                 continue
 
-            line = render_inline_math(line)
-            stripped = line.strip()
+            if not stripped.startswith("⏺"):
+                line = render_inline_math(line)
+                stripped = line.strip()
 
             # Detect table rows - must start with | and have at least one more |
-            if stripped.startswith('|') and '|' in stripped[1:]:
+            if format_tables and stripped.startswith('|') and '|' in stripped[1:]:
                 self.table_buffer.append(line)
             else:
                 flush_buffer()
                 output_lines.append(line)
 
         if flush:
-            if self.remaining_text:
-                rem = (render_inline_math(self.remaining_text)
-                       if not self.in_code_block else self.remaining_text)
-                if rem.strip().startswith('|'):
-                    self.table_buffer.append(rem)
-                else:
-                    flush_buffer()
-                    output_lines.append(rem)
-                self.remaining_text = ""
             flush_buffer()
 
         if output_lines:
@@ -850,13 +847,30 @@ def preprocess_response_markdown(text, max_width=100):
     lines = text.expandtabs(4).split('\n')
     output = []
     table_buffer = []
+    tool_group = []
+    tool_group_spaced = False
+    last_emitted_was_tool = False
     in_code_block = False
     fence_char = None
     fence_len = 0
     in_diff_block = False
     after_tool_line = False
+    saw_blank_after_tool = False
+
+    def flush_tool_group():
+        nonlocal tool_group_spaced, last_emitted_was_tool
+        if not tool_group:
+            return
+        cls = "chat-tool-group-spaced" if tool_group_spaced else "chat-tool-group"
+        output.append('')
+        output.append(f'<div class="{cls}">\n' + '\n'.join(tool_group) + '\n</div>')
+        output.append('')
+        tool_group.clear()
+        tool_group_spaced = False
+        last_emitted_was_tool = True
 
     def flush_tables():
+        nonlocal last_emitted_was_tool
         if not table_buffer:
             return
         parsed = formatter._parse_table(table_buffer)
@@ -865,17 +879,21 @@ def preprocess_response_markdown(text, max_width=100):
             output.append(formatter._render_table_inner_html(parsed))
             output.append('')
         else:
-            output.extend(table_buffer)
+            output.extend(render_inline_math(t) for t in table_buffer)
         table_buffer.clear()
+        last_emitted_was_tool = False
 
-    for line in lines:
+    for idx, line in enumerate(lines):
         stripped = line.strip()
 
         if not in_code_block:
             if after_tool_line:
-                if stripped == "" or line.startswith("    "):
+                if stripped == "":
+                    saw_blank_after_tool = True
                     continue
-                after_tool_line = False
+                if line.startswith("    "):
+                    saw_blank_after_tool = False
+                    continue
 
             if stripped.startswith(('```', '~~~')):
                 char = stripped[0]
@@ -889,8 +907,15 @@ def preprocess_response_markdown(text, max_width=100):
                     lang = info.split(None, 1)[0].lower() if info else ""
                     if lang == "diff":
                         in_diff_block = True
+                        # An omitted diff belongs to the preceding tool call; only
+                        # blanks after the diff closes separate the next tool call.
+                        saw_blank_after_tool = False
                         continue
+                    after_tool_line = False
+                    saw_blank_after_tool = False
+                    flush_tool_group()
                     output.append(line)
+                    last_emitted_was_tool = False
                     continue
         else:
             if stripped.startswith(fence_char * fence_len):
@@ -905,20 +930,38 @@ def preprocess_response_markdown(text, max_width=100):
             if in_diff_block:
                 continue
             output.append(line)
+            last_emitted_was_tool = False
             continue
 
+        if stripped == "≡" and idx + 1 < len(lines):
+            next_stripped = lines[idx + 1].strip()
+            if next_stripped.startswith('|') and '|' in next_stripped[1:]:
+                continue
+
         if stripped.startswith('|') and '|' in stripped[1:]:
+            after_tool_line = False
+            saw_blank_after_tool = False
+            flush_tool_group()
             table_buffer.append(line)
         elif stripped.startswith("⏺"):
             flush_tables()
-            output.append('')
-            output.append(_render_tool_line_html(stripped))
-            output.append('')
+            if tool_group and saw_blank_after_tool:
+                flush_tool_group()
+            if not tool_group:
+                tool_group_spaced = last_emitted_was_tool
+            tool_group.append(_render_tool_line_html(stripped))
             after_tool_line = True
+            saw_blank_after_tool = False
         else:
+            after_tool_line = False
+            saw_blank_after_tool = False
+            flush_tool_group()
             flush_tables()
-            output.append(line)
+            output.append(render_inline_math(line))
+            if stripped:
+                last_emitted_was_tool = False
 
+    flush_tool_group()
     flush_tables()
 
     return normalize_markdown_list_indentation('\n'.join(output))

@@ -248,6 +248,32 @@ class TestMarkdownFormatterMathIntegration(unittest.TestCase):
         self.assertIn("π r²", out)
         self.assertNotIn("$\\pi", out)
 
+    def test_format_tables_false_converts_math_keeps_pipe_tables_and_protects_blocks(self):
+        formatter = MarkdownFormatter()
+        chunk1 = formatter.format(
+            "⋅⋅⋅\n\nComplexity $O(n^", flush=False, format_tables=False
+        )
+        self.assertEqual(chunk1, "⋅⋅⋅\n\n")
+        chunk2 = formatter.format(
+            "2)$ and loss \\( \\mathcal{L} \\)\n"
+            "$$\n\\int_0^\\infty f(x) dx\n$$\n"
+            "```python\nx = '$a$'\n```\n"
+            "⏺ Bash echo \"$a\" \"$b\"\n"
+            "| Concept | Math |\n"
+            "|---|---|\n"
+            "| Circle | $\\pi r^2$ |\n",
+            flush=True,
+            format_tables=False,
+        )
+        out = chunk1 + chunk2
+        self.assertEqual(formatter.take_html_tables(), [])
+        self.assertIn("Complexity O(n²) and loss ℒ", out)
+        self.assertIn("$$\n\\int_0^\\infty f(x) dx\n$$", out)
+        self.assertIn("x = '$a$'", out)
+        self.assertIn('⏺ Bash echo "$a" "$b"', out)
+        self.assertIn("| Concept | Math |\n|---|---|\n| Circle | π r² |", out)
+        self.assertNotIn("─", out)
+
 
 if __name__ == "__main__":
     unittest.main()

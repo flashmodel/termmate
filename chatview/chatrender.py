@@ -616,22 +616,15 @@ a.switch-target,
 
 BOTTOM_SWITCH_CSS = """
 .chat-raw-top-inline,
+.chat-raw-bottom-inline,
 .chat-preview-top-inline {
     margin: 0;
     padding: 0;
     line-height: 1;
 }
-.chat-raw-bottom-bar,
-.chat-switch-bar-bottom {
-    text-align: left;
-    margin: 0;
-    padding: 1px 0 2px 0;
-    line-height: 1.3;
-}
 .chat-raw-top-inline a,
+.chat-raw-bottom-inline a,
 .chat-preview-top-inline a,
-.chat-raw-bottom-bar a,
-.chat-switch-bar-bottom a,
 a.chat-toggle-link {
     text-decoration: none;
 }
@@ -651,6 +644,8 @@ a.switch-subtle,
 }
 .chat-raw-top-inline a.switch-subtle,
 .chat-raw-top-inline .switch-subtle,
+.chat-raw-bottom-inline a.switch-subtle,
+.chat-raw-bottom-inline .switch-subtle,
 .chat-preview-top-inline a.switch-subtle,
 .chat-preview-top-inline .switch-subtle {
     line-height: 1;
@@ -658,6 +653,11 @@ a.switch-subtle,
 .chat-raw-top-inline a.switch-subtle,
 .chat-raw-top-inline .switch-subtle {
     padding: 0 0.5em 0 1.4em;
+}
+.chat-raw-bottom-inline a.switch-subtle,
+.chat-raw-bottom-inline .switch-subtle {
+    padding: 0 0.4em 0 0.8em;
+    color: color(var(--cyanish) alpha(0.65));
 }
 .chat-preview-top-inline a.switch-subtle,
 .chat-preview-top-inline .switch-subtle {
@@ -679,13 +679,13 @@ div.termmate-response-preview,
 .mdpopups.termmate-response-preview,
 .termmate-response-preview {
     display: block;
-    border-top: 2px solid color(var(--foreground) alpha(0.20));
+    border-top: none;
     border-bottom: 1px solid color(var(--foreground) alpha(0.10));
     border-left: none;
     border-right: none;
-    background-color: color(var(--background) blend(var(--foreground) 95%));
-    padding: 0.45rem 0.85rem 0.6rem 0.85rem;
-    margin: 0.15rem 0 0.15rem 0;
+    background-color: var(--background);
+    padding: 0.45rem 0.85rem 0.25rem 0;
+    margin: 0.15rem 0 0 0;
     line-height: 1.35;
     font-size: 1rem;
 }
@@ -698,9 +698,21 @@ a code {
     color: var(--bluish);
     text-decoration: underline;
 }
+.termmate-response-preview .chat-tool-group,
+.chat-tool-group {
+    display: block;
+    margin: 0.5rem 0;
+    padding: 0;
+}
+.termmate-response-preview .chat-tool-group-spaced,
+.chat-tool-group-spaced {
+    display: block;
+    margin: 1.05rem 0 0.5rem 0;
+    padding: 0;
+}
 .termmate-response-preview .chat-tool-line,
 .chat-tool-line {
-    margin: 0.25rem 0;
+    margin: 0.12rem 0;
     font-family: monospace;
     font-size: 0.92em;
     color: var(--foreground);
@@ -766,16 +778,8 @@ div.termmate-response-switch-bar,
     padding: 2px 0 4px 0;
     line-height: 1.45rem;
 }
-.termmate-response-switch-bar .chat-switch-bar-bottom,
-.chat-switch-bar-bottom {
-    text-align: left;
-    margin: 0;
-    padding: 1px 0 2px 0;
-    line-height: 1.3rem;
-}
 .termmate-response-switch-bar a,
 .chat-switch-bar-top a,
-.chat-switch-bar-bottom a,
 a.chat-toggle-link {
     text-decoration: none;
 }
@@ -833,6 +837,30 @@ a.switch-subtle,
     text-decoration: none;
     line-height: 1.25rem;
 }
+div.mdpopups .termmate-response-preview .chat-card-footer,
+.termmate-response-preview .chat-card-footer,
+.chat-card-footer {
+    display: block;
+    text-align: left;
+    margin: 0;
+    padding: 0;
+    line-height: 1.0rem;
+}
+div.mdpopups .termmate-response-preview .chat-card-footer a.switch-subtle,
+.termmate-response-preview .chat-card-footer a.switch-subtle,
+.chat-card-footer a.switch-subtle {
+    display: inline-block;
+    margin: 0;
+    padding: 0 10px 0 0;
+    border: none;
+    border-radius: 2px;
+    font-size: 1.05rem;
+    font-family: var(--font-mono);
+    color: color(var(--cyanish) alpha(0.65));
+    background-color: transparent;
+    text-decoration: none;
+    line-height: 1.05rem;
+}
 """
 
 PREVIEW_CARD_CSS = PREVIEW_SWITCH_CSS + RESPONSE_CSS
@@ -867,8 +895,8 @@ def _render_switch_html(key, is_raw=True, is_top=True, show_toolbar=False):
     return f'<span class="switch-pill">{left}{right}</span>'
 
 
-def _inline_top_phantom_html(body_id, span_cls, switch_html, css):
-    """Wrap a top switch link for native minihtml LAYOUT_INLINE phantom rendering."""
+def _inline_phantom_html(body_id, span_cls, switch_html, css):
+    """Wrap a switch link for native minihtml LAYOUT_INLINE phantom rendering."""
     return (
         f'<body id="{body_id}" style="margin:0;padding:0;">'
         f"<style>{css}</style>"
@@ -882,42 +910,49 @@ def _raw_toggle_html(key, is_top=True, show_toolbar=False, inline=None):
     switch_html = _render_switch_html(
         key, is_raw=True, is_top=is_top, show_toolbar=show_toolbar
     )
-    if is_top:
-        is_inline = (not show_toolbar) if inline is None else bool(inline)
-        if is_inline:
-            inline_css = SWITCH_CSS if show_toolbar else BOTTOM_SWITCH_CSS
-            return _inline_top_phantom_html(
-                "chatview-raw-toggle-top",
-                "chat-raw-top-inline",
-                switch_html,
-                inline_css,
-            )
-        top_css = TOP_SWITCH_CSS if show_toolbar else SWITCH_CSS
-        return (
-            '<body id="chatview-raw-toggle-top" style="margin:0;padding:2px 0 6px 0;">'
-            f"<style>{top_css}</style>"
-            f'<div class="chat-raw-top-bar">{switch_html}</div>'
-            "</body>"
+    if not is_top:
+        return _inline_phantom_html(
+            "chatview-raw-toggle-bottom",
+            "chat-raw-bottom-inline",
+            switch_html,
+            BOTTOM_SWITCH_CSS,
         )
+    is_inline = (not show_toolbar) if inline is None else bool(inline)
+    if is_inline:
+        inline_css = SWITCH_CSS if show_toolbar else BOTTOM_SWITCH_CSS
+        return _inline_phantom_html(
+            "chatview-raw-toggle-top",
+            "chat-raw-top-inline",
+            switch_html,
+            inline_css,
+        )
+    top_css = TOP_SWITCH_CSS if show_toolbar else SWITCH_CSS
     return (
-        '<body id="chatview-raw-toggle-bottom" style="margin:0;padding:1px 0 2px 0;">'
-        f"<style>{BOTTOM_SWITCH_CSS}</style>"
-        f'<div class="chat-raw-bottom-bar">{switch_html}</div>'
+        '<body id="chatview-raw-toggle-top" style="margin:0;padding:2px 0 6px 0;">'
+        f"<style>{top_css}</style>"
+        f'<div class="chat-raw-top-bar">{switch_html}</div>'
         "</body>"
     )
 
 
-def _preview_toggle_html(key, is_top=True, show_toolbar=False):
-    """Build a switch bar fragment for a combined preview card phantom."""
+def _preview_toggle_html(key, show_toolbar=False):
+    """Build a top switch bar fragment for a combined preview card phantom."""
     pill_html = _render_switch_html(
-        key, is_raw=False, is_top=is_top, show_toolbar=show_toolbar
+        key, is_raw=False, is_top=True, show_toolbar=show_toolbar
     )
-    bar_cls = "chat-switch-bar-top" if is_top else "chat-switch-bar-bottom"
     return (
         '<div class="termmate-response-switch-bar">'
-        f'<div class="{bar_cls}">{pill_html}</div>'
+        f'<div class="chat-switch-bar-top">{pill_html}</div>'
         "</div>"
     )
+
+
+def _preview_footer_html(key):
+    """Build an inside-card bottom switch footer for a preview card."""
+    switch_html = _render_switch_html(
+        key, is_raw=False, is_top=False, show_toolbar=False
+    )
+    return f'<div class="chat-card-footer">{switch_html}</div>'
 
 
 def _preview_top_inline_html(key):
@@ -925,7 +960,7 @@ def _preview_top_inline_html(key):
     switch_html = _render_switch_html(
         key, is_raw=False, is_top=True, show_toolbar=False
     )
-    return _inline_top_phantom_html(
+    return _inline_phantom_html(
         "chatview-preview-toggle-top",
         "chat-preview-top-inline",
         switch_html,
@@ -952,12 +987,14 @@ class ResponsePhantomManager:
         on_navigate_link=None,
         default_raw_mode_getter=None,
         show_toolbar_getter=None,
+        table_manager=None,
     ):
         self.view = view
         self.max_width_getter = max_width_getter
         self.on_navigate_link = on_navigate_link
         self.default_raw_mode_getter = default_raw_mode_getter
         self.show_toolbar_getter = show_toolbar_getter
+        self.table_manager = table_manager
         self.entries = []
         self.next_id = 0
         self.raw_phantom_sets = {}
@@ -1020,6 +1057,8 @@ class ResponsePhantomManager:
         self.view.unfold(region)
         if not raw_mode:
             self.view.fold(region)
+        if self.table_manager is not None:
+            self.table_manager.sync_response_region(region, raw_mode)
 
     def add(self, region, md_text, raw_mode=None):
         """Register the agent response region and render its toggle/preview phantoms."""
@@ -1278,16 +1317,14 @@ class ResponsePhantomManager:
         if show_toolbar is None:
             show_toolbar = self._resolve_show_toolbar()
         body_html = self._render_preview_body_html(entry)
-        preview_block = f'<div class="termmate-response-preview">{body_html}</div>'
+        footer_html = _preview_footer_html(key)
+        preview_block = (
+            f'<div class="termmate-response-preview">{body_html}{footer_html}</div>'
+        )
         if include_top:
-            top_bar = _preview_toggle_html(key, is_top=True, show_toolbar=show_toolbar)
-            preview_section = f"{top_bar}{preview_block}"
-        else:
-            preview_section = (
-                f'<div class="termmate-response-top-spacer">{preview_block}</div>'
-            )
-        bot_bar = _preview_toggle_html(key, is_top=False)
-        return f"{preview_section}{bot_bar}"
+            top_bar = _preview_toggle_html(key, show_toolbar=show_toolbar)
+            return f"{top_bar}{preview_block}"
+        return f'<div class="termmate-response-top-spacer">{preview_block}</div>'
 
     @staticmethod
     def _clear_phantom_set(store, key):
@@ -1362,6 +1399,31 @@ class ResponsePhantomManager:
         ):
             self._clear_phantom_set(store, key)
 
+    def _raw_bottom_anchor(self, region):
+        """Return zero-width region at the end of the last non-blank line."""
+        end = region.end()
+        if hasattr(self.view, "substr"):
+            pt = end
+            probe = self.view.substr(pt - 1) if pt > region.begin() else ""
+            if probe:
+                while pt > region.begin():
+                    ch = self.view.substr(pt - 1)
+                    if not ch or not ch.isspace():
+                        break
+                    pt -= 1
+                last_pt = (
+                    max(region.begin(), pt - 1)
+                    if pt > region.begin()
+                    else region.begin()
+                )
+                line_end = (
+                    self.view.line(last_pt).end()
+                    if hasattr(self.view, "line")
+                    else pt
+                )
+                return sublime.Region(line_end, line_end)
+        return sublime.Region(end, end)
+
     def _update_entry(self, entry, defer_fold=None):
         if not self.is_available or not self.view:
             return False
@@ -1379,14 +1441,12 @@ class ResponsePhantomManager:
             self._pending_preview_folds.discard(key)
             self._clear_phantom_set(self.preview_phantom_sets, key)
             self._clear_phantom_set(self.preview_top_phantom_sets, key)
-            bot_pt = region.end()
-            bot_anchor = sublime.Region(bot_pt, bot_pt)
             phantoms = [
                 self._build_raw_top_phantom(key, region, show_toolbar),
                 sublime.Phantom(
-                    bot_anchor,
+                    self._raw_bottom_anchor(region),
                     _raw_toggle_html(key, is_top=False),
-                    sublime.LAYOUT_BLOCK,
+                    sublime.LAYOUT_INLINE,
                     on_navigate=self._on_navigate,
                 ),
             ]
@@ -1467,6 +1527,8 @@ class ResponsePhantomManager:
                     self.view.unfold(regions[0])
                 self.view.erase_regions(key)
         self.entries = kept
+        if self.table_manager is not None:
+            self.table_manager.truncate(cut_point)
 
     def clear(self):
         """Unfold and remove all response regions and phantoms."""
@@ -1478,3 +1540,5 @@ class ResponsePhantomManager:
                 self.view.unfold(regions[0])
             self.view.erase_regions(key)
         self.entries = []
+        if self.table_manager is not None:
+            self.table_manager.clear()
