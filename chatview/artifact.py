@@ -16,6 +16,7 @@ ARTIFACT_REGION_KEY = "chatview_artifact_files"
 ARTIFACT_REGION_SCOPE = "region.bluish"
 ARTIFACT_REGION_FLAGS = sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE | sublime.HIDDEN
 DIFF_VIEW_PATH_KEY = diffview.DIFF_VIEW_PATH_KEY
+FILES_HEADER_RE = re.compile(r"^▣ \d+ files? changed$")
 
 
 def diff_view_click(view, abs_path, click_point):
@@ -243,6 +244,12 @@ class FileChangesArtifact:
             for folded in self.view.folded_regions():
                 if folded.contains(point):
                     return False
+
+        # Double-click on the "▣ N files changed" header expands its folded file list
+        line = self.view.line(point)
+        if FILES_HEADER_RE.match(self.view.substr(line)):
+            self.view.unfold(sublime.Region(line.end(), line.end() + 1))
+            return True
 
         for region, abs_path, item, action in self.plan_regions:
             if region.contains(point):
