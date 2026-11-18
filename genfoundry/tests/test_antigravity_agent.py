@@ -15,6 +15,7 @@ from genfoundry.antigravity_agent import (
     find_antigravity_cli,
     list_antigravity_sessions,
     get_antigravity_session_tail,
+    truncate_antigravity_session,
     _clean_antigravity_prompt,
     _get_transcript_paths,
     _get_base_dir,
@@ -256,6 +257,25 @@ class TestAntigravityAgentEvents(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0].type, "thinking")
         self.assertEqual(messages[0].content, "Analyzing the codebase...")
+
+    async def test_user_input_event_emits_user_message_id(self):
+        event = {
+            "event": "step_update",
+            "conversation_id": "test-session-abc",
+            "step_index": 1870,
+            "step_type": "user_input",
+            "state": "DONE",
+        }
+        await self.agent._handle_json_event(event)
+
+        messages = await self._messages()
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].type, "user_message_id")
+        self.assertEqual(messages[0].id, "1870")
+        self.assertEqual(
+            messages[0].content,
+            {"message_id": "1870", "step_index": 1870},
+        )
 
     async def test_tool_start_and_complete(self):
         start_event = {
@@ -1516,6 +1536,110 @@ class TestAntigravityMetadataAndSessionDiscovery(unittest.TestCase):
                 self.assertIn("rel-sess", sessions)
             finally:
                 os.chdir(orig_cwd)
+
+
+class TestAntigravityRewind(unittest.IsolatedAsyncioTestCase):
+    def test_truncate_antigravity_session(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_dir = os.path.join(tmp_dir, "brain", "sess-1", ".system_generated", "logs")
+            chunks_dir = os.path.join(log_dir, "chunks")
+            os.makedirs(chunks_dir, exist_ok=True)
+            with open(os.path.join(chunks_dir, "chunk_0"), "w") as f:
+                f.write("chunk cache")
+
+            records = [
+                {"step_index": 0, "type": "USER_INPUT", "content": "prompt 1"},
+                {"step_index": 1, "type": "PLANNER_RESPONSE", "content": "response 1"},
+                {"step_index": 2, "type": "USER_INPUT", "content": "prompt 2"},
+                {"step_index": 3, "type": "PLANNER_RESPONSE", "content": "response 2"},
+            ]
+            full_path = os.path.join(log_dir, "transcript_full.jsonl")
+            compact_path = os.path.join(log_dir, "transcript.jsonl")
+            with open(full_path, "w") as f:
+                for r in records:
+                    f.write(json.dumps(r) + "\n")
+            with open(compact_path, "w") as f:
+                for r in records:
+                    f.write(json.dumps(r) + "\n")
+
+            # Setup dummy session db
+            conv_dir = os.path.join(tmp_dir, "conversations")
+            os.makedirs(conv_dir, exist_ok=True)
+            sess_db = os.path.join(conv_dir, "sess-1.db")
+            with sqlite3.connect(sess_db) as conn:
+                cur = conn.cursor()
+                cur.execute("CREATE TABLE steps (idx integer PRIMARY KEY, payload text)")
+                cur.execute("CREATE TABLE gen_metadata (idx integer PRIMARY KEY, data text)")
+                cur.execute("CREATE TABLE executor_metadata (idx integer PRIMARY KEY, data text)")
+                for i in range(4):
+                    cur.execute("INSERT INTO steps VALUES (?, ?)", (i, f"step {i}"))
+                    cur.execute("INSERT INTO gen_metadata VALUES (?, ?)", (i, f"meta {i}"))
+                    cur.execute("INSERT INTO executor_metadata VALUES (?, ?)", (i, f"exec {i}"))
+                conn.commit()
+
+            # Setup dummy conversation_summaries.db
+            sum_db = os.path.join(tmp_dir, "conversation_summaries.db")
+            with sqlite3.connect(sum_db) as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "CREATE TABLE conversation_summaries "
+                    "(conversation_id text PRIMARY KEY, step_count integer)"
+                )
+                cur.execute(
+                    "INSERT INTO conversation_summaries VALUES (?, ?)",
+                    ("sess-1", 4),
+                )
+                conn.commit()
+
+            with patch("genfoundry.antigravity_agent._get_base_dir", return_value=tmp_dir):
+                truncate_antigravity_session("sess-1", target_step_index=2)
+
+            self.assertFalse(os.path.exists(chunks_dir))
+
+            for p in (full_path, compact_path):
+                with open(p, "r") as f:
+                    lines = [json.loads(l) for l in f if l.strip()]
+                self.assertEqual(len(lines), 2)
+                self.assertEqual(lines[0]["step_index"], 0)
+                self.assertEqual(lines[1]["step_index"], 1)
+
+            # Verify session DB pruned idx >= 2
+            with sqlite3.connect(sess_db) as conn:
+                cur = conn.cursor()
+                for tbl in ("steps", "gen_metadata", "executor_metadata"):
+                    cur.execute(f"SELECT idx FROM {tbl} ORDER BY idx")
+                    idxs = [r[0] for r in cur.fetchall()]
+                    self.assertEqual(idxs, [0, 1])
+
+            # Verify summary DB updated step_count
+            with sqlite3.connect(sum_db) as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT step_count FROM conversation_summaries WHERE conversation_id = ?",
+                    ("sess-1",),
+                )
+                self.assertEqual(cur.fetchone()[0], 2)
+
+    async def test_agent_rewind_calls_truncate_and_returns_sid(self):
+        opts = AgentOptions(cli_path="/mock/bin/agy", session_id="sess-xyz")
+        agent = AntigravityAgent(options=opts)
+        agent._is_connected = True
+        agent.process = AsyncMock()
+
+        with patch.object(agent, "_terminate_subprocess", new_callable=AsyncMock) as mock_term, \
+             patch("genfoundry.antigravity_agent.truncate_antigravity_session") as mock_trunc:
+            returned_sid = await agent.rewind("5")
+
+            mock_term.assert_awaited_once()
+            mock_trunc.assert_called_once_with("sess-xyz", 5)
+            self.assertEqual(returned_sid, "sess-xyz")
+            self.assertEqual(agent.session_id, "sess-xyz")
+
+    async def test_agent_rewind_invalid_step_raises_runtime_error(self):
+        opts = AgentOptions(cli_path="/mock/bin/agy", session_id="sess-xyz")
+        agent = AntigravityAgent(options=opts)
+        with self.assertRaises(RuntimeError):
+            await agent.rewind("not-a-step-number")
 
 
 if __name__ == "__main__":

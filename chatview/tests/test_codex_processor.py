@@ -535,6 +535,22 @@ class TestThinkPresets(unittest.TestCase):
         self.assertEqual(session.available_models[0]["value"], "gemini-3.8-flash")
         self.assertEqual(session.available_models[0]["annotation"], "Reasoning")
 
+    def test_antigravity_attaches_user_message_id_to_prompt(self):
+        session = SimpleNamespace(
+            agent_thread=SimpleNamespace(cwd="/workspace"),
+            cwd="/workspace",
+            available_models=[],
+            update_last_prompt_uuid=MagicMock(),
+        )
+        processor = AntigravityMessageProcessor(session)
+        msg = SimpleNamespace(
+            type="user_message_id",
+            content={"message_id": "1870", "step_index": 1870},
+        )
+        processor.handle_message(msg)
+        session.update_last_prompt_uuid.assert_called_once_with("1870")
+        self.assertEqual(processor._active_turn_id, "1870")
+
     def test_antigravity_tool_formatting(self):
         session = SimpleNamespace(
             agent_thread=SimpleNamespace(cwd="/workspace"),

@@ -37,6 +37,7 @@ from .antigravity_agent import (
     query as antigravity_query,
     list_antigravity_sessions,
     get_antigravity_session_tail,
+    truncate_antigravity_session,
 )
 
 __all__ = [
@@ -72,4 +73,5 @@ __all__ = [
     "antigravity_query",
     "list_antigravity_sessions",
     "get_antigravity_session_tail",
+    "truncate_antigravity_session",
 ]

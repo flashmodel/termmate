@@ -636,7 +636,17 @@ class AntigravityAgent(BaseAgent):
                 self._last_step_usage = usage
                 self._turn_step_usages.append(usage)
 
-            if step_type == "agent_response":
+            if (step_type or "").lower() == "user_input":
+                messages.append(
+                    Message(
+                        "user_message_id",
+                        content={"message_id": msg_id, "step_index": step_index},
+                        msg_id=msg_id,
+                        raw_data=step_update,
+                    )
+                )
+
+            elif step_type == "agent_response":
                 text_delta = step_update.get("text_delta") or step_update.get("content")
                 if text_delta:
                     messages.append(
@@ -932,6 +942,33 @@ class AntigravityAgent(BaseAgent):
         # Immediately enqueue stop message so UI stops loading animation
         await self._message_queue.put(Message("stop"))
 
+    async def rewind(self, user_message_id: str) -> Optional[str]:
+        """
+        Rewind conversation in-place to just before the turn identified by user_message_id.
+        user_message_id is the step_index of the prompt.
+        """
+        sid = self.options.session_id or self._session_id
+        if not sid:
+            raise RuntimeError("No active Antigravity session ID to rewind.")
+
+        try:
+            target_step = int(user_message_id)
+        except (ValueError, TypeError):
+            raise RuntimeError(f"Invalid Antigravity step identifier: {user_message_id}")
+
+        if self.process:
+            await self._terminate_subprocess()
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None, truncate_antigravity_session, sid, target_step
+        )
+
+        LOG.info(
+            f"[rewind] Antigravity in-place truncated session {sid} before step {target_step}"
+        )
+        return sid
+
     async def _terminate_subprocess(self) -> None:
         """Cleanly terminate and detach the current CLI process, reader tasks, and drop residual messages."""
         if self._read_task and not self._read_task.done():
@@ -1036,6 +1073,84 @@ def _get_transcript_paths(session_id: str) -> List[str]:
         # Compact transcript log fallback (token-optimized, contains <truncated N bytes>)
         os.path.join(_get_base_dir(), "brain", session_id, ".system_generated", "logs", "transcript.jsonl"),
     ]
+
+
+def truncate_antigravity_session(session_id: str, target_step_index: int) -> None:
+    """Truncate conversation transcript logs and databases in-place up to target_step_index."""
+    base_dir = _get_base_dir()
+    log_dir = os.path.join(base_dir, "brain", session_id, ".system_generated", "logs")
+    if os.path.isdir(log_dir):
+        for name in ("transcript_full.jsonl", "transcript.jsonl"):
+            file_path = os.path.join(log_dir, name)
+            if not os.path.isfile(file_path):
+                continue
+            try:
+                retained = []
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        line_s = line.strip()
+                        if not line_s:
+                            continue
+                        try:
+                            record = json.loads(line_s)
+                            if record.get("step_index", 0) < target_step_index:
+                                retained.append(line_s + "\n")
+                        except Exception:
+                            continue
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.writelines(retained)
+            except Exception as e:
+                LOG.warning(f"[rewind] Failed to truncate {file_path}: {e}")
+
+        # Remove chunk caches to prevent offset mismatch in virtual scrolling
+        chunks_dir = os.path.join(log_dir, "chunks")
+        if os.path.isdir(chunks_dir):
+            shutil.rmtree(chunks_dir, ignore_errors=True)
+
+    # 1. Prune session SQLite DB to prevent PRIMARY KEY collisions on steps.idx
+    session_db_candidates = [
+        os.path.join(base_dir, "conversations", f"{session_id}.db"),
+        os.path.join(
+            os.path.expanduser("~"),
+            ".gemini",
+            "antigravity-ide",
+            "conversations",
+            f"{session_id}.db",
+        ),
+    ]
+    for db_path in session_db_candidates:
+        if not os.path.isfile(db_path):
+            continue
+        try:
+            with closing(sqlite3.connect(db_path, timeout=3.0)) as conn:
+                with conn:
+                    cur = conn.cursor()
+                    for tbl in ("steps", "gen_metadata", "executor_metadata"):
+                        try:
+                            cur.execute(
+                                f"DELETE FROM {tbl} WHERE idx >= ?",
+                                (target_step_index,),
+                            )
+                        except sqlite3.OperationalError:
+                            pass
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            LOG.info(f"[rewind] Pruned session database: {db_path} (idx >= {target_step_index})")
+        except Exception as e:
+            LOG.warning(f"[rewind] Failed to prune session db {db_path}: {e}")
+
+    # 2. Synchronize step_count in conversation_summaries.db (simplified single-query update)
+    sum_db = os.path.join(base_dir, "conversation_summaries.db")
+    if os.path.isfile(sum_db):
+        try:
+            with closing(sqlite3.connect(sum_db, timeout=3.0)) as conn:
+                with conn:
+                    conn.execute(
+                        "UPDATE conversation_summaries SET step_count = ? "
+                        "WHERE conversation_id = ?",
+                        (target_step_index, session_id),
+                    )
+        except Exception as e:
+            LOG.warning(f"[rewind] Failed to update summary db {sum_db}: {e}")
 
 
 def _clean_antigravity_prompt(content: str) -> str:

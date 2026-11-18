@@ -1814,6 +1814,13 @@ class AntigravityMessageProcessor(BaseChatMessageProcessor):
                 self._sync_user_artifacts(hint_path=target, content_fallback=code_fallback)
             self._record_tool_file_change(content_data)
 
+        elif message.type == "user_message_id":
+            content = message.content if isinstance(message.content, dict) else {}
+            message_id = content.get("message_id")
+            if message_id is not None:
+                self._active_turn_id = str(message_id)
+                self.session.update_last_prompt_uuid(str(message_id))
+
         elif message.type == "system":
             content = message.content if isinstance(message.content, dict) else {}
             session_id = content.get("session_id")
