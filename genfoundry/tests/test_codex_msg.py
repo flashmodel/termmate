@@ -1905,6 +1905,9 @@ class TestCodexCliDiscovery(unittest.TestCase):
             agent = CodexAgent(AgentOptions(cli_path="/nonexistent/custom-codex"))
             self.assertEqual(agent.cli_path, "/nonexistent/custom-codex")
 
+        with patch("genfoundry.codex_agent.find_codex_cli", return_value=None):
+            self.assertEqual(CodexAgent().cli_path, "codex")
+
     def test_windows_prefers_native_openai_codex_over_npm(self):
         """Windows discovery checks native OpenAI Codex install before npm."""
         import stat

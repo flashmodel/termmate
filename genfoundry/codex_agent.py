@@ -156,7 +156,7 @@ class CodexAgent(BaseAgent):
         super().__init__(options)
         self.thread_id: Optional[str] = None
         resolved = find_codex_cli(self.options.cli_path, extra_env=self.options.extra_env)
-        self.cli_path = resolved or self.options.cli_path
+        self.cli_path = resolved or self.options.cli_path or "codex"
         self._is_connected = False
         self.available_models: List[Dict[str, Any]] = []
 
