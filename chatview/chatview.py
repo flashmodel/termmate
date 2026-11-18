@@ -2509,7 +2509,8 @@ class TermChatSendInputCommand(sublime_plugin.TextCommand):
             return
 
         editable_start = input_editable_start(self.view)
-        user_input = self.view.substr(sublime.Region(editable_start, self.view.size())).strip()
+        raw_region = sublime.Region(editable_start, self.view.size())
+        user_input = self.view.substr(raw_region).rstrip()
 
         if not user_input:
             return
@@ -2518,6 +2519,8 @@ class TermChatSendInputCommand(sublime_plugin.TextCommand):
             sublime.status_message("Sending... (Cmd+Esc to stop)")
         else:
             sublime.status_message("Sending... (Shift+Esc to stop)")
+
+        self.view.replace(edit, raw_region, user_input)
 
         # Materialize the phantom marker as text so the transcript keeps the
         # "❯ " prefix (replay and rewind cut_point math rely on it)
