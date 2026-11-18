@@ -1870,5 +1870,171 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
                 await agent.disconnect()
 
 
+class TestCodexCliDiscovery(unittest.TestCase):
+    """Tests for Codex CLI path resolution and settings/env propagation."""
+
+    def test_explicit_cli_path_resolution(self):
+        """Explicit cli_path resolves file paths, ~/ paths, and PATH names."""
+        import stat
+        import tempfile
+        from genfoundry.codex_agent import find_codex_cli
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom_bin = os.path.join(tmpdir, "custom-codex")
+            with open(custom_bin, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\n")
+            os.chmod(custom_bin, os.stat(custom_bin).st_mode | stat.S_IXUSR)
+
+            with patch("genfoundry.codex_agent.shutil.which", return_value=None):
+                self.assertEqual(find_codex_cli(custom_bin), custom_bin)
+                with patch.dict(os.environ, {"HOME": tmpdir}):
+                    self.assertEqual(find_codex_cli("~/custom-codex"), custom_bin)
+
+            found_via_env = find_codex_cli("custom-codex", extra_env={"PATH": tmpdir})
+            self.assertEqual(found_via_env, custom_bin)
+
+    def test_explicit_invalid_cli_path_does_not_fallback(self):
+        """Invalid explicit cli_path never falls back to system codex."""
+        from genfoundry.codex_agent import find_codex_cli
+
+        def fake_which(cmd):
+            return "/usr/local/bin/codex" if cmd == "codex" else None
+
+        with patch("genfoundry.codex_agent.shutil.which", side_effect=fake_which):
+            self.assertIsNone(find_codex_cli("/nonexistent/custom-codex"))
+            agent = CodexAgent(AgentOptions(cli_path="/nonexistent/custom-codex"))
+            self.assertEqual(agent.cli_path, "/nonexistent/custom-codex")
+
+    def test_windows_prefers_native_openai_codex_over_npm(self):
+        """Windows discovery checks native OpenAI Codex install before npm."""
+        import stat
+        import tempfile
+        from genfoundry.codex_agent import find_codex_cli
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_app = os.path.join(tmpdir, "local")
+            roaming_app = os.path.join(tmpdir, "roaming")
+
+            native_bin = os.path.join(
+                local_app, "Programs", "OpenAI", "Codex", "bin", "codex.exe"
+            )
+            npm_cmd = os.path.join(roaming_app, "npm", "codex.cmd")
+            os.makedirs(os.path.dirname(native_bin), exist_ok=True)
+            os.makedirs(os.path.dirname(npm_cmd), exist_ok=True)
+            for path_str in (native_bin, npm_cmd):
+                with open(path_str, "w", encoding="utf-8") as f:
+                    f.write("")
+                os.chmod(path_str, os.stat(path_str).st_mode | stat.S_IXUSR)
+
+            env_vars = {"LOCALAPPDATA": local_app, "APPDATA": roaming_app}
+            with patch("genfoundry.codex_agent.sys.platform", "win32"), \
+                 patch("genfoundry.codex_agent.shutil.which", return_value=None), \
+                 patch.dict(os.environ, env_vars, clear=False):
+                self.assertEqual(find_codex_cli(), native_bin)
+                os.unlink(native_bin)
+                self.assertEqual(find_codex_cli(), npm_cmd)
+
+    def test_extra_env_path_used_in_default_discovery(self):
+        """find_codex_cli searches extra_env['PATH'] when cli_path is omitted."""
+        import stat
+        import tempfile
+        from genfoundry.codex_agent import find_codex_cli
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin_path = os.path.join(tmpdir, "codex")
+            with open(bin_path, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\n")
+            os.chmod(bin_path, os.stat(bin_path).st_mode | stat.S_IXUSR)
+
+            with patch.dict(os.environ, {"PATH": ""}, clear=False):
+                found = find_codex_cli(extra_env={"PATH": tmpdir})
+                self.assertEqual(found, bin_path)
+
+    def test_list_and_info_propagate_cli_path_and_extra_env(self):
+        """list_codex_sessions & get_codex_session_info forward cli_path/env."""
+        from genfoundry.codex_agent import (
+            list_codex_sessions,
+            get_codex_session_info,
+        )
+
+        captured = {}
+
+        async def fake_list_rpc(cli_path, cwd, extra_env=None):
+            captured["list"] = (cli_path, cwd, extra_env)
+            return [{"session_id": "t1", "summary": "S", "updated_at": 1.0}]
+
+        async def fake_info_rpc(
+            cli_path, session_id, cwd, history_limit, extra_env=None
+        ):
+            captured["info"] = (cli_path, session_id, cwd, history_limit, extra_env)
+            return {"summary": "S", "updated_at": 1.0, "turns": [],
+                    "prompt": None, "response": None}
+
+        custom_env = {"CODEX_HOME": "/tmp/custom-codex-home"}
+        with patch("genfoundry.codex_agent.find_codex_cli",
+                   return_value="/opt/codex/bin/codex") as mock_find, \
+             patch("genfoundry.codex_agent._list_codex_sessions_rpc",
+                   side_effect=fake_list_rpc), \
+             patch("genfoundry.codex_agent._get_codex_session_info_rpc",
+                   side_effect=fake_info_rpc):
+            sessions = list_codex_sessions(
+                cwd="/ws",
+                cli_path="my-codex",
+                extra_env=custom_env,
+            )
+            info = get_codex_session_info(
+                "t1",
+                cwd="/ws",
+                history_limit=3,
+                cli_path="my-codex",
+                extra_env=custom_env,
+            )
+
+        self.assertEqual(len(sessions), 1)
+        self.assertIsNotNone(info)
+        self.assertEqual(mock_find.call_count, 2)
+        for call_item in mock_find.call_args_list:
+            self.assertEqual(call_item.args, ("my-codex",))
+            self.assertEqual(call_item.kwargs, {"extra_env": custom_env})
+        self.assertEqual(
+            captured["list"],
+            ("/opt/codex/bin/codex", "/ws", custom_env),
+        )
+        self.assertEqual(
+            captured["info"],
+            ("/opt/codex/bin/codex", "t1", "/ws", 3, custom_env),
+        )
+
+        with patch("genfoundry.codex_agent.find_codex_cli", return_value=None):
+            self.assertEqual(
+                list_codex_sessions(cwd="/ws", cli_path="/missing/codex"),
+                [],
+            )
+            self.assertIsNone(
+                get_codex_session_info("t1", cwd="/ws", cli_path="/missing/codex")
+            )
+
+    def test_spawn_app_server_passes_extra_env(self):
+        """_spawn_codex_app_server only sets env when extra_env is non-empty."""
+        from genfoundry.codex_agent import _spawn_codex_app_server
+
+        seen_kwargs = []
+
+        async def fake_exec(*args, **kwargs):
+            seen_kwargs.append(kwargs)
+            return FakeProcess()
+
+        async def _run():
+            with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+                await _spawn_codex_app_server("/usr/bin/codex")
+                await _spawn_codex_app_server(
+                    "/usr/bin/codex", extra_env={"CODEX_HOME": "/tmp/ch"}
+                )
+
+        asyncio.run(_run())
+        self.assertNotIn("env", seen_kwargs[0])
+        self.assertEqual(seen_kwargs[1]["env"]["CODEX_HOME"], "/tmp/ch")
+
+
 if __name__ == "__main__":
     unittest.main()

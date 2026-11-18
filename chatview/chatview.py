@@ -2237,7 +2237,13 @@ class ChatSession:
         history_limit = settings.get("session_history_limit", 1)
 
         if agent == "codex":
-            info = get_codex_session_info(session_id, cwd, history_limit)
+            info = get_codex_session_info(
+                session_id,
+                cwd,
+                history_limit=history_limit,
+                cli_path=settings.get("codex_command") or None,
+                extra_env=settings.get("env", {}),
+            )
             if info:
                 return {"summary": info.get("summary"), "mtime": info.get("updated_at", 0),
                         "turns": info.get("turns", [])}
@@ -3388,7 +3394,11 @@ class TermChatResumeSessionCommand(sublime_plugin.WindowCommand):
 
     def _load_sessions(self, agent, cwd, settings):
         if agent == "codex":
-            raw = list_codex_sessions(cwd)
+            raw = list_codex_sessions(
+                cwd,
+                cli_path=settings.get("codex_command") or None,
+                extra_env=settings.get("env", {}),
+            )
             return [{"session_id": s["session_id"], "summary": s["summary"],
                      "mtime": s["updated_at"]} for s in raw]
         if agent == "pi":

@@ -21,10 +21,30 @@ from .base_agent import MessageType, Message, TextBlock, AssistantMessage, \
     PermissionResultAllow, PermissionResultDeny, ToolPermissionContext, AgentOptions, BaseAgent
 
 
-def find_codex_cli() -> Optional[str]:
-    """Search common default install locations for the codex CLI."""
+def find_codex_cli(
+    cli_path: Optional[str] = None,
+    extra_env: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """Search PATH and common default install locations for the codex CLI."""
+    path_kw = {"path": extra_env["PATH"]} if extra_env and "PATH" in extra_env else {}
+
+    if cli_path:
+        expanded = os.path.expanduser(cli_path)
+        return shutil.which(expanded, **path_kw) or (
+            expanded if os.path.isfile(expanded) and os.access(expanded, os.X_OK) else None
+        )
+
+    found = shutil.which("codex", **path_kw)
+    if found:
+        return found
+
     candidates = []
     if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            candidates.append(
+                os.path.join(local_appdata, "Programs", "OpenAI", "Codex", "bin", "codex.exe")
+            )
         appdata = os.environ.get("APPDATA")
         if appdata:
             candidates.extend([
@@ -135,8 +155,8 @@ class CodexAgent(BaseAgent):
     def __init__(self, options: Optional[AgentOptions] = None):
         super().__init__(options)
         self.thread_id: Optional[str] = None
-        cli_command = self.options.cli_path or "codex"
-        self.cli_path = shutil.which(cli_command) or find_codex_cli() or cli_command
+        resolved = find_codex_cli(self.options.cli_path, extra_env=self.options.extra_env)
+        self.cli_path = resolved or self.options.cli_path
         self._is_connected = False
         self.available_models: List[Dict[str, Any]] = []
 
@@ -1467,22 +1487,38 @@ async def query(
         await client.disconnect()
 
 
-async def _list_codex_sessions_rpc(cli_path: str, cwd: Optional[str]) -> list:
-    """Spawn a temporary codex app-server, call thread/list, return parsed threads."""
+async def _spawn_codex_app_server(
+    cli_path: str,
+    extra_env: Optional[Dict[str, str]] = None,
+):
+    """Spawn a temporary codex app-server subprocess over stdio."""
     import asyncio as _asyncio
 
     kwargs: Dict[str, Any] = {}
+    if extra_env:
+        kwargs["env"] = {**os.environ, **extra_env}
     if sys.platform == "win32":
         import subprocess as _subprocess
         kwargs["creationflags"] = _subprocess.CREATE_NO_WINDOW
 
-    proc = await _asyncio.create_subprocess_exec(
+    return await _asyncio.create_subprocess_exec(
         cli_path, "app-server", "--listen", "stdio://",
         stdin=_asyncio.subprocess.PIPE,
         stdout=_asyncio.subprocess.PIPE,
         stderr=_asyncio.subprocess.DEVNULL,
         **kwargs,
     )
+
+
+async def _list_codex_sessions_rpc(
+    cli_path: str,
+    cwd: Optional[str],
+    extra_env: Optional[Dict[str, str]] = None,
+) -> list:
+    """Spawn a temporary codex app-server, call thread/list, return parsed threads."""
+    import asyncio as _asyncio
+
+    proc = await _spawn_codex_app_server(cli_path, extra_env)
 
     rpc_id = 0
     pending: Dict[int, _asyncio.Future] = {}
@@ -1572,20 +1608,26 @@ async def _list_codex_sessions_rpc(cli_path: str, cwd: Optional[str]) -> list:
             pass
 
 
-def list_codex_sessions(cwd: Optional[str] = None) -> list:
+def list_codex_sessions(
+    cwd: Optional[str] = None,
+    cli_path: Optional[str] = None,
+    extra_env: Optional[Dict[str, str]] = None,
+) -> list:
     """Return thread dicts via codex app-server thread/list RPC, sorted newest-first.
 
     Each dict: session_id (str), summary (str), updated_at (float, unix seconds).
     Falls back to empty list if codex CLI is not found or the RPC fails.
     """
-    cli = find_codex_cli()
+    cli = find_codex_cli(cli_path, extra_env=extra_env)
     if cli is None:
         return []
 
     try:
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(_list_codex_sessions_rpc(cli, cwd))
+            return loop.run_until_complete(
+                _list_codex_sessions_rpc(cli, cwd, extra_env=extra_env)
+            )
         finally:
             loop.close()
     except Exception as e:
@@ -1631,6 +1673,7 @@ async def _get_codex_session_info_rpc(
     session_id: str,
     cwd: Optional[str],
     history_limit: int,
+    extra_env: Optional[Dict[str, str]] = None,
 ) -> Optional[dict]:
     """One app-server process: thread/read (turns + metadata) for resume display.
 
@@ -1639,18 +1682,7 @@ async def _get_codex_session_info_rpc(
     """
     import asyncio as _asyncio
 
-    kwargs: Dict[str, Any] = {}
-    if sys.platform == "win32":
-        import subprocess as _subprocess
-        kwargs["creationflags"] = _subprocess.CREATE_NO_WINDOW
-
-    proc = await _asyncio.create_subprocess_exec(
-        cli_path, "app-server", "--listen", "stdio://",
-        stdin=_asyncio.subprocess.PIPE,
-        stdout=_asyncio.subprocess.PIPE,
-        stderr=_asyncio.subprocess.DEVNULL,
-        **kwargs,
-    )
+    proc = await _spawn_codex_app_server(cli_path, extra_env)
 
     rpc_id = 0
     pending: Dict[int, _asyncio.Future] = {}
@@ -1811,6 +1843,8 @@ def get_codex_session_info(
     session_id: str,
     cwd: Optional[str] = None,
     history_limit: int = 0,
+    cli_path: Optional[str] = None,
+    extra_env: Optional[Dict[str, str]] = None,
 ) -> Optional[dict]:
     """Return metadata and recent turns for a Codex thread in one app-server process.
 
@@ -1822,7 +1856,7 @@ def get_codex_session_info(
       "response"   — last agent text response (kept for API compatibility)
     Returns None if the CLI is not found or the RPC fails.
     """
-    cli = find_codex_cli()
+    cli = find_codex_cli(cli_path, extra_env=extra_env)
     if cli is None:
         return None
 
@@ -1830,7 +1864,9 @@ def get_codex_session_info(
         loop = asyncio.new_event_loop()
         try:
             return loop.run_until_complete(
-                _get_codex_session_info_rpc(cli, session_id, cwd, history_limit)
+                _get_codex_session_info_rpc(
+                    cli, session_id, cwd, history_limit, extra_env=extra_env
+                )
             )
         finally:
             loop.close()
