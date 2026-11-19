@@ -301,5 +301,80 @@ class TestClaudeAgentTokenUsageExtraction(unittest.TestCase):
         self.assertEqual(queued.content["last"]["inputTokens"], 100)
 
 
+class TestClaudeResumeRewind(unittest.IsolatedAsyncioTestCase):
+
+    def test_get_claude_session_tail_includes_user_message_id(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from genfoundry.claude_agent import get_claude_session_tail
+
+        u1 = "11111111-1111-1111-1111-111111111111"
+        a1 = "22222222-2222-2222-2222-222222222222"
+        u2 = "33333333-3333-3333-3333-333333333333"
+        a2 = "44444444-4444-4444-4444-444444444444"
+        sid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fpath = Path(tmpdir) / f"{sid}.jsonl"
+            entries = [
+                {"type": "user", "uuid": u1, "parentUuid": None, "message": {"content": "First"}},
+                {
+                    "type": "assistant",
+                    "uuid": a1,
+                    "parentUuid": u1,
+                    "message": {"content": [{"type": "text", "text": "Reply 1"}]},
+                },
+                {"type": "user", "uuid": u2, "parentUuid": a1, "message": {"content": "Second"}},
+                {
+                    "type": "assistant",
+                    "uuid": a2,
+                    "parentUuid": u2,
+                    "message": {"content": [{"type": "text", "text": "Reply 2"}]},
+                },
+            ]
+            fpath.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+            with patch(
+                "genfoundry.claude_agent._find_session_file_with_dir",
+                return_value=(fpath, Path(tmpdir)),
+            ):
+                tail = get_claude_session_tail(sid, history_limit=10)
+
+        self.assertIsNotNone(tail)
+        self.assertEqual(len(tail["turns"]), 2)
+        self.assertEqual(tail["turns"][0]["user_message_id"], u1)
+        self.assertEqual(tail["turns"][1]["user_message_id"], u2)
+
+    async def test_rewind_skips_rewind_files_when_restore_files_false(self):
+        opts = AgentOptions(cli_path="/usr/bin/true", session_id="sess-old")
+        agent = ClaudeCodeAgent(options=opts)
+        agent.is_connected = True
+        agent.rewind_files = AsyncMock()
+
+        with patch(
+            "genfoundry.claude_agent.fork_session_for_rewind",
+            return_value="sess-fork",
+        ) as mock_fork:
+            new_sid = await agent.rewind("msg-uuid-1", restore_files=False)
+
+        agent.rewind_files.assert_not_awaited()
+        mock_fork.assert_called_once_with("sess-old", "msg-uuid-1", opts.cwd)
+        self.assertEqual(new_sid, "sess-fork")
+
+    def test_support_file_rewind_matches_enable_file_checkpoint(self):
+        default_agent = ClaudeCodeAgent(options=AgentOptions(cli_path="/usr/bin/true"))
+        disabled = ClaudeCodeAgent(
+            options=AgentOptions(cli_path="/usr/bin/true", enable_file_checkpoint=False)
+        )
+        enabled = ClaudeCodeAgent(
+            options=AgentOptions(cli_path="/usr/bin/true", enable_file_checkpoint=True)
+        )
+        self.assertFalse(default_agent.options.enable_file_checkpoint)
+        self.assertFalse(default_agent.support_file_rewind)
+        self.assertFalse(disabled.support_file_rewind)
+        self.assertTrue(enabled.support_file_rewind)
+
+
 if __name__ == "__main__":
     unittest.main()

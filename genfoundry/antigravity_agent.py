@@ -942,11 +942,14 @@ class AntigravityAgent(BaseAgent):
         # Immediately enqueue stop message so UI stops loading animation
         await self._message_queue.put(Message("stop"))
 
-    async def rewind(self, user_message_id: str) -> Optional[str]:
+    async def rewind(
+        self, user_message_id: str, restore_files: bool = True
+    ) -> Optional[str]:
         """
         Rewind conversation in-place to just before the turn identified by user_message_id.
         user_message_id is the step_index of the prompt.
         """
+        del restore_files  # Antigravity rewind only truncates conversation history.
         sid = self.options.session_id or self._session_id
         if not sid:
             raise RuntimeError("No active Antigravity session ID to rewind.")
@@ -1503,6 +1506,7 @@ def get_antigravity_session_tail(
     turns = []
     current_prompt = None
     current_response = ""
+    current_uid = None
     file_mtime = 0.0
 
     for path in transcript_paths:
@@ -1522,14 +1526,24 @@ def get_antigravity_session_tail(
                         content = record.get("content") or ""
                         if rec_type == "USER_INPUT":
                             if current_prompt is not None:
-                                turns.append({"prompt": current_prompt, "response": current_response.strip()})
+                                turns.append({
+                                    "prompt": current_prompt,
+                                    "response": current_response.strip(),
+                                    "user_message_id": current_uid,
+                                })
                             current_prompt = _clean_antigravity_prompt(content)
+                            step_idx = record.get("step_index")
+                            current_uid = str(step_idx) if step_idx is not None else None
                             current_response = ""
                         elif rec_type in ("PLANNER_RESPONSE", "AGENT_RESPONSE"):
                             if content:
                                 current_response += "\n" + content
                 if current_prompt is not None:
-                    turns.append({"prompt": current_prompt, "response": current_response.strip()})
+                    turns.append({
+                        "prompt": current_prompt,
+                        "response": current_response.strip(),
+                        "user_message_id": current_uid,
+                    })
                 break
             except Exception as e:
                 LOG.warning(f"Error reading transcript for session {session_id}: {e}")

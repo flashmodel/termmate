@@ -305,18 +305,23 @@ class ClaudeCodeAgent(BaseAgent):
             "user_message_id": user_message_id,
         })
 
-    async def rewind(self, user_message_id: str) -> str:
-        """Rewind to the given user message: restore files then fork the session.
+    @property
+    def support_file_rewind(self) -> bool:
+        """Support file rewind when enable_file_checkpoint is enabled."""
+        return bool(self.options.enable_file_checkpoint)
 
-        Performs the full "both" rewind sequence:
+    async def rewind(self, user_message_id: str, restore_files: bool = True) -> str:
+        """Rewind to the given user message: optionally restore files then fork the session.
+
+        Performs the full "both" rewind sequence when restore_files is True:
           1. rewind_files — restores on-disk files via the live agent subprocess
           2. fork_session_for_rewind — creates a truncated JSONL fork with fresh UUIDs
 
         Returns the new session ID to resume from.
 
-        Requires enable_file_checkpoint=True in AgentOptions.
+        Requires enable_file_checkpoint=True in AgentOptions when restore_files is True.
         """
-        if self.is_connected:
+        if self.is_connected and restore_files and self.options.enable_file_checkpoint:
             await self.rewind_files(user_message_id)
 
         # Use the session id we were told to resume (options), falling back to
@@ -1335,7 +1340,7 @@ def get_claude_session_tail(
                 current = by_uuid.get(parent_uuid) if isinstance(parent_uuid, str) else None
             entries = list(reversed(active_entries))
 
-    messages = []  # list of (role, text) on the active branch
+    messages = []  # list of (role, text, uuid) on the active branch
     try:
         for entry in entries:
             if entry.get("isSidechain") or entry.get("teamName"):
@@ -1367,7 +1372,7 @@ def get_claude_session_tail(
                     continue
                 text = "".join(texts).strip()
                 if text and not _SKIP_PROMPT_RE.match(text):
-                    messages.append(("user", text))
+                    messages.append(("user", text, entry.get("uuid")))
             elif etype == "assistant":
                 msg = entry.get("message", {})
                 if not isinstance(msg, dict):
@@ -1384,18 +1389,18 @@ def get_claude_session_tail(
                                 texts.append(t)
                 text = "".join(texts).strip()
                 if text:
-                    messages.append(("assistant", text))
+                    messages.append(("assistant", text, None))
     except Exception as e:
         LOG.warning(f"get_claude_session_tail: error reading {fpath}: {e}")
         return None
 
     turns = []
     current = None
-    for role, text in messages:
+    for role, text, uid in messages:
         if role == "user":
             if current is not None:
                 turns.append(current)
-            current = {"prompt": text, "response": None}
+            current = {"prompt": text, "response": None, "user_message_id": uid}
         elif current is not None:
             response = current["response"]
             current["response"] = f"{response}\n\n{text}" if response else text

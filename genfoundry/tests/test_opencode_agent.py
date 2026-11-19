@@ -1011,6 +1011,19 @@ class TestOpenCodeV2Turns(unittest.IsolatedAsyncioTestCase):
             {"messageID": "msg_123"},
         )
 
+    async def test_v2_rewind_without_restore_files_sets_files_false(self):
+        agent = OpenCodeAgent(AgentOptions(cwd="."), version=2)
+        agent._is_connected = True
+        agent._session_id = "ses_v2"
+        agent._http = AsyncMock(return_value=None)
+
+        await agent.rewind("msg_123", restore_files=False)
+
+        self.assertEqual(
+            agent._http.await_args_list[0].kwargs["body"],
+            {"messageID": "msg_123", "files": False},
+        )
+
 
 class TestOpenCodeV2ModelsAndPermissions(unittest.IsolatedAsyncioTestCase):
     async def test_v2_fetch_models_parses_model_list(self):
@@ -1129,6 +1142,7 @@ class TestOpenCodeSessionsAndResumption(unittest.TestCase):
                 "time": {"created": 1700000040000},
             },
             {
+                "id": "m2",
                 "type": "user",
                 "text": "Turn 2 prompt",
                 "time": {"created": 1700000030000},
@@ -1139,6 +1153,7 @@ class TestOpenCodeSessionsAndResumption(unittest.TestCase):
                 "time": {"created": 1700000020000},
             },
             {
+                "id": "m1",
                 "type": "user",
                 "text": "Turn 1 prompt",
                 "time": {"created": 1700000010000},
@@ -1165,8 +1180,10 @@ class TestOpenCodeSessionsAndResumption(unittest.TestCase):
         self.assertEqual(len(info["turns"]), 2)
         self.assertEqual(info["turns"][0]["prompt"], "Turn 1 prompt")
         self.assertEqual(info["turns"][0]["response"], "Turn 1 response")
+        self.assertEqual(info["turns"][0]["user_message_id"], "m1")
         self.assertEqual(info["turns"][1]["prompt"], "Turn 2 prompt")
         self.assertEqual(info["turns"][1]["response"], "Turn 2 response")
+        self.assertEqual(info["turns"][1]["user_message_id"], "m2")
         self.assertEqual(info["prompt"], "Turn 2 prompt")
         self.assertEqual(info["response"], "Turn 2 response")
 
@@ -1179,7 +1196,7 @@ class TestOpenCodeSessionsAndResumption(unittest.TestCase):
         }
         v1_messages = [
             {
-                "info": {"role": "user"},
+                "info": {"id": "msg_v1_1", "role": "user"},
                 "parts": [{"type": "text", "text": "V1 prompt"}],
             },
             {
@@ -1207,6 +1224,7 @@ class TestOpenCodeSessionsAndResumption(unittest.TestCase):
         self.assertEqual(len(info["turns"]), 1)
         self.assertEqual(info["turns"][0]["prompt"], "V1 prompt")
         self.assertEqual(info["turns"][0]["response"], "V1 response")
+        self.assertEqual(info["turns"][0]["user_message_id"], "msg_v1_1")
 
     def test_probe_opencode_service(self):
         class _MockContext:

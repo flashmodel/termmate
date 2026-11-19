@@ -563,12 +563,15 @@ class CodexAgent(BaseAgent):
                 f"thread_id: {self.thread_id}, active_turn_id: {self._active_turn_id}"
             )
 
-    async def rewind(self, turn_identifier: str) -> Optional[str]:
+    async def rewind(
+        self, turn_identifier: str, restore_files: bool = True
+    ) -> Optional[str]:
         """Roll back the thread to just before the turn at turn_identifier using thread/revert.
 
         turn_identifier may be a turn ID string (e.g. 'turn-...') or a 1-based turn index.
         Returns the thread_id (unchanged).
         """
+        del restore_files  # Codex thread/revert only rolls back conversation turns.
         if not self._is_connected or not self.thread_id:
             raise RuntimeError("Client is not connected or no active thread.")
 
@@ -1662,9 +1665,11 @@ def _extract_codex_turn_entry(turn: Any) -> Optional[Dict[str, Optional[str]]]:
     prompt = "\n\n".join(prompt_parts) or None
     if not prompt:
         return None
+    turn_id = turn.get("id")
     return {
         "prompt": prompt,
         "response": "\n\n".join(response_parts) or None,
+        "user_message_id": str(turn_id) if turn_id is not None else None,
     }
 
 

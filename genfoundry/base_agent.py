@@ -124,6 +124,11 @@ class BaseAgent(abc.ABC):
     def __init__(self, options: Optional[AgentOptions] = None):
         self.options = options or AgentOptions()
 
+    @property
+    def support_file_rewind(self) -> bool:
+        """Whether rewind on this agent can restore modified workspace files."""
+        return False
+
     def set_think_level(self, level: str) -> None:
         """Set reasoning / thinking effort level."""
         self.options.think_level = level

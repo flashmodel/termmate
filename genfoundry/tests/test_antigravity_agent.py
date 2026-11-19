@@ -1641,6 +1641,28 @@ class TestAntigravityRewind(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await agent.rewind("not-a-step-number")
 
+    def test_get_antigravity_session_tail_includes_user_message_id(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_dir = os.path.join(tmp_dir, "brain", "sess-tail", ".system_generated", "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            records = [
+                {"step_index": 0, "type": "USER_INPUT", "content": "prompt zero"},
+                {"step_index": 1, "type": "PLANNER_RESPONSE", "content": "resp zero"},
+                {"step_index": 2, "type": "USER_INPUT", "content": "prompt two"},
+                {"step_index": 3, "type": "PLANNER_RESPONSE", "content": "resp two"},
+            ]
+            with open(os.path.join(log_dir, "transcript_full.jsonl"), "w") as f:
+                for r in records:
+                    f.write(json.dumps(r) + "\n")
+
+            with patch("genfoundry.antigravity_agent._get_base_dir", return_value=tmp_dir):
+                tail = get_antigravity_session_tail("sess-tail", history_limit=10)
+
+            self.assertIsNotNone(tail)
+            self.assertEqual(len(tail["turns"]), 2)
+            self.assertEqual(tail["turns"][0]["user_message_id"], "0")
+            self.assertEqual(tail["turns"][1]["user_message_id"], "2")
+
 
 if __name__ == "__main__":
     unittest.main()

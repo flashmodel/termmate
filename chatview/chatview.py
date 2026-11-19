@@ -294,6 +294,7 @@ def _refresh_input_phantoms():
             session.model_phantom.update()
             session.input_marker.update()
             session.table_phantoms.refresh()
+            session.refresh_prompt_buttons()
             LOG.debug(f"Redrew chat view input phantoms for view {view_id}")
     finally:
         preferences_redraw_scheduled = False
@@ -548,8 +549,13 @@ class AgentThread(threading.Thread):
                 lambda: asyncio.create_task(self._steer(text, proceed_plan=proceed_plan))
             )
 
-    def rewind(self, user_message_id: str, on_done: callable = None) -> None:
-        """Run the full rewind sequence on the live agent loop (rewind_files + fork).
+    def rewind(
+        self,
+        user_message_id: str,
+        on_done: callable = None,
+        restore_files: bool = True,
+    ) -> None:
+        """Run the rewind sequence on the live agent loop.
 
         on_done(new_session_id) is called on the Sublime main thread when complete.
         on_done(None) is called if rewind is not supported or fails.
@@ -563,7 +569,12 @@ class AgentThread(threading.Thread):
             new_session_id = None
             if hasattr(self.agent, "rewind"):
                 try:
-                    new_session_id = await self.agent.rewind(user_message_id)
+                    if restore_files:
+                        new_session_id = await self.agent.rewind(user_message_id)
+                    else:
+                        new_session_id = await self.agent.rewind(
+                            user_message_id, restore_files=False
+                        )
                 except Exception as e:
                     error_msg = str(e)
                     LOG.error(f"[rewind] agent.rewind failed: {error_msg}")
@@ -1540,6 +1551,7 @@ class ChatSession:
             "session_id": session_id,
             "env": settings.get("env", {}),
             "debug_agent_message": settings.get("debug_agent_message", False),
+            "enable_file_checkpoint": settings.get("enable_file_checkpoint", True),
             "sandbox_mode": self._get_sandbox_mode(settings, agent_provider),
         }
 
@@ -1916,16 +1928,15 @@ class ChatSession:
         """If point is on an artifact (file name or plan), open its view or execute. Returns True if handled."""
         return self.artifact.open_artifact_at(point)
 
-    def add_prompt_highlight(self, region):
+    def add_prompt_highlight(self, region, user_message_uuid=None):
         """Add a gutter highlight and an end-of-line rewind button for a submitted prompt."""
         region_index = len(self.prompt_regions)
         phantom_index = len(self.prompt_button_phantoms)
-        self.prompt_regions.append((region, None, phantom_index))
+        self.prompt_regions.append((region, user_message_uuid, phantom_index))
         phantom_set = sublime.PhantomSet(self.chat_view, f"chatview_rewind_btn_{region_index}")
         self.prompt_button_phantoms.append(phantom_set)
         self._redraw_prompt_highlights()
-        # Button starts greyed out — uuid not yet available
-        self._draw_prompt_button(region_index, active=False)
+        self._draw_prompt_button(region_index, active=bool(user_message_uuid))
 
     def update_last_prompt_uuid(self, uuid):
         """Attach the echoed user message UUID to the most recent prompt region."""
@@ -1965,10 +1976,7 @@ class ChatSession:
                     self.rewind_confirm_panel.clear()
                     return
                 r, *_ = self.prompt_regions[idx]
-                def on_confirm(i=idx):
-                    sublime.status_message(f"Rewinding to prompt {i + 1}...")
-                    self.rewind_to_prompt(i)
-                self.rewind_confirm_panel.show(r, idx, on_confirm)
+                self.show_rewind_confirm(r, idx)
         else:
             html = (
                 "<body style='margin:0;padding:0'>"
@@ -1981,6 +1989,14 @@ class ChatSession:
         phantom_set.update([sublime.Phantom(
             anchor, html, sublime.LAYOUT_INLINE, on_navigate
         )])
+
+    def refresh_prompt_buttons(self):
+        """Redraw end-of-line rewind buttons after resource/preference reload."""
+        if not self.chat_view or not self.chat_view.is_valid():
+            return
+        for i, (_region, uuid, phantom_index) in enumerate(self.prompt_regions):
+            if phantom_index < len(self.prompt_button_phantoms):
+                self._draw_prompt_button(i, active=bool(uuid))
 
     def _redraw_prompt_highlights(self):
         """Redraw all gutter dots from prompt_regions."""
@@ -2006,8 +2022,26 @@ class ChatSession:
         self.chat_view.erase_regions(PROMPT_HIGHLIGHT_KEY)
         self.clear_prompt_buttons()
 
-    def rewind_to_prompt(self, prompt_index):
-        """Fork the current session up to prompt_index and restart the agent on the fork."""
+    def _support_file_rewind(self):
+        """Return True if the active agent can also restore modified workspace files."""
+        agent = self.agent_thread.agent if self.agent_thread else None
+        return bool(agent and getattr(agent, "support_file_rewind", False))
+
+    def show_rewind_confirm(self, region, prompt_index):
+        """Show the rewind confirmation popup with buttons matching agent capability."""
+        def on_confirm(restore_files=False, idx=prompt_index):
+            sublime.status_message(f"Rewinding to prompt {idx + 1}...")
+            self.rewind_to_prompt(idx, restore_files=restore_files)
+
+        self.rewind_confirm_panel.show(
+            region,
+            prompt_index,
+            on_confirm,
+            support_file_rewind=self._support_file_rewind(),
+        )
+
+    def rewind_to_prompt(self, prompt_index, restore_files=False):
+        """Rewind the session up to prompt_index and restart the agent on the target."""
         if prompt_index < 0 or prompt_index >= len(self.prompt_regions):
             return
 
@@ -2030,12 +2064,16 @@ class ChatSession:
             if new_session_id is None:
                 sublime.status_message("Rewind failed: see console for details")
                 return
-            self._on_rewind_complete(new_session_id, prompt_index)
+            self._on_rewind_complete(
+                new_session_id, prompt_index, restore_files=restore_files
+            )
 
-        self.agent_thread.rewind(user_message_uuid, on_done=_on_rewind)
+        self.agent_thread.rewind(
+            user_message_uuid, on_done=_on_rewind, restore_files=restore_files
+        )
 
-    def _on_rewind_complete(self, new_session_id, prompt_index):
-        """Called on main thread after fork completes; restarts agent on forked session."""
+    def _on_rewind_complete(self, new_session_id, prompt_index, restore_files=False):
+        """Called on main thread after rewind completes; restarts agent on session."""
         region, _uuid, phantom_index = self.prompt_regions[prompt_index]
         cut_point = region.begin() - len(PROMPT_PREFIX)
 
@@ -2062,9 +2100,14 @@ class ChatSession:
         else:
             self.chat_view.run_command("term_chat_input_prompt", {"text": rewind_text})
 
+        note = (
+            "■ Rewind conversation & files to earlier checkpoint\n"
+            if restore_files
+            else "■ Rewind conversation to earlier checkpoint\n"
+        )
         self.chat_view.run_command(
             "term_chat_output_append",
-            {"text": "■ Rewind conversation to earlier checkpoint\n"}
+            {"text": note}
         )
 
         self.reload_agent(session_id_override=new_session_id, quiet=True)
@@ -2135,6 +2178,7 @@ class ChatSession:
             "approve_mode": self.get_setting(CHAT_APPROVE_MODE, ApproveMode.ALLOW_EDIT.value),
             "env": settings.get("env", {}),
             "debug_agent_message": settings.get("debug_agent_message", False),
+            "enable_file_checkpoint": settings.get("enable_file_checkpoint", True),
             "sandbox_mode": self._get_sandbox_mode(settings, new_agent_provider),
         }
 
@@ -2197,6 +2241,7 @@ class ChatSession:
             "session_id": old_session_id,
             "env": settings.get("env", {}),
             "debug_agent_message": settings.get("debug_agent_message", False),
+            "enable_file_checkpoint": settings.get("enable_file_checkpoint", True),
             "sandbox_mode": self._get_sandbox_mode(settings, current_agent_provider),
         }
 
@@ -2217,7 +2262,7 @@ class ChatSession:
                     "term_chat_output_append", {"text": "\n\n[reconnecting agent...]\n\n"}
                 )
 
-    def _replay_prompt(self, prompt_text):
+    def _replay_prompt(self, prompt_text, user_message_uuid=None):
         """Append a previously-submitted prompt with gutter highlight, as if the user had just sent it."""
         text = f"{PROMPT_PREFIX}{prompt_text}\n"
         pos_before = get_input_start(self.chat_view, 0) - 1
@@ -2226,7 +2271,10 @@ class ChatSession:
         region_start = pos_before + len(PROMPT_PREFIX)
         region_end = pos_after - 1  # exclude trailing \n
         if region_end > region_start:
-            self.add_prompt_highlight(sublime.Region(region_start, region_end))
+            self.add_prompt_highlight(
+                sublime.Region(region_start, region_end),
+                user_message_uuid=user_message_uuid,
+            )
 
     def _fetch_session_info(self, agent, session_id, cwd):
         """Fetch session metadata and recent turns. Returns a unified dict or None.
@@ -2292,7 +2340,10 @@ class ChatSession:
 
         for turn in (session_info or {}).get("turns", []):
             if turn.get("prompt"):
-                self._replay_prompt(turn["prompt"])
+                self._replay_prompt(
+                    turn["prompt"],
+                    user_message_uuid=turn.get("user_message_id"),
+                )
                 if turn.get("response"):
                     self.chat_view.run_command(
                         "term_chat_output_append", {"text": f"\n{AGENT_SEPARATOR}\n\n"}
@@ -2878,10 +2929,7 @@ class ChatViewListener(sublime_plugin.EventListener):
                     return
                 if session.rewind_confirm_panel.visible:
                     return
-                def on_confirm(idx=i):
-                    sublime.status_message(f"Rewinding to prompt {idx + 1}...")
-                    session.rewind_to_prompt(idx)
-                session.rewind_confirm_panel.show(region, i, on_confirm)
+                session.show_rewind_confirm(region, i)
                 return
 
     def on_modified_async(self, view):

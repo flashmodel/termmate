@@ -2278,17 +2278,27 @@ class OpenCodeAgent(BaseAgent):
         ))
         return self._session_id
 
-    async def rewind(self, message_id: str) -> Optional[str]:
+    @property
+    def support_file_rewind(self) -> bool:
+        """Support server-side file snapshot restoration on revert."""
+        return True
+
+    async def rewind(
+        self, message_id: str, restore_files: bool = True
+    ) -> Optional[str]:
         if not self._is_connected or not self._session_id:
             raise RuntimeError("Client is not connected or has no active session")
         sid = quote(self._session_id, safe="")
         if self.version >= 2:
             # [OpenCode v2] Two-phase revert: stage target message, then commit revert
+            stage_body: Dict[str, Any] = {"messageID": message_id}
+            if not restore_files:
+                stage_body["files"] = False
             try:
                 await self._http(
                     "POST",
                     f"/api/session/{sid}/revert/stage",
-                    body={"messageID": message_id},
+                    body=stage_body,
                 )
             except OpenCodeHTTPError as err:
                 if err.status == 500:
@@ -2881,6 +2891,7 @@ def get_opencode_session_info(
                     continue
                 info = entry.get("info") or {}
                 role = info.get("role") or entry.get("type")
+                msg_id = info.get("id") or entry.get("id")
                 text = ""
                 if entry.get("parts") and isinstance(entry["parts"], list):
                     text = "".join(
@@ -2904,7 +2915,11 @@ def get_opencode_session_info(
                 if role == "user" and text:
                     if current is not None:
                         turns.append(current)
-                    current = {"prompt": text, "response": None}
+                    current = {
+                        "prompt": text,
+                        "response": None,
+                        "user_message_id": str(msg_id) if msg_id is not None else None,
+                    }
                 elif role == "assistant" and text and current is not None:
                     response = current["response"]
                     current["response"] = f"{response}\n\n{text}" if response else text

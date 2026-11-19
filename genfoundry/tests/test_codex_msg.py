@@ -1684,6 +1684,7 @@ class TestCodexTwoTurns(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(info["summary"], "Thread 1")
         self.assertEqual(info["prompt"], "Hello")
         self.assertEqual(info["response"], "Hi there!")
+        self.assertEqual(info["turns"][0]["user_message_id"], "turn-1")
 
     async def test_get_codex_session_info_rpc_pagination(self):
         """Verify _get_codex_session_info_rpc paginates via nextCursor in desc order."""

@@ -253,10 +253,22 @@ class RewindConfirmPanel:
         self._on_confirm = None
         self._visible = False
 
-    def show(self, region, prompt_index, on_confirm):
+    def show(self, region, prompt_index, on_confirm, support_file_rewind=False):
         """Show the popup anchored at the start of the prompt region."""
         self._on_confirm = on_confirm
         self._visible = True
+
+        if support_file_rewind:
+            subtitle = (
+                "Discard later messages, optionally restoring modified files."
+            )
+            files_btn = '<a href="rewind_files" class="btn btn-files">Restore &amp; files</a>'
+        else:
+            subtitle = (
+                "Restore conversation to this point (files kept)<br>"
+                "later messages will be discarded."
+            )
+            files_btn = ""
 
         html = f"""
         <body id="chatview-rewind-confirm">
@@ -288,28 +300,33 @@ class RewindConfirmPanel:
                 .btn {{
                     display: inline-block;
                     text-decoration: none;
-                    padding: 5px 16px;
+                    padding: 4px 10px;
                     border-radius: 3px;
                     font-weight: bold;
                     font-size: 0.88em;
-                    margin-right: 8px;
                 }}
                 .btn-confirm {{
                     background-color: var(--orangish);
                     color: var(--background);
                 }}
+                .btn-files {{
+                    background-color: var(--redish);
+                    color: var(--background);
+                    margin-left: 8px;
+                }}
                 .btn-cancel {{
                     background-color: color(var(--background) blend(var(--foreground) 75%));
                     color: var(--foreground);
                     border: 1px solid color(var(--foreground) alpha(0.2));
-                    margin-left: 8px;
+                    margin-left: 16px;
                 }}
             </style>
             <div class="dialog">
                 <div class="title">↩ Restore conversation</div>
-                <div class="subtitle">Restore files and conversaction to this point, later message will be discarded.</div>
+                <div class="subtitle">{subtitle}</div>
                 <div class="actions">
-                    <a href="confirm" class="btn btn-confirm">Restore</a>
+                    <a href="rewind" class="btn btn-confirm">Restore</a>
+                    {files_btn}
                     <a href="cancel" class="btn btn-cancel">Cancel</a>
                 </div>
             </div>
@@ -319,8 +336,12 @@ class RewindConfirmPanel:
         def on_navigate(href):
             callback = self._on_confirm
             self.clear()
-            if href == "confirm" and callback:
-                callback()
+            if not callback:
+                return
+            if href == "rewind":
+                callback(False)
+            elif href == "rewind_files":
+                callback(True)
 
         def on_hide():
             self._visible = False
