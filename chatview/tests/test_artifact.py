@@ -33,6 +33,8 @@ class TestArtifact(unittest.TestCase):
 
     def setUp(self):
         self.mock_view = MagicMock()
+        self.mock_view.substr.return_value = ""
+        self.mock_view.folded_regions.return_value = []
         self.mock_window = MagicMock()
         self.input_start_fn = lambda view: 100
         self.artifact = FileChangesArtifact(self.mock_view, self.mock_window, self.input_start_fn)
