@@ -2100,14 +2100,9 @@ class ChatSession:
         else:
             self.chat_view.run_command("term_chat_input_prompt", {"text": rewind_text})
 
-        note = (
-            "■ Rewind conversation & files to earlier checkpoint\n"
-            if restore_files
-            else "■ Rewind conversation to earlier checkpoint\n"
-        )
         self.chat_view.run_command(
             "term_chat_output_append",
-            {"text": note}
+            {"text": "■ Rewind conversation to earlier checkpoint\n"}
         )
 
         self.reload_agent(session_id_override=new_session_id, quiet=True)

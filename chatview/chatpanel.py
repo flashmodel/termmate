@@ -265,7 +265,7 @@ class RewindConfirmPanel:
             files_btn = '<a href="rewind_files" class="btn btn-files">Restore &amp; files</a>'
         else:
             subtitle = (
-                "Restore conversation to this point (files kept)<br>"
+                "Restore conversation to this point,<br>"
                 "later messages will be discarded."
             )
             files_btn = ""
