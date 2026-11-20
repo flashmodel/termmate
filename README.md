@@ -2,6 +2,7 @@
 
 [![Sublime Forum](https://img.shields.io/badge/Sublime_Forum-Discussion-FF9800?logo=sublimetext&logoColor=white)](https://forum.sublimetext.com/t/using-agentic-coding-in-st-with-codex-claude-cli/78323)
 [![Package Control](https://img.shields.io/badge/Package_Control-TermMate-389826?logo=sublimetext&logoColor=white)](https://packagecontrol.io/packages/TermMate)
+[![Website](https://img.shields.io/badge/Website-termmate.app-0A84FF)](https://termmate.app/sublime/)
 
 **Claude Code, OpenAI Codex, Google Antigravity, OpenCode, and Pi coding agent plugin for Sublime Text**
 
