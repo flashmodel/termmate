@@ -1966,7 +1966,8 @@ class ChatSession:
             html = (
                 "<body style='margin:0;padding:0'>"
                 "<a href='rewind' style='color:var(--orangish);text-decoration:none;"
-                "font-size:0.85em;opacity:0.7;padding:2px 10px;display:inline-block;'>↩</a>"
+                "font-size:0.85em;opacity:0.7;padding:2px 10px;"
+                "display:inline-block;'>↩&nbsp;</a>"
                 "</body>"
             )
             def on_navigate(href, idx=region_index):
@@ -1981,7 +1982,8 @@ class ChatSession:
             html = (
                 "<body style='margin:0;padding:0'>"
                 "<span style='color:var(--foreground);"
-                "font-size:0.85em;opacity:0.25;padding:2px 10px;display:inline-block;'>↩</span>"
+                "font-size:0.85em;opacity:0.25;padding:2px 10px;"
+                "display:inline-block;'>↩&nbsp;</span>"
                 "</body>"
             )
             on_navigate = None
