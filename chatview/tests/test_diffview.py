@@ -9,7 +9,7 @@ mock_sublime = MagicMock()
 mock_sublime.ENCODED_POSITION = 1
 sys.modules.setdefault("sublime", mock_sublime)
 
-from chatview.diffview import (
+from chatview.diff_view import (
     format_numbered_diff,
     format_raw_unified_diff,
     strip_numbered_diff,

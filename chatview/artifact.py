@@ -8,20 +8,20 @@ import re
 import sublime
 
 from . import utils
-from . import diffview
+from . import diff_view
 
 LOG = logging.getLogger("TermMate")
 
 ARTIFACT_REGION_KEY = "chatview_artifact_files"
 ARTIFACT_REGION_SCOPE = "region.bluish"
 ARTIFACT_REGION_FLAGS = sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE | sublime.HIDDEN
-DIFF_VIEW_PATH_KEY = diffview.DIFF_VIEW_PATH_KEY
+DIFF_VIEW_PATH_KEY = diff_view.DIFF_VIEW_PATH_KEY
 FILES_HEADER_RE = re.compile(r"^▣ \d+ files? changed$")
 
 
 def diff_view_click(view, abs_path, click_point):
-    """Handle a double-click in a diff view by delegating to diffview module."""
-    return diffview.handle_diff_view_click(view, abs_path, click_point)
+    """Handle a double-click in a diff view by delegating to diff_view module."""
+    return diff_view.handle_diff_view_click(view, abs_path, click_point)
 
 
 
@@ -301,7 +301,7 @@ class FileChangesArtifact:
     def _open_diff(self, abs_path, rel_path, diffs):
         """Open read-only diff view for diffs, or open source file if no diffs recorded."""
         if not any(d and d.strip() for d in (diffs or [])):
-            target = diffview._resolve_file_path(self.window, rel_path, abs_path)
+            target = diff_view._resolve_file_path(self.window, rel_path, abs_path)
             if target and os.path.isfile(target):
                 self.window.open_file(target)
             elif abs_path:
@@ -321,7 +321,7 @@ class FileChangesArtifact:
                 break
 
         name = os.path.basename(rel_path) + " (changes)"
-        diffview.show_diff_text(self.window, "".join(parts), name, abs_path=abs_path)
+        diff_view.show_diff_text(self.window, "".join(parts), name, abs_path=abs_path)
 
     def truncate(self, cut_point):
         """Drop artifact file regions that fall inside a truncated tail (rewind)."""
