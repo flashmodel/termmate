@@ -1970,14 +1970,17 @@ class ChatSession:
                 "display:inline-block;'>↩&nbsp;</a>"
                 "</body>"
             )
-            def on_navigate(href, idx=region_index):
+            def on_navigate(href, idx=region_index, anchor_point=end_point):
                 if href != "rewind":
                     return
                 if self.rewind_confirm_panel.visible:
                     self.rewind_confirm_panel.clear()
                     return
                 r, *_ = self.prompt_regions[idx]
-                self.show_rewind_confirm(r, idx)
+                _, y = self.chat_view.text_to_layout(anchor_point)
+                visual_start = self.chat_view.layout_to_text((0.0, y))
+                popup_point = min(anchor_point, visual_start + 2)
+                self.show_rewind_confirm(r, idx, location=popup_point)
         else:
             html = (
                 "<body style='margin:0;padding:0'>"
@@ -2029,7 +2032,7 @@ class ChatSession:
         agent = self.agent_thread.agent if self.agent_thread else None
         return bool(agent and getattr(agent, "support_file_rewind", False))
 
-    def show_rewind_confirm(self, region, prompt_index):
+    def show_rewind_confirm(self, region, prompt_index, location=None):
         """Show the rewind confirmation popup with buttons matching agent capability."""
         def on_confirm(restore_files=False, idx=prompt_index):
             sublime.status_message(f"Rewinding to prompt {idx + 1}...")
@@ -2040,6 +2043,7 @@ class ChatSession:
             prompt_index,
             on_confirm,
             support_file_rewind=self._support_file_rewind(),
+            location=location,
         )
 
     def rewind_to_prompt(self, prompt_index, restore_files=False):

@@ -253,8 +253,8 @@ class RewindConfirmPanel:
         self._on_confirm = None
         self._visible = False
 
-    def show(self, region, prompt_index, on_confirm, support_file_rewind=False):
-        """Show the popup anchored at the start of the prompt region."""
+    def show(self, region, prompt_index, on_confirm, support_file_rewind=False, location=None):
+        """Show the popup anchored at location (defaults to region.begin())."""
         self._on_confirm = on_confirm
         self._visible = True
 
@@ -265,7 +265,7 @@ class RewindConfirmPanel:
             files_btn = '<a href="rewind_files" class="btn btn-files">Restore &amp; files</a>'
         else:
             subtitle = (
-                "Restore conversation to this point,<br>"
+                "Restore conversation to this point, "
                 "later messages will be discarded."
             )
             files_btn = ""
@@ -276,7 +276,7 @@ class RewindConfirmPanel:
                 body {{ margin: 0; padding: 0; }}
                 .dialog {{
                     padding: 16px 18px 14px 18px;
-                    min-width: 260px;
+                    width: 320px;
                     background-color: color(var(--background) blend(var(--foreground) 88%));
                     border: 1px solid color(var(--foreground) alpha(0.15));
                     border-radius: 5px;
@@ -347,9 +347,10 @@ class RewindConfirmPanel:
             self._visible = False
             self._on_confirm = None
 
+        popup_location = region.begin() if location is None else location
         self.view.show_popup(
             html,
-            location=region.begin(),
+            location=popup_location,
             flags=0,
             max_width=560,
             on_navigate=on_navigate,
