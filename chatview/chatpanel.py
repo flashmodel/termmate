@@ -75,6 +75,16 @@ class TablePhantomManager:
         if changed:
             self._update()
 
+    def has_table_ending_at(self, point):
+        """Return True if an active visible HTML table ends at point."""
+        for key, _ in self.entries:
+            if key in self._hidden:
+                continue
+            regions = self.view.get_regions(key)
+            if regions and regions[0].end() == point:
+                return True
+        return False
+
     def refresh(self):
         """Redraw all table phantoms using their cached HTML."""
         self._update()

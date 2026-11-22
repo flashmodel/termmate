@@ -4,11 +4,16 @@ Chat view rendering helpers and quick popup manager for TermMate.
 
 import html
 import logging
-import webbrowser
+import sys
 
 import sublime
 
-from .md_render import preprocess_response_markdown
+from .md_render import (
+    FOLD_TERMINATOR,
+    preprocess_response_markdown,
+    render_ordered_lists_as_html,
+    strip_list_separators,
+)
 
 try:
     import mdpopups
@@ -652,7 +657,7 @@ a.switch-subtle,
 }
 .chat-raw-top-inline a.switch-subtle,
 .chat-raw-top-inline .switch-subtle {
-    padding: 0 0.5em 0 1.4em;
+    padding: 0 0.5em 0 1.3em;
 }
 .chat-raw-bottom-inline a.switch-subtle,
 .chat-raw-bottom-inline .switch-subtle {
@@ -686,6 +691,7 @@ div.termmate-response-preview,
     background-color: var(--background);
     padding: 0.45rem 0.85rem 0.25rem 0;
     margin: 0.15rem 0 0 0;
+    font-family: var(--font-mono);
     line-height: 1.35;
     font-size: 1rem;
 }
@@ -698,24 +704,87 @@ a code {
     color: var(--bluish);
     text-decoration: underline;
 }
+div.mdpopups .termmate-response-preview ul,
+div.mdpopups .termmate-response-preview ol,
+.termmate-response-preview ul,
+.termmate-response-preview ol {
+    padding-left: 1.2rem;
+}
+div.mdpopups .termmate-response-preview .chat-ol,
+.termmate-response-preview .chat-ol,
+.chat-ol {
+    display: block;
+    margin: 0.6rem 0;
+    padding-left: 1.2rem;
+}
+div.mdpopups .termmate-response-preview .chat-ol-num,
+.termmate-response-preview .chat-ol-num,
+.chat-ol-num {
+    display: inline-block;
+    margin-left: -1.1rem;
+}
+div.mdpopups .termmate-response-preview .chat-li,
+.termmate-response-preview .chat-li,
+.chat-li {
+    display: block;
+    margin: 0.25rem 0;
+    line-height: 1.35;
+}
+div.mdpopups .termmate-response-preview .chat-li p,
+.termmate-response-preview .chat-li p,
+.chat-li p {
+    margin: 0.3rem 0;
+}
+div.mdpopups .termmate-response-preview code {
+    font-size: 0.9em;
+    background-color: color(var(--background) blend(var(--foreground) 90%));
+    padding: 0 0.25rem;
+    border-radius: 3px;
+}
+div.mdpopups .termmate-response-preview pre {
+    font-size: 0.94em;
+    line-height: 1.4;
+    background-color: color(var(--background) blend(var(--foreground) 92%));
+    border: 1px solid color(var(--foreground) alpha(0.18));
+    border-radius: 5px;
+    padding: 0.65rem 0.85rem;
+    margin: 0.75rem 0;
+}
+div.mdpopups .termmate-response-preview div.highlight,
+div.mdpopups .termmate-response-preview pre code {
+    background-color: transparent;
+    border-style: none;
+    border-width: 0;
+    border-radius: 0;
+    padding: 0;
+    margin: 0;
+}
+div.mdpopups .termmate-response-preview pre code {
+    font-size: 1em;
+}
 .termmate-response-preview .chat-tool-group,
 .chat-tool-group {
     display: block;
-    margin: 0.5rem 0;
+    margin: 0;
     padding: 0;
 }
-.termmate-response-preview .chat-tool-group-spaced,
-.chat-tool-group-spaced {
+.termmate-response-preview .chat-tool-sep,
+.chat-tool-sep {
     display: block;
-    margin: 1.05rem 0 0.5rem 0;
+    margin: 0;
     padding: 0;
+    font-size: 1rem;
+    line-height: 1;
 }
+div.mdpopups .termmate-response-preview .chat-tool-line,
 .termmate-response-preview .chat-tool-line,
 .chat-tool-line {
-    margin: 0.12rem 0;
-    font-family: monospace;
-    font-size: 0.92em;
-    color: var(--foreground);
+    margin: 0;
+    padding: 0;
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    line-height: 1.35;
+    color: color(var(--foreground) alpha(0.75));
 }
 .termmate-response-preview .chat-tool-bullet,
 .chat-tool-line .chat-tool-bullet,
@@ -736,7 +805,7 @@ div.mdpopups .termmate-response-preview a.chat-tool-link,
 .chat-tool-line a.chat-tool-link,
 a.chat-tool-link,
 .chat-tool-link {
-    color: var(--foreground);
+    color: color(var(--bluish) alpha(0.85));
     text-decoration: none;
 }
 """
@@ -975,44 +1044,209 @@ def resolve_markdown_preview_raw_mode(mode):
     return True
 
 
-class ResponsePhantomManager:
-    """Own agent response regions and their raw/preview toggle phantoms."""
+class _BasePhantomView:
+    """Shared PhantomSet lifecycle and line helpers for raw and preview views."""
 
-    REGION_PREFIX = "term_chat_response_"
-
-    def __init__(
-        self,
-        view,
-        max_width_getter=None,
-        on_navigate_link=None,
-        default_raw_mode_getter=None,
-        show_toolbar_getter=None,
-        table_manager=None,
-    ):
+    def __init__(self, view, on_navigate):
         self.view = view
-        self.max_width_getter = max_width_getter
-        self.on_navigate_link = on_navigate_link
-        self.default_raw_mode_getter = default_raw_mode_getter
-        self.show_toolbar_getter = show_toolbar_getter
-        self.table_manager = table_manager
-        self.entries = []
-        self.next_id = 0
-        self.raw_phantom_sets = {}
-        self.preview_phantom_sets = {}
-        self.preview_top_phantom_sets = {}
-        self._toggle_generations = {}
-        self._pending_preview_folds = set()
+        self.on_navigate = on_navigate
 
-    @property
-    def is_available(self):
-        return bool(
-            HAS_MDPOPUPS
-            and mdpopups is not None
-            and self.view is not None
-            and hasattr(sublime, "PhantomSet")
-            and hasattr(sublime, "Phantom")
-            and hasattr(mdpopups, "PhantomSet")
-            and hasattr(mdpopups, "Phantom")
+    def _first_line_is_separator(self, region):
+        """Return (is_separator_or_blank, first_line_region) for region.begin()."""
+        line_reg = self.view.line(region.begin())
+        if not hasattr(self.view, "substr"):
+            return True, line_reg
+        line_text = self.view.substr(line_reg).strip()
+        return (not line_text or line_text == "⋅⋅⋅"), line_reg
+
+    def _set_phantoms(self, store, cls, suffix, key, phantoms):
+        ps = store.get(key)
+        if ps is None:
+            ps = cls(self.view, f"{RESPONSE_PHANTOM_KEY}:{suffix}:{key}")
+            store[key] = ps
+        ps.update(phantoms)
+
+    @staticmethod
+    def _clear_phantom_set(store, key):
+        ps = store.pop(key, None)
+        if ps is not None:
+            ps.update([])
+
+
+class RawPhantomView(_BasePhantomView):
+    """Manage raw-mode top and bottom toggle phantoms for response entries."""
+
+    def __init__(self, view, on_navigate):
+        super().__init__(view, on_navigate)
+        self.phantom_sets = {}
+
+    def show(self, key, region, show_toolbar=False):
+        """Render and mount both top and bottom raw toggle phantoms."""
+        phantoms = [
+            self._build_top_phantom(key, region, show_toolbar),
+            sublime.Phantom(
+                self._bottom_anchor(region),
+                _raw_toggle_html(key, is_top=False),
+                sublime.LAYOUT_INLINE,
+                on_navigate=self.on_navigate,
+            ),
+        ]
+        self._set_phantoms(
+            self.phantom_sets, sublime.PhantomSet, "raw", key, phantoms
+        )
+
+    def show_top_only(self, key, region, show_toolbar=False):
+        """Keep only the top raw toggle phantom during deferred fold."""
+        if key in self.phantom_sets:
+            self.phantom_sets[key].update(
+                [self._build_top_phantom(key, region, show_toolbar)]
+            )
+
+    def clear(self, key):
+        """Clear all raw phantoms associated with key."""
+        self._clear_phantom_set(self.phantom_sets, key)
+
+    def _build_top_phantom(self, key, region, show_toolbar):
+        top_anchor, top_layout = self._top_layout(
+            region, show_toolbar=show_toolbar
+        )
+        return sublime.Phantom(
+            top_anchor,
+            _raw_toggle_html(
+                key,
+                is_top=True,
+                show_toolbar=show_toolbar,
+                inline=top_layout == sublime.LAYOUT_INLINE,
+            ),
+            top_layout,
+            on_navigate=self.on_navigate,
+        )
+
+    def _top_layout(self, region, show_toolbar=False):
+        """Place raw top icon inline after ⋅⋅⋅, or as a block for toolbar/fallback."""
+        is_sep, line_reg = self._first_line_is_separator(region)
+        if not is_sep:
+            if line_reg.begin() > 0:
+                prev_end = line_reg.begin() - 1
+                return sublime.Region(prev_end, prev_end), sublime.LAYOUT_BLOCK
+            end_pt = line_reg.end()
+            return sublime.Region(end_pt, end_pt), sublime.LAYOUT_INLINE
+        top_pt = line_reg.end()
+        layout = sublime.LAYOUT_BLOCK if show_toolbar else sublime.LAYOUT_INLINE
+        return sublime.Region(top_pt, top_pt), layout
+
+    def _bottom_anchor(self, region):
+        """Return zero-width region at the end of the last non-blank line."""
+        end = region.end()
+        if hasattr(self.view, "substr"):
+            if end > region.begin() and hasattr(self.view, "line"):
+                # Keep bottom toggle on the blank/NBSP line below a trailing HTML table
+                line_reg = self.view.line(end)
+                if (
+                    line_reg.begin() > region.begin()
+                    and not self.view.substr(line_reg).strip()
+                ):
+                    pt = line_reg.begin()
+                    return sublime.Region(pt, pt)
+            pt = end
+            probe = self.view.substr(pt - 1) if pt > region.begin() else ""
+            if probe:
+                while pt > region.begin():
+                    ch = self.view.substr(pt - 1)
+                    if not ch or not ch.isspace():
+                        break
+                    pt -= 1
+                last_pt = (
+                    max(region.begin(), pt - 1)
+                    if pt > region.begin()
+                    else region.begin()
+                )
+                line_end = (
+                    self.view.line(last_pt).end()
+                    if hasattr(self.view, "line")
+                    else pt
+                )
+                return sublime.Region(line_end, line_end)
+        return sublime.Region(end, end)
+
+
+class PreviewPhantomView(_BasePhantomView):
+    """Manage Markdown preview card and top inline toggle phantoms."""
+
+    def __init__(self, view, on_navigate, max_width_getter=None):
+        super().__init__(view, on_navigate)
+        self.max_width_getter = max_width_getter
+        self.phantom_sets = {}
+        self.top_phantom_sets = {}
+        self._card_css = (
+            self._build_card_css() if view is not None else PREVIEW_CARD_CSS
+        )
+
+    def show(self, key, region, md_text, show_toolbar=False):
+        """Render and mount preview card and optional top inline toggle."""
+        # Sync inline top ‹› before mounting block card at region.end() so
+        # Sublime lays out LAYOUT_INLINE ahead of LAYOUT_BLOCK at that point.
+        include_top = self._sync_top_phantom(
+            key, region, show_toolbar=show_toolbar
+        )
+        anchor = sublime.Region(region.end(), region.end())
+        card_phantom = mdpopups.Phantom(
+            anchor,
+            self._build_card_html(
+                key,
+                md_text,
+                show_toolbar=show_toolbar,
+                include_top=include_top,
+            ),
+            sublime.LAYOUT_BLOCK,
+            md=False,
+            css=self._card_css,
+            on_navigate=self.on_navigate,
+            wrapper_class="termmate-response-card",
+        )
+        self._set_phantoms(
+            self.phantom_sets,
+            mdpopups.PhantomSet,
+            "preview",
+            key,
+            [card_phantom],
+        )
+
+    def clear(self, key):
+        """Clear preview card and top inline toggle phantoms for key."""
+        self._clear_phantom_set(self.phantom_sets, key)
+        self._clear_phantom_set(self.top_phantom_sets, key)
+
+    _DEFAULT_MONO_FONTS = {"darwin": "Menlo", "win32": "Consolas"}
+
+    def _editor_font_family(self):
+        """Return CSS font-family stack matching editor font_face or OS default."""
+        raw = self.view.settings().get("font_face", "")
+        font_face = (
+            "".join(c for c in raw.strip() if c not in '"\';{}')
+            if isinstance(raw, str)
+            else ""
+        )
+        if not font_face:
+            font_face = self._DEFAULT_MONO_FONTS.get(sys.platform, "")
+        prefix = f'"{font_face}", ' if font_face else ""
+        return f"{prefix}var(--mdpopups-font-mono), monospace"
+
+    def _build_card_css(self):
+        """Append editor-matched font-family override to PREVIEW_CARD_CSS."""
+        font_family = self._editor_font_family()
+        return (
+            f"{PREVIEW_CARD_CSS}\n"
+            "div.mdpopups .termmate-response-preview,\n"
+            "div.mdpopups .termmate-response-preview code,\n"
+            "div.mdpopups .termmate-response-preview pre,\n"
+            "div.mdpopups .termmate-response-preview .chat-tool-line,\n"
+            ".termmate-response-preview,\n"
+            ".termmate-response-preview code,\n"
+            ".termmate-response-preview pre,\n"
+            ".termmate-response-preview .chat-tool-line {\n"
+            f"    font-family: {font_family};\n"
+            "}"
         )
 
     def _get_max_width(self):
@@ -1035,53 +1269,79 @@ class ResponsePhantomManager:
             max_width=self._get_max_width(),
         ).strip()
 
-    @staticmethod
-    def _resolve_bool_getter(getter, default):
-        if getter is not None:
+    def _render_body_html(self, md_text):
+        """Convert Markdown body HTML via public mdpopups.md2html."""
+        processed_md = self._prepare_markdown(md_text)
+        body_html = None
+        if HAS_MDPOPUPS and mdpopups is not None and hasattr(mdpopups, "md2html"):
             try:
-                value = getter() if callable(getter) else getter
-                return bool(value)
-            except Exception:
-                pass
-        return default
+                candidate = mdpopups.md2html(self.view, processed_md)
+                if isinstance(candidate, str):
+                    body_html = render_ordered_lists_as_html(candidate)
+            except Exception as e:
+                LOG.error(f"Error rendering preview via mdpopups.md2html: {e}")
+        if body_html is None:
+            body_html = f"<pre>{html.escape(strip_list_separators(processed_md))}</pre>"
+        return body_html
 
-    def _resolve_raw_mode(self, raw_mode=None):
-        if raw_mode is not None:
-            return bool(raw_mode)
-        return self._resolve_bool_getter(self.default_raw_mode_getter, True)
+    def _build_card_html(self, key, md_text, show_toolbar=False, include_top=True):
+        body_html = self._render_body_html(md_text)
+        footer_html = _preview_footer_html(key)
+        preview_block = (
+            f'<div class="termmate-response-preview">{body_html}{footer_html}</div>'
+        )
+        if include_top:
+            top_bar = _preview_toggle_html(key, show_toolbar=show_toolbar)
+            return f"{top_bar}{preview_block}"
+        return f'<div class="termmate-response-top-spacer">{preview_block}</div>'
 
-    def _resolve_show_toolbar(self):
-        return self._resolve_bool_getter(self.show_toolbar_getter, False)
-
-    def _apply_fold_state(self, region, raw_mode):
-        self.view.unfold(region)
-        if not raw_mode:
-            self.view.fold(region)
-        if self.table_manager is not None:
-            self.table_manager.sync_response_region(region, raw_mode)
-
-    def add(self, region, md_text, raw_mode=None):
-        """Register the agent response region and render its toggle/preview phantoms."""
-        if not self.is_available or not md_text or not md_text.strip():
+    def _top_inline_anchor(self, region, show_toolbar=False):
+        """Return region.end() for inline ‹› after ⋅⋅⋅⋯, or None for card bar."""
+        if show_toolbar:
             return None
-        if region.empty():
+        is_sep, _ = self._first_line_is_separator(region)
+        if not is_sep:
             return None
+        end_pt = region.end()
+        return sublime.Region(end_pt, end_pt)
 
-        use_raw = self._resolve_raw_mode(raw_mode)
-        key = f"{self.REGION_PREFIX}{self.next_id}"
-        self.next_id += 1
-        self.view.add_regions(key, [region], flags=sublime.HIDDEN)
-        entry = {
-            "key": key,
-            "md_text": md_text,
-            "raw_mode": use_raw,
-        }
-        self.entries.append(entry)
-        self._apply_fold_state(region, use_raw)
-        self._update_entry(entry)
-        return key
+    def _sync_top_phantom(self, key, region, show_toolbar):
+        top_anchor = self._top_inline_anchor(
+            region, show_toolbar=show_toolbar
+        )
+        if top_anchor is None:
+            self._clear_phantom_set(self.top_phantom_sets, key)
+            return True
+        top_ph = sublime.Phantom(
+            top_anchor,
+            _preview_top_inline_html(key),
+            sublime.LAYOUT_INLINE,
+            on_navigate=self.on_navigate,
+        )
+        self._set_phantoms(
+            self.top_phantom_sets,
+            sublime.PhantomSet,
+            "preview_top",
+            key,
+            [top_ph],
+        )
+        return False
 
-    def _entry_anchor_screen_y(self, region, is_top):
+
+class _ViewportScrollAnchor:
+    """Capture and restore viewport scroll offsets across response fold/resize."""
+
+    def __init__(self, view):
+        self.view = view
+
+    def can_defer_fold(self, region):
+        """Return True when layout geometry supports deferred fold anchoring."""
+        return (
+            self._viewport_geometry() is not None
+            and self._layout_y(region.end()) is not None
+        )
+
+    def capture(self, region, is_top):
         """Return viewport-relative Y of the top or bottom anchor before toggling."""
         pre_vp = self._viewport_geometry()
         if pre_vp is None:
@@ -1095,61 +1355,12 @@ class ResponsePhantomManager:
             return None
         return anchor_y - pre_vp[1]
 
-    def _finish_toggle(self, key, gen, is_top, pre_screen_y):
-        """Complete deferred fold (if pending) and lock viewport anchor."""
-        if (
-            not self.view
-            or (hasattr(self.view, "is_valid") and not self.view.is_valid())
-            or self._toggle_generations.get(key) != gen
-        ):
-            return
-        entry = next((e for e in self.entries if e["key"] == key), None)
-        regions = self.view.get_regions(key) if entry is not None else []
-        if entry is None or not regions:
-            return
-        reg = regions[0]
-
-        if key in self._pending_preview_folds:
-            self._pending_preview_folds.discard(key)
-            self._clear_phantom_set(self.raw_phantom_sets, key)
-            self._apply_fold_state(reg, False)
-
-        scroller = self._scroll_entry_top if is_top else self._scroll_entry_bottom
-        scroller(reg, pre_screen_y)
-
-    def toggle_entry(self, key, is_top=True):
-        """Toggle a single response entry between rendered preview and raw text."""
-        target = next((e for e in self.entries if e["key"] == key), None)
-        if target is None:
-            return
-        gen = self._toggle_generations.get(key, 0) + 1
-        self._toggle_generations[key] = gen
-        regions = self.view.get_regions(key)
-        reg = regions[0] if regions else None
-        pre_screen_y = self._entry_anchor_screen_y(reg, is_top) if reg else None
-
-        target["raw_mode"] = not target["raw_mode"]
-        defer_fold = (
-            not target["raw_mode"]
-            and reg is not None
-            and self._viewport_geometry() is not None
-            and self._layout_y(reg.end()) is not None
-        )
-        if defer_fold:
-            self._pending_preview_folds.add(key)
-            self._update_entry(target, defer_fold=True)
-            delay = 30
+    def restore(self, region, is_top, pre_screen_y):
+        """Restore viewport scroll position around the toggled response anchor."""
+        if is_top:
+            self._scroll_top(region, pre_screen_y)
         else:
-            self._pending_preview_folds.discard(key)
-            if reg is not None:
-                self._apply_fold_state(reg, target["raw_mode"])
-            self._update_entry(target)
-            delay = 0 if target["raw_mode"] else 30
-
-        sublime.set_timeout(
-            lambda: self._finish_toggle(key, gen, is_top, pre_screen_y),
-            delay,
-        )
+            self._scroll_bottom(region, pre_screen_y)
 
     @staticmethod
     def _as_float_pair(value):
@@ -1192,7 +1403,9 @@ class ResponsePhantomManager:
     def _entry_bottom_y(self, region, top_y):
         """Resolve Y below any LAYOUT_BLOCK phantoms anchored at region.end()."""
         bot_pt = region.end()
-        bot_line_end = self.view.line(bot_pt).end() if hasattr(self.view, "line") else bot_pt
+        bot_line_end = (
+            self.view.line(bot_pt).end() if hasattr(self.view, "line") else bot_pt
+        )
         view_size = self.view.size() if hasattr(self.view, "size") else None
         if not isinstance(view_size, int) or isinstance(view_size, bool):
             return None
@@ -1227,8 +1440,7 @@ class ResponsePhantomManager:
                 return min(target_vy, max(0.0, ext[1] - vh))
         return target_vy
 
-    def _scroll_entry_top(self, reg, pre_screen_y):
-        """Scroll viewport so the top of reg stays anchored across fold/phantom resize."""
+    def _scroll_top(self, reg, pre_screen_y):
         top_pt = self.view.line(reg.begin()).begin()
         top_y = self._layout_y(top_pt)
         vp = self._viewport_geometry()
@@ -1252,8 +1464,7 @@ class ResponsePhantomManager:
         target_vy = self._clamp_scroll_past_end(target_vy, vh)
         set_vp((vx, target_vy), False)
 
-    def _scroll_entry_bottom(self, reg, pre_screen_y):
-        """Scroll viewport so the bottom of reg and its bottom toggle stay visible."""
+    def _scroll_bottom(self, reg, pre_screen_y):
         bounds = self._entry_layout_bounds(reg)
         vp = self._viewport_geometry()
         set_vp = getattr(self.view, "set_viewport_position", None)
@@ -1286,6 +1497,321 @@ class ResponsePhantomManager:
         target_vy = self._clamp_scroll_past_end(target_vy, vh)
         set_vp((vx, target_vy), False)
 
+
+class ResponsePhantomManager:
+    """Own agent response regions and coordinate raw/preview toggle transitions."""
+
+    REGION_PREFIX = "term_chat_response_"
+    PERSISTENT_REGIONS_KEY = "term_chat_response_regions"
+    _PREVIEW_SETTLE_DELAY_MS = 30
+
+    def __init__(
+        self,
+        view,
+        max_width_getter=None,
+        on_navigate_link=None,
+        default_raw_mode_getter=None,
+        show_toolbar_getter=None,
+        table_manager=None,
+    ):
+        self.view = view
+        self.max_width_getter = max_width_getter
+        self.on_navigate_link = on_navigate_link
+        self.default_raw_mode_getter = default_raw_mode_getter
+        self.show_toolbar_getter = show_toolbar_getter
+        self.table_manager = table_manager
+        self._entries = {}
+        self.next_id = 0
+        self.raw_view = RawPhantomView(view, self._on_navigate)
+        self.preview_view = PreviewPhantomView(
+            view,
+            self._on_navigate,
+            max_width_getter=max_width_getter,
+        )
+        self._scroll_anchor = _ViewportScrollAnchor(view)
+
+    @property
+    def is_available(self):
+        return bool(
+            HAS_MDPOPUPS
+            and mdpopups is not None
+            and self.view is not None
+            and hasattr(sublime, "PhantomSet")
+            and hasattr(sublime, "Phantom")
+            and hasattr(mdpopups, "PhantomSet")
+            and hasattr(mdpopups, "Phantom")
+        )
+
+    def _sync_persistent_regions(self):
+        """Persist all active response bounds on the view for restart recovery."""
+        if not self._is_view_valid():
+            return
+        regions = []
+        for key in self._entries:
+            reg = self._entry_region(key)
+            if reg is not None and not reg.empty():
+                regions.append(reg)
+        if regions:
+            flags = getattr(sublime, "HIDDEN", 0) | getattr(sublime, "PERSISTENT", 0)
+            self.view.add_regions(
+                self.PERSISTENT_REGIONS_KEY, regions, flags=flags
+            )
+        else:
+            self.view.erase_regions(self.PERSISTENT_REGIONS_KEY)
+
+    def resolve_region(self, resp_start, limit):
+        """Return normalized response region, keeping terminator after HTML tables."""
+        if not self._is_view_valid():
+            return None
+        content_end = limit
+        while (
+            content_end > resp_start
+            and self.view.substr(content_end - 1) in ("\n", FOLD_TERMINATOR)
+        ):
+            content_end -= 1
+        if content_end <= resp_start:
+            return None
+        resp_end = content_end
+        if (
+            self.table_manager is not None
+            and self.table_manager.has_table_ending_at(content_end)
+            and limit - content_end >= 2
+        ):
+            # Include the blank/NBSP line for preview folding while leaving >= 1 trailing
+            # newline before limit so later appends (e.g. artifact.show) don't shift phantoms
+            resp_end = (
+                content_end + 2
+                if self.view.substr(content_end + 1) == FOLD_TERMINATOR
+                and limit - content_end >= 3
+                else content_end + 1
+            )
+        return sublime.Region(resp_start, resp_end)
+
+    def add(self, region, md_text, raw_mode=None, _sync_persistent=True):
+        """Register the agent response region and render its toggle/preview phantoms."""
+        if (
+            not self.is_available
+            or not self._is_view_valid()
+            or not md_text
+            or not md_text.strip()
+            or region.empty()
+        ):
+            return None
+
+        use_raw = self._resolve_raw_mode(raw_mode)
+        key = f"{self.REGION_PREFIX}{self.next_id}"
+        self.next_id += 1
+        self.view.add_regions(key, [region], flags=sublime.HIDDEN)
+        entry = {
+            "key": key,
+            "md_text": md_text,
+            "raw_mode": use_raw,
+            "generation": 0,
+            "pending_fold": False,
+        }
+        self._entries[key] = entry
+        if _sync_persistent:
+            self._sync_persistent_regions()
+        self._apply_fold_state(region, use_raw)
+        self._render_entry(entry, region)
+        return key
+
+    def restore(self):
+        """Rebuild response entries in raw mode from persisted view regions."""
+        if not self.is_available or not self._is_view_valid():
+            return 0
+        persisted = list(self.view.get_regions(self.PERSISTENT_REGIONS_KEY))
+        if not persisted:
+            return 0
+        existing = {
+            (reg.begin(), reg.end())
+            for _, _, reg in self._active_entries()
+        }
+        restored = 0
+        for reg in persisted:
+            if reg.empty() or (reg.begin(), reg.end()) in existing:
+                continue
+            md_text = self.view.substr(reg)
+            if not md_text or not md_text.strip():
+                self.view.unfold(reg)
+                continue
+            if self.add(reg, md_text, raw_mode=True, _sync_persistent=False) is not None:
+                existing.add((reg.begin(), reg.end()))
+                restored += 1
+        self._sync_persistent_regions()
+        return restored
+
+    def refresh(self):
+        """Re-render active preview phantoms (e.g. after theme/width changes)."""
+        if not self.is_available or not self._is_view_valid():
+            return
+        for entry in list(self._entries.values()):
+            if entry["raw_mode"]:
+                continue
+            region = self._resolve_active_region(entry)
+            if region is not None:
+                self._render_entry(entry, region)
+
+    def truncate(self, cut_point):
+        """Unfold and drop response entries at or after cut_point (rewind)."""
+        kept = {}
+        for key, entry in self._entries.items():
+            reg = self._entry_region(key)
+            if reg is not None and reg.end() < cut_point:
+                kept[key] = entry
+            else:
+                self._dispose_entry(entry, reg)
+        self._entries = kept
+        self._sync_persistent_regions()
+        if self.table_manager is not None:
+            self.table_manager.truncate(cut_point)
+
+    def clear(self):
+        """Unfold and remove all response regions and phantoms."""
+        for entry in self._entries.values():
+            self._dispose_entry(entry)
+        self._entries = {}
+        self._sync_persistent_regions()
+        if self.table_manager is not None:
+            self.table_manager.clear()
+
+    def has_entries(self):
+        """Return True when at least one response region is tracked."""
+        return bool(self._entries)
+
+    def _active_entries(self):
+        """Return active (key, entry, region) tuples in insertion order."""
+        active = []
+        for key, entry in list(self._entries.items()):
+            reg = self._resolve_active_region(entry)
+            if reg is not None:
+                active.append((key, entry, reg))
+        return active
+
+    def active_entries(self):
+        """Return active (key, raw_mode, region) tuples in insertion order."""
+        return [
+            (key, entry["raw_mode"], reg)
+            for key, entry, reg in self._active_entries()
+        ]
+
+    @staticmethod
+    def _anchor_is_top(bounds, vy, vy_end):
+        """Return True to anchor the top of a response, False to anchor the bottom."""
+        if bounds is None:
+            return True
+        top_y, bot_y = bounds
+        return top_y >= vy or (bot_y > vy_end and (vy - top_y) <= (bot_y - vy_end))
+
+    def is_point_in_viewport(self, point):
+        """Return True if point is visible, False if off-screen, or None if unknown."""
+        vp = self._scroll_anchor._viewport_geometry()
+        if vp is None or vp[3] <= 0:
+            return None
+        if point is None:
+            return False
+        cursor_y = self._scroll_anchor._layout_y(point)
+        if cursor_y is None:
+            return False
+        _, vy, _, vh = vp
+        line_h = self._scroll_anchor._line_height()
+        return (cursor_y + line_h > vy) and (cursor_y < vy + vh)
+
+    def viewport_target(self):
+        """Return (key, is_top) for the active entry with largest viewport overlap."""
+        active = self._active_entries()
+        if not active:
+            return None
+        vp = self._scroll_anchor._viewport_geometry()
+        if vp is None or vp[3] <= 0:
+            return None
+
+        _, vy, _, vh = vp
+        vy_end = vy + vh
+        best_key = None
+        best_is_top = True
+        best_overlap = 0.0
+        for key, _, reg in active:
+            bounds = self._scroll_anchor._entry_layout_bounds(reg)
+            if bounds is None:
+                continue
+            top_y, bot_y = bounds
+            overlap = min(bot_y, vy_end) - max(top_y, vy)
+            if overlap > 0 and overlap >= best_overlap:
+                best_overlap = overlap
+                best_key = key
+                best_is_top = self._anchor_is_top(bounds, vy, vy_end)
+
+        return (best_key, best_is_top) if best_key is not None else None
+
+    def toggle_all(self):
+        """Toggle all active response entries between raw and preview mode."""
+        if not self.is_available or not self._is_view_valid():
+            return 0
+        active = self._active_entries()
+        if not active:
+            return 0
+        target_raw = not any(entry["raw_mode"] for _, entry, _ in active)
+        toggled = 0
+        for _, entry, reg in active:
+            if entry["raw_mode"] == target_raw:
+                continue
+            entry["generation"] += 1
+            entry["pending_fold"] = False
+            entry["raw_mode"] = target_raw
+            self._apply_fold_state(reg, target_raw)
+            self._render_entry(entry, reg)
+            toggled += 1
+        return toggled
+
+    def toggle_entry(self, key, is_top=True):
+        """Toggle a single response entry between rendered preview and raw text."""
+        if not self.is_available or not self._is_view_valid():
+            return
+        entry = self._entries.get(key)
+        if entry is None:
+            return
+        reg = self._resolve_active_region(entry)
+        if reg is None:
+            return
+        entry["generation"] += 1
+        gen = entry["generation"]
+        pre_screen_y = self._scroll_anchor.capture(reg, is_top)
+
+        entry["raw_mode"] = not entry["raw_mode"]
+        defer_fold = not entry["raw_mode"] and self._scroll_anchor.can_defer_fold(reg)
+        if defer_fold:
+            entry["pending_fold"] = True
+            delay = self._PREVIEW_SETTLE_DELAY_MS
+        else:
+            entry["pending_fold"] = False
+            self._apply_fold_state(reg, entry["raw_mode"])
+            delay = 0 if entry["raw_mode"] else self._PREVIEW_SETTLE_DELAY_MS
+
+        self._render_entry(entry, reg)
+        sublime.set_timeout(
+            lambda: self._finish_toggle(key, gen, is_top, pre_screen_y),
+            delay,
+        )
+
+    def _finish_toggle(self, key, gen, is_top, pre_screen_y):
+        """Complete deferred fold (if pending) and lock viewport anchor."""
+        if not self._is_view_valid():
+            return
+        entry = self._entries.get(key)
+        if entry is None or entry["generation"] != gen:
+            return
+        reg = self._entry_region(key)
+        if reg is None:
+            return
+
+        if entry["pending_fold"]:
+            entry["pending_fold"] = False
+            self.raw_view.clear(key)
+            self._apply_fold_state(reg, False)
+
+        self._scroll_anchor.restore(reg, is_top, pre_screen_y)
+
     def _on_navigate(self, href):
         if href.startswith("toggle:"):
             parts = href.split(":", 2)
@@ -1294,251 +1820,76 @@ class ResponsePhantomManager:
             self.toggle_entry(key, is_top=is_top)
         elif self.on_navigate_link:
             self.on_navigate_link(href)
-        elif href.startswith(("http://", "https://", "mailto:")):
-            webbrowser.open_new_tab(href)
 
-    def _render_preview_body_html(self, entry):
-        """Convert Markdown body HTML via public mdpopups.md2html."""
-        processed_md = self._prepare_markdown(entry["md_text"])
-        body_html = None
-        if HAS_MDPOPUPS and mdpopups is not None and hasattr(mdpopups, "md2html"):
-            try:
-                candidate = mdpopups.md2html(self.view, processed_md)
-                if isinstance(candidate, str):
-                    body_html = candidate
-            except Exception as e:
-                LOG.error(f"Error rendering preview via mdpopups.md2html: {e}")
-        if body_html is None:
-            body_html = f"<pre>{html.escape(processed_md)}</pre>"
-        return body_html
-
-    def _build_preview_card_html(self, entry, show_toolbar=None, include_top=True):
-        key = entry["key"]
-        if show_toolbar is None:
-            show_toolbar = self._resolve_show_toolbar()
-        body_html = self._render_preview_body_html(entry)
-        footer_html = _preview_footer_html(key)
-        preview_block = (
-            f'<div class="termmate-response-preview">{body_html}{footer_html}</div>'
+    def _is_view_valid(self):
+        return bool(
+            self.view
+            and (not hasattr(self.view, "is_valid") or self.view.is_valid())
         )
-        if include_top:
-            top_bar = _preview_toggle_html(key, show_toolbar=show_toolbar)
-            return f"{top_bar}{preview_block}"
-        return f'<div class="termmate-response-top-spacer">{preview_block}</div>'
 
     @staticmethod
-    def _clear_phantom_set(store, key):
-        ps = store.pop(key, None)
-        if ps is not None:
-            ps.update([])
+    def _resolve_bool_getter(getter, default):
+        if getter is not None:
+            try:
+                value = getter() if callable(getter) else getter
+                return bool(value)
+            except Exception:
+                pass
+        return default
 
-    def _preview_top_inline_anchor(self, region, show_toolbar=False):
-        """Return region.end() for inline ‹› after ⋅⋅⋅⋯, or None for card bar."""
-        if show_toolbar:
-            return None
-        line_reg = self.view.line(region.begin())
-        if hasattr(self.view, "substr"):
-            line_text = self.view.substr(line_reg).strip()
-            if line_text and line_text != "⋅⋅⋅":
-                return None
-        end_pt = region.end()
-        return sublime.Region(end_pt, end_pt)
+    def _resolve_raw_mode(self, raw_mode=None):
+        if raw_mode is not None:
+            return bool(raw_mode)
+        return self._resolve_bool_getter(self.default_raw_mode_getter, True)
 
-    def _build_raw_top_phantom(self, key, region, show_toolbar):
-        top_anchor, top_layout = self._raw_top_layout(
-            region, show_toolbar=show_toolbar
-        )
-        return sublime.Phantom(
-            top_anchor,
-            _raw_toggle_html(
-                key,
-                is_top=True,
-                show_toolbar=show_toolbar,
-                inline=top_layout == sublime.LAYOUT_INLINE,
-            ),
-            top_layout,
-            on_navigate=self._on_navigate,
-        )
+    def _resolve_show_toolbar(self):
+        return self._resolve_bool_getter(self.show_toolbar_getter, False)
 
-    def _set_phantoms(self, store, cls, suffix, key, phantoms):
-        ps = store.get(key)
-        if ps is None:
-            ps = cls(self.view, f"{RESPONSE_PHANTOM_KEY}:{suffix}:{key}")
-            store[key] = ps
-        ps.update(phantoms)
-
-    def _sync_preview_top_phantom(self, key, region, show_toolbar):
-        top_anchor = self._preview_top_inline_anchor(
-            region, show_toolbar=show_toolbar
-        )
-        if top_anchor is None:
-            self._clear_phantom_set(self.preview_top_phantom_sets, key)
-            return True
-        top_ph = sublime.Phantom(
-            top_anchor,
-            _preview_top_inline_html(key),
-            sublime.LAYOUT_INLINE,
-            on_navigate=self._on_navigate,
-        )
-        self._set_phantoms(
-            self.preview_top_phantom_sets,
-            sublime.PhantomSet,
-            "preview_top",
-            key,
-            [top_ph],
-        )
-        return False
-
-    def _remove_entry_phantoms(self, key):
-        self._pending_preview_folds.discard(key)
-        self._toggle_generations[key] = self._toggle_generations.get(key, 0) + 1
-        for store in (
-            self.raw_phantom_sets,
-            self.preview_phantom_sets,
-            self.preview_top_phantom_sets,
-        ):
-            self._clear_phantom_set(store, key)
-
-    def _raw_bottom_anchor(self, region):
-        """Return zero-width region at the end of the last non-blank line."""
-        end = region.end()
-        if hasattr(self.view, "substr"):
-            pt = end
-            probe = self.view.substr(pt - 1) if pt > region.begin() else ""
-            if probe:
-                while pt > region.begin():
-                    ch = self.view.substr(pt - 1)
-                    if not ch or not ch.isspace():
-                        break
-                    pt -= 1
-                last_pt = (
-                    max(region.begin(), pt - 1)
-                    if pt > region.begin()
-                    else region.begin()
-                )
-                line_end = (
-                    self.view.line(last_pt).end()
-                    if hasattr(self.view, "line")
-                    else pt
-                )
-                return sublime.Region(line_end, line_end)
-        return sublime.Region(end, end)
-
-    def _update_entry(self, entry, defer_fold=None):
-        if not self.is_available or not self.view:
-            return False
-        if hasattr(self.view, "is_valid") and not self.view.is_valid():
-            return False
-        key = entry["key"]
+    def _entry_region(self, key):
         regions = self.view.get_regions(key)
-        if not regions:
-            self._remove_entry_phantoms(key)
-            self.entries = [e for e in self.entries if e["key"] != key]
-            return False
-        region = regions[0]
+        return regions[0] if regions else None
+
+    def _apply_fold_state(self, region, raw_mode):
+        self.view.unfold(region)
+        if not raw_mode:
+            self.view.fold(region)
+        if self.table_manager is not None:
+            self.table_manager.sync_response_region(region, raw_mode)
+
+    def _dispose_entry(self, entry, region=None):
+        key = entry["key"]
+        entry["pending_fold"] = False
+        entry["generation"] += 1
+        self.raw_view.clear(key)
+        self.preview_view.clear(key)
+        if region is None:
+            region = self._entry_region(key)
+        if region is not None:
+            self.view.unfold(region)
+        self.view.erase_regions(key)
+
+    def _resolve_active_region(self, entry):
+        """Return the active buffer region for entry, disposing stale entries."""
+        reg = self._entry_region(entry["key"])
+        if reg is None:
+            self._dispose_entry(entry)
+            self._entries.pop(entry["key"], None)
+            self._sync_persistent_regions()
+            return None
+        return reg
+
+    def _render_entry(self, entry, region):
+        """Sync raw or preview phantoms for entry at its resolved region."""
+        key = entry["key"]
         show_toolbar = self._resolve_show_toolbar()
         if entry["raw_mode"]:
-            self._pending_preview_folds.discard(key)
-            self._clear_phantom_set(self.preview_phantom_sets, key)
-            self._clear_phantom_set(self.preview_top_phantom_sets, key)
-            phantoms = [
-                self._build_raw_top_phantom(key, region, show_toolbar),
-                sublime.Phantom(
-                    self._raw_bottom_anchor(region),
-                    _raw_toggle_html(key, is_top=False),
-                    sublime.LAYOUT_INLINE,
-                    on_navigate=self._on_navigate,
-                ),
-            ]
-            self._set_phantoms(
-                self.raw_phantom_sets, sublime.PhantomSet, "raw", key, phantoms
-            )
+            self.preview_view.clear(key)
+            self.raw_view.show(key, region, show_toolbar=show_toolbar)
+            return
+        self.preview_view.show(
+            key, region, entry["md_text"], show_toolbar=show_toolbar
+        )
+        if entry["pending_fold"]:
+            self.raw_view.show_top_only(key, region, show_toolbar=show_toolbar)
         else:
-            if defer_fold is None:
-                defer_fold = key in self._pending_preview_folds
-            # Sync inline top ‹› before mounting block card at region.end() so
-            # Sublime lays out LAYOUT_INLINE ahead of LAYOUT_BLOCK at that point.
-            include_top = self._sync_preview_top_phantom(
-                key, region, show_toolbar
-            )
-            if defer_fold:
-                if key in self.raw_phantom_sets:
-                    self.raw_phantom_sets[key].update(
-                        [self._build_raw_top_phantom(key, region, show_toolbar)]
-                    )
-            else:
-                self._clear_phantom_set(self.raw_phantom_sets, key)
-            anchor = sublime.Region(region.end(), region.end())
-            card_phantom = mdpopups.Phantom(
-                anchor,
-                self._build_preview_card_html(
-                    entry,
-                    show_toolbar=show_toolbar,
-                    include_top=include_top,
-                ),
-                sublime.LAYOUT_BLOCK,
-                md=False,
-                css=PREVIEW_CARD_CSS,
-                on_navigate=self._on_navigate,
-                wrapper_class="termmate-response-card",
-            )
-            self._set_phantoms(
-                self.preview_phantom_sets,
-                mdpopups.PhantomSet,
-                "preview",
-                key,
-                [card_phantom],
-            )
-        return True
-
-    def _raw_top_layout(self, region, show_toolbar=False):
-        """Place raw top icon inline after ⋅⋅⋅, or as a block for toolbar/fallback."""
-        start = region.begin()
-        line_reg = self.view.line(start)
-        if hasattr(self.view, "substr"):
-            line_text = self.view.substr(line_reg).strip()
-            if line_text and line_text != "⋅⋅⋅":
-                if line_reg.begin() > 0:
-                    prev_end = line_reg.begin() - 1
-                    return sublime.Region(prev_end, prev_end), sublime.LAYOUT_BLOCK
-                end_pt = line_reg.end()
-                return sublime.Region(end_pt, end_pt), sublime.LAYOUT_INLINE
-        top_pt = line_reg.end()
-        layout = sublime.LAYOUT_BLOCK if show_toolbar else sublime.LAYOUT_INLINE
-        return sublime.Region(top_pt, top_pt), layout
-
-    def refresh(self):
-        """Re-render active preview phantoms (e.g. after theme/width changes)."""
-        for entry in list(self.entries):
-            if not entry["raw_mode"]:
-                self._update_entry(entry)
-
-    def truncate(self, cut_point):
-        """Unfold and drop response entries at or after cut_point (rewind)."""
-        kept = []
-        for entry in self.entries:
-            key = entry["key"]
-            regions = self.view.get_regions(key)
-            if regions and regions[0].end() < cut_point:
-                kept.append(entry)
-            else:
-                self._remove_entry_phantoms(key)
-                if regions:
-                    self.view.unfold(regions[0])
-                self.view.erase_regions(key)
-        self.entries = kept
-        if self.table_manager is not None:
-            self.table_manager.truncate(cut_point)
-
-    def clear(self):
-        """Unfold and remove all response regions and phantoms."""
-        for entry in self.entries:
-            key = entry["key"]
-            self._remove_entry_phantoms(key)
-            regions = self.view.get_regions(key)
-            if regions:
-                self.view.unfold(regions[0])
-            self.view.erase_regions(key)
-        self.entries = []
-        if self.table_manager is not None:
-            self.table_manager.clear()
+            self.raw_view.clear(key)

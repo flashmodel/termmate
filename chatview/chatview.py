@@ -6,7 +6,6 @@ import re
 import shutil
 import asyncio
 import threading
-import webbrowser
 import sublime
 import sublime_plugin
 
@@ -317,7 +316,7 @@ def _restore_chat_sessions():
 def _reconnect_chat_view(view):
     """
     Reconnect an existing chat view to a new ChatSession after a restart.
-    Appends a reconnection notice, but does not redraw historical phantoms.
+    Restores persisted response toggle phantoms in raw mode and appends a notice.
     """
     window = view.window()
     if not window:
@@ -347,6 +346,8 @@ def _reconnect_chat_view(view):
     )
     chat_threads.register(window, view, session)
     update_agent_model_status(window)
+    if session.is_response_markdown_enabled():
+        session.response_phantoms.restore()
     # Restore the input phantoms at the existing CHAT_INPUT_START position
     session.notice_phantom.show("conversation restored after restart")
     session.model_phantom.update()
@@ -1644,12 +1645,11 @@ class ChatSession:
                     "term_chat_output_append",
                     {"text": tail, "html_tables": tail_tables, "scroll": False},
                 )
-        resp_end = get_input_start(self.chat_view, 0) - 1
-        while resp_end > resp_start and self.chat_view.substr(resp_end - 1) == "\n":
-            resp_end -= 1
-        if resp_end <= resp_start:
+        region = self.response_phantoms.resolve_region(
+            resp_start, get_input_start(self.chat_view, 0) - 1
+        )
+        if region is None:
             return
-        region = sublime.Region(resp_start, resp_end)
         md_text = self.chat_view.substr(region)
         if not md_text or not md_text.strip():
             return
@@ -1681,9 +1681,6 @@ class ChatSession:
     def _handle_response_link(self, href):
         """Handle clickable links inside rendered response phantoms."""
         if not href:
-            return
-        if href.startswith(("http://", "https://", "mailto:")):
-            webbrowser.open_new_tab(href)
             return
         target = href[len("toolfile:"):] if href.startswith("toolfile:") else href
         cwd = self.agent_thread.cwd if self.agent_thread else self.cwd
@@ -2522,14 +2519,10 @@ class ChatSession:
                     "scroll": False,
                 })
                 if md_enabled:
-                    resp_end = get_input_start(self.chat_view, 0) - 1
-                    while (
-                        resp_end > resp_start
-                        and self.chat_view.substr(resp_end - 1) == "\n"
-                    ):
-                        resp_end -= 1
-                    if resp_end > resp_start:
-                        region = sublime.Region(resp_start, resp_end)
+                    region = self.response_phantoms.resolve_region(
+                        resp_start, get_input_start(self.chat_view, 0) - 1
+                    )
+                    if region is not None:
                         md_text = self.chat_view.substr(region)
                         if md_text and md_text.strip():
                             # Keep resumed history unfolded in raw mode so initial
@@ -2824,6 +2817,69 @@ class TermChatHistoryDownCommand(sublime_plugin.TextCommand):
         self.view.sel().add(sublime.Region(self.view.size()))
         self.view.show(self.view.size())
 
+
+class TermChatTogglePreviewCommand(sublime_plugin.TextCommand):
+    """Toggle Markdown preview/raw mode for the response in viewport or at cursor."""
+
+    def _resolve_cursor_target(self, entries, point, input_start=None):
+        """Fallback cursor-based resolution when layout geometry is unavailable."""
+        if point is not None:
+            if input_start is not None and point >= input_start:
+                return (entries[-1][0], False)
+            for key, raw_mode, reg in entries:
+                line_begin = self.view.line(reg.begin()).begin()
+                line_end = self.view.line(reg.end()).end()
+                if point <= line_end:
+                    if point >= line_begin and raw_mode:
+                        is_top = (point - line_begin) <= (line_end - point)
+                        return (key, is_top)
+                    return (key, True)
+        return (entries[-1][0], False)
+
+    def _resolve_visible_cursor_target(self, entries, point, input_start=None):
+        """Resolve target when the cursor is visible in the viewport."""
+        if point is None:
+            return None
+        if input_start is not None and point >= input_start:
+            return (entries[-1][0], False)
+        for key, raw_mode, reg in entries:
+            line_begin = self.view.line(reg.begin()).begin()
+            line_end = self.view.line(reg.end()).end()
+            if line_begin <= point <= line_end:
+                is_top = (point - line_begin) <= (line_end - point) if raw_mode else True
+                return (key, is_top)
+        return None
+
+    def run(self, edit, scope="auto"):
+        session = chatview_sessions.get(self.view.id())
+        if not session:
+            return
+        if scope == "all":
+            session.response_phantoms.toggle_all()
+            return
+        entries = session.response_phantoms.active_entries()
+        if not entries:
+            return
+        sel = self.view.sel()
+        point = sel[0].begin() if sel else None
+        input_start = (
+            input_editable_start(self.view)
+            if self.view.settings().has(CHAT_INPUT_START)
+            else None
+        )
+        cursor_visible = session.response_phantoms.is_point_in_viewport(point)
+        if cursor_visible is None:
+            target = self._resolve_cursor_target(entries, point, input_start)
+        else:
+            target = (
+                self._resolve_visible_cursor_target(entries, point, input_start)
+                if cursor_visible
+                else None
+            )
+            if target is None:
+                target = session.response_phantoms.viewport_target()
+        if target is not None:
+            session.response_phantoms.toggle_entry(target[0], is_top=target[1])
 
 
 class ChatViewListener(sublime_plugin.EventListener):
