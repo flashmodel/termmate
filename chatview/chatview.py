@@ -2847,10 +2847,12 @@ class ChatViewListener(sublime_plugin.EventListener):
                 cmd_args = dict(args) if args else {}
                 if command_name == "insert" and cmd_args.get("characters") in ("\n", "\r\n"):
                     return ("move_to", {"to": "eof", "extend": False})
-                sublime.set_timeout(
-                    lambda: self._redirect_cursor(view, command_name, cmd_args), 0
-                )
-                return ("noop", {})
+                # Move cursor synchronously so the command runs once at EOF
+                end = view.size()
+                view.sel().clear()
+                view.sel().add(sublime.Region(end))
+                view.show(end)
+                return None
 
             return None
 
