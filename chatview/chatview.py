@@ -1965,7 +1965,8 @@ class ChatSession:
         if active:
             html = (
                 "<body style='margin:0;padding:0'>"
-                "<a href='rewind' style='color:var(--orangish);text-decoration:none;"
+                "<a href='rewind' title='Rewind conversation to this point' "
+                "style='color:var(--orangish);text-decoration:none;"
                 "font-size:0.85em;opacity:0.7;padding:2px 10px;"
                 "display:inline-block;'>↩&nbsp;</a>"
                 "</body>"
