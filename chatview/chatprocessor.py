@@ -429,11 +429,15 @@ class BaseChatMessageProcessor:
 
     def append_error(self, error_msg):
         """Append error message to chat view."""
-        sublime.set_timeout(
-            lambda: self.session.chat_view.run_command("term_chat_output_append",
-                {"text": f"\n\nError: {error_msg}\n"}),
-            0
-        )
+        def _append():
+            if hasattr(self.session, "finalize_response_render"):
+                self.session.finalize_response_render()
+            self.session.chat_view.run_command(
+                "term_chat_output_append",
+                {"text": f"\n\nError: {error_msg}\n"},
+            )
+
+        sublime.set_timeout(_append, 0)
 
     def open_tool_file(self, line_text, window, view=None, point=None):
         """Parse a tool-call line and open the referenced file. Returns True if handled."""

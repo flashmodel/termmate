@@ -9,6 +9,7 @@ import sublime
 
 from . import utils
 from . import diff_view
+from .md_render import FOLD_TERMINATOR
 
 LOG = logging.getLogger("TermMate")
 
@@ -192,8 +193,8 @@ class FileChangesArtifact:
             fold_end = base + len(text) - 1
 
             # Non-blank zero-indent terminator on the line after the gutter fold arrow
-            # The char below is (NBSP): renders blank, not indent whitespace.
-            text += " "
+            # NBSP renders blank, not indent whitespace.
+            text += FOLD_TERMINATOR
 
         view.run_command("term_chat_output_append", {"text": text, "is_tool": True})
 

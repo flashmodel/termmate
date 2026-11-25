@@ -17,6 +17,7 @@ class TablePhantomManager:
         self.view = view
         self.phantom_set = sublime.PhantomSet(view, "chatview_tables")
         self.entries = []
+        self._hidden = set()
         self.next_id = 0
 
     def add(self, region, table_html):
@@ -37,9 +38,12 @@ class TablePhantomManager:
         for key, table_html in self.entries:
             regions = self.view.get_regions(key)
             if not regions:
+                self._hidden.discard(key)
                 continue
             region = regions[0]
             active_entries.append((key, table_html))
+            if key in self._hidden:
+                continue
             # Anchor at the fold's end boundary so the phantom itself is not
             # swallowed by the folded region.
             anchor = sublime.Region(region.end(), region.end())
@@ -50,6 +54,36 @@ class TablePhantomManager:
             ))
         self.entries = active_entries
         self.phantom_set.update(phantoms)
+
+    def sync_response_region(self, resp_region, raw_mode):
+        """Show/re-fold or hide table phantoms enclosed in a response region."""
+        changed = False
+        for key, _ in self.entries:
+            regions = self.view.get_regions(key)
+            if not regions:
+                continue
+            reg = regions[0]
+            if reg.begin() >= resp_region.begin() and reg.end() <= resp_region.end():
+                if raw_mode:
+                    self.view.fold(reg)
+                    if key in self._hidden:
+                        self._hidden.discard(key)
+                        changed = True
+                elif key not in self._hidden:
+                    self._hidden.add(key)
+                    changed = True
+        if changed:
+            self._update()
+
+    def has_table_ending_at(self, point):
+        """Return True if an active visible HTML table ends at point."""
+        for key, _ in self.entries:
+            if key in self._hidden:
+                continue
+            regions = self.view.get_regions(key)
+            if regions and regions[0].end() == point:
+                return True
+        return False
 
     def refresh(self):
         """Redraw all table phantoms using their cached HTML."""
@@ -62,6 +96,7 @@ class TablePhantomManager:
             if regions and regions[0].end() < cut_point:
                 kept.append((key, table_html))
             else:
+                self._hidden.discard(key)
                 self.view.erase_regions(key)
         self.entries = kept
         self._update()
@@ -70,6 +105,7 @@ class TablePhantomManager:
         for key, _ in self.entries:
             self.view.erase_regions(key)
         self.entries = []
+        self._hidden.clear()
         self.phantom_set.update([])
 
 

@@ -23,6 +23,7 @@ from .chatprocessor import (
     BaseChatMessageProcessor,
     ClaudeMessageProcessor, CodexMessageProcessor, PiMessageProcessor,
     OpenCodeMessageProcessor, AntigravityMessageProcessor,
+    _parse_markdown_file_target,
 )
 from .chatpanel import (
     LoadingAnimation, NoticePhantom, RewindConfirmPanel, StatusHint,
@@ -33,6 +34,8 @@ from .md_render import MarkdownFormatter
 from .chatrender import (
     extract_diff_fold_ranges,
     quick_popup_manager,
+    resolve_markdown_preview_raw_mode,
+    ResponsePhantomManager,
 )
 from .artifact import FileChangesArtifact, DIFF_VIEW_PATH_KEY, diff_view_click
 from .install import run_install, find_existing_cli, get_agent_list_items
@@ -295,6 +298,7 @@ def _refresh_input_phantoms():
             session.input_marker.update()
             session.table_phantoms.refresh()
             session.refresh_prompt_buttons()
+            session.response_phantoms.refresh()
             LOG.debug(f"Redrew chat view input phantoms for view {view_id}")
     finally:
         preferences_redraw_scheduled = False
@@ -312,7 +316,7 @@ def _restore_chat_sessions():
 def _reconnect_chat_view(view):
     """
     Reconnect an existing chat view to a new ChatSession after a restart.
-    Appends a reconnection notice, but does not redraw historical phantoms.
+    Restores persisted response toggle phantoms in raw mode and appends a notice.
     """
     window = view.window()
     if not window:
@@ -342,6 +346,8 @@ def _reconnect_chat_view(view):
     )
     chat_threads.register(window, view, session)
     update_agent_model_status(window)
+    if session.is_response_markdown_enabled():
+        session.response_phantoms.restore()
     # Restore the input phantoms at the existing CHAT_INPUT_START position
     session.notice_phantom.show("conversation restored after restart")
     session.model_phantom.update()
@@ -1455,11 +1461,20 @@ class ChatSession:
         self.role = role
         if self.chat_view:
             self.chat_view.settings().set(CHAT_THREAD_LABEL, self.role.value)
-        self._reset_markdown_formatter()
+        self.current_resp_start = None
         self.cwd = cwd
         self.add_dirs = add_dirs or []
-        self.loading_animation = LoadingAnimation(self.chat_view)
         self.table_phantoms = TablePhantomManager(self.chat_view)
+        self.response_phantoms = ResponsePhantomManager(
+            self.chat_view,
+            max_width_getter=self._get_current_view_width,
+            on_navigate_link=self._handle_response_link,
+            default_raw_mode_getter=self.is_response_preview_default_raw,
+            show_toolbar_getter=self.is_preview_toolbar_enabled,
+            table_manager=self.table_phantoms,
+        )
+        self._reset_markdown_formatter()
+        self.loading_animation = LoadingAnimation(self.chat_view)
 
         self.notice_phantom = NoticePhantom(
             self.chat_view,
@@ -1582,6 +1597,99 @@ class ChatSession:
             max_width_getter=self._get_current_view_width,
         )
 
+    def is_response_markdown_enabled(self):
+        """Return True if full-response Markdown preview rendering is active."""
+        if not self.response_phantoms.is_available:
+            return False
+        settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+        return bool(settings.get("enable_markdown_preview", True))
+
+    def is_response_preview_default_raw(self):
+        """Return True when completed responses start in raw mode."""
+        settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+        return resolve_markdown_preview_raw_mode(
+            settings.get("markdown_preview_mode", "raw")
+        )
+
+    def is_preview_toolbar_enabled(self):
+        """Return True when top response toggles use the full switch toolbar."""
+        settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
+        return bool(settings.get("show_preview_toolbar", False))
+
+    def _should_format_tables(self):
+        """Format tables unless preview is enabled with destructive 'bordered' style."""
+        if not self.is_response_markdown_enabled():
+            return True
+        return self.markdown_formatter._get_table_style() != "bordered"
+
+    def mark_response_start(self, pos):
+        """Record the start offset of the active agent response body."""
+        if self.current_resp_start is None and self.is_response_markdown_enabled():
+            self.current_resp_start = pos
+
+    def finalize_response_render(self):
+        """Register the completed agent response for Markdown preview or raw toggle."""
+        resp_start = self.current_resp_start
+        self.current_resp_start = None
+        if resp_start is None or not self.is_response_markdown_enabled():
+            return
+        if not self.chat_view:
+            return
+        fmt = self.markdown_formatter
+        if fmt.remaining_text or fmt.table_buffer:
+            format_tables = self._should_format_tables()
+            tail = fmt.format("", flush=True, format_tables=format_tables)
+            tail_tables = fmt.take_html_tables() if format_tables else []
+            if tail:
+                self.chat_view.run_command(
+                    "term_chat_output_append",
+                    {"text": tail, "html_tables": tail_tables, "scroll": False},
+                )
+        region = self.response_phantoms.resolve_region(
+            resp_start, get_input_start(self.chat_view, 0) - 1
+        )
+        if region is None:
+            return
+        md_text = self.chat_view.substr(region)
+        if not md_text or not md_text.strip():
+            return
+        follow = _should_autoscroll(self.chat_view)
+        self.response_phantoms.add(region, md_text)
+        if follow and not self.is_response_preview_default_raw():
+            # Fold clamps y upward; clear CHAT_LAST_Y so follow-up appends stay
+            # attached, then scroll once after async phantom layout finishes.
+            self.chat_view.settings().erase(CHAT_LAST_Y)
+
+            def _scroll_bottom(v=self.chat_view):
+                if v and v.is_valid() and v.settings().get(CHAT_AUTOSCROLL, True):
+                    v.show(v.size())
+                    v.settings().set(CHAT_LAST_Y, v.viewport_position()[1])
+
+            sublime.set_timeout(_scroll_bottom, 50)
+
+    def _open_file_target(self, abs_path, line, column):
+        """Open a resolved file target in the session window."""
+        window = self.chat_view.window() if self.chat_view else None
+        if not window:
+            return
+        if line is not None:
+            encoded = f"{abs_path}:{line}:{column or 0}"
+            window.open_file(encoded, sublime.ENCODED_POSITION)
+        else:
+            window.open_file(abs_path)
+
+    def _handle_response_link(self, href):
+        """Handle clickable links inside rendered response phantoms."""
+        if not href:
+            return
+        target = href[len("toolfile:"):] if href.startswith("toolfile:") else href
+        cwd = self.agent_thread.cwd if self.agent_thread else self.cwd
+        result = _parse_markdown_file_target(target, cwd)
+        if result is None:
+            return
+        abs_path, line, column = result
+        self._open_file_target(abs_path, line, column)
+
     def _get_current_view_width(self):
         view = self.chat_view
         try:
@@ -1604,20 +1712,40 @@ class ChatSession:
 
     def append_markdown(self, text, flush=False, is_tool=False):
         """Format and append Markdown content to the chat view."""
+        mark_resp_start = False
         if self.pending_response_separator and text:
             self.pending_response_separator = False
+            mark_resp_start = True
             clean = text.lstrip("\r\n")
-            text = f"{AGENT_SEPARATOR}\n\n{clean}" if clean else f"{AGENT_SEPARATOR}\n\n"
-        formatted_text = self.markdown_formatter.format(text, flush=flush)
-        html_tables = self.markdown_formatter.take_html_tables()
-        if formatted_text:
-            sublime.set_timeout(
-                lambda ft=formatted_text, ht=html_tables, it=is_tool: self.chat_view.run_command(
-                    "term_chat_output_append",
-                    {"text": ft, "html_tables": ht, "is_tool": it},
-                ),
-                0,
+            text = (
+                f"{AGENT_SEPARATOR}\n\n{clean}"
+                if clean else f"{AGENT_SEPARATOR}\n\n"
             )
+        format_tables = self._should_format_tables()
+        formatted_text = self.markdown_formatter.format(
+            text or "", flush=flush, format_tables=format_tables
+        )
+        html_tables = (
+            self.markdown_formatter.take_html_tables() if format_tables else []
+        )
+        if formatted_text:
+            def _append(
+                ft=formatted_text,
+                ht=html_tables,
+                it=is_tool,
+                ms=mark_resp_start,
+            ):
+                self.chat_view.run_command(
+                    "term_chat_output_append",
+                    {
+                        "text": ft,
+                        "html_tables": ht,
+                        "is_tool": it,
+                        "mark_resp_start": ms,
+                    },
+                )
+
+            sublime.set_timeout(_append, 0)
 
     @staticmethod
     def get_view_session_id(view):
@@ -1836,6 +1964,8 @@ class ChatSession:
         self.loading_animation.stop()
         self.notice_phantom.clear()
         self.token_summary_phantom.clear()
+        self.current_resp_start = None
+        self.response_phantoms.clear()
         self.model_phantom.set_running(False)
         self.model_phantom.clear()
         self.input_marker.clear()
@@ -1875,6 +2005,7 @@ class ChatSession:
         """Start animation and send to agent."""
         self.rewind_confirm_panel.clear()
         self.token_summary_phantom.clear()
+        self.finalize_response_render()
         if not self.agent_thread:
             self.chat_view.run_command("term_chat_output_append",
                 {"text": f"\n\n⚠️ Error: No agent CLI found.\n\n"})
@@ -1895,6 +2026,7 @@ class ChatSession:
     def steer(self, text, proceed_plan=False):
         """Send steering message to agent."""
         self.token_summary_phantom.clear()
+        self.finalize_response_render()
         if self.agent_thread:
             self.has_sent_message = True
             self.pending_response_separator = True
@@ -1912,6 +2044,7 @@ class ChatSession:
 
     def show_file_changes_artifact(self):
         """Append the collapsed file changes artifact for the finished turn."""
+        self.finalize_response_render()
         self.artifact.show()
         if self.has_sent_message and self.token_usage:
             self.token_summary_phantom.show(self.token_usage)
@@ -2091,7 +2224,8 @@ class ChatSession:
         self._redraw_prompt_highlights()
 
         self.artifact.truncate(cut_point)
-        self.table_phantoms.truncate(cut_point)
+        self.current_resp_start = None
+        self.response_phantoms.truncate(cut_point)
         self.token_summary_phantom.clear()
 
 
@@ -2122,6 +2256,8 @@ class ChatSession:
         self.stop_loading()
         self.token_usage = None
         self.token_summary_phantom.clear()
+        self.current_resp_start = None
+        self.response_phantoms.clear()
         self.clear_prompt_highlights()
         self.artifact.clear()
         self.session_allow_all = False
@@ -2144,6 +2280,8 @@ class ChatSession:
         self.stop_loading()
         self.token_usage = None
         self.token_summary_phantom.clear()
+        self.current_resp_start = None
+        self.response_phantoms.clear()
         self.session_allow_all = False
         self.has_sent_message = False
         # Clear stale models and session_id from previous agent
@@ -2263,11 +2401,13 @@ class ChatSession:
                     "term_chat_output_append", {"text": "\n\n[reconnecting agent...]\n\n"}
                 )
 
-    def _replay_prompt(self, prompt_text, user_message_uuid=None):
+    def _replay_prompt(self, prompt_text, user_message_uuid=None, scroll=True):
         """Append a previously-submitted prompt with gutter highlight, as if the user had just sent it."""
         text = f"{PROMPT_PREFIX}{prompt_text}\n"
         pos_before = get_input_start(self.chat_view, 0) - 1
-        self.chat_view.run_command("term_chat_output_append", {"text": text})
+        self.chat_view.run_command(
+            "term_chat_output_append", {"text": text, "scroll": scroll}
+        )
         pos_after = get_input_start(self.chat_view, 0) - 1
         region_start = pos_before + len(PROMPT_PREFIX)
         region_end = pos_after - 1  # exclude trailing \n
@@ -2336,27 +2476,60 @@ class ChatSession:
         self.chat_view.settings().set(CHAT_AUTOSCROLL, True)
         self.chat_view.settings().erase(CHAT_LAST_Y)
 
-        self.chat_view.run_command("term_chat_output_append",
-            {"text": f"\n[Resuming session for {agent}]\n\n"})
+        self.chat_view.run_command(
+            "term_chat_output_append",
+            {"text": f"\n[Resuming session for {agent}]\n\n", "scroll": False},
+        )
 
+        md_enabled = self.is_response_markdown_enabled()
         for turn in (session_info or {}).get("turns", []):
-            if turn.get("prompt"):
+            has_prompt = bool(turn.get("prompt"))
+            if has_prompt:
                 self._replay_prompt(
                     turn["prompt"],
                     user_message_uuid=turn.get("user_message_id"),
+                    scroll=False,
                 )
                 if turn.get("response"):
                     self.chat_view.run_command(
-                        "term_chat_output_append", {"text": f"\n{AGENT_SEPARATOR}\n\n"}
+                        "term_chat_output_append",
+                        {"text": f"\n{AGENT_SEPARATOR}\n\n", "scroll": False},
                     )
             if turn.get("response"):
+                if md_enabled:
+                    resp_start = (
+                        get_input_start(self.chat_view, 0) - 3
+                        if has_prompt
+                        else get_input_start(self.chat_view, 0) - 1
+                    )
                 formatter = self.markdown_formatter
+                formatter.reset()
+                format_tables = self._should_format_tables()
                 response = formatter.format(
-                    turn["response"] + "\n\n\n", flush=True)
+                    turn["response"] + "\n\n\n",
+                    flush=True,
+                    format_tables=format_tables,
+                )
+                html_tables = (
+                    formatter.take_html_tables() if format_tables else []
+                )
                 self.chat_view.run_command("term_chat_output_append", {
                     "text": response,
-                    "html_tables": formatter.take_html_tables(),
+                    "html_tables": html_tables,
+                    "scroll": False,
                 })
+                if md_enabled:
+                    region = self.response_phantoms.resolve_region(
+                        resp_start, get_input_start(self.chat_view, 0) - 1
+                    )
+                    if region is not None:
+                        md_text = self.chat_view.substr(region)
+                        if md_text and md_text.strip():
+                            # Keep resumed history unfolded in raw mode so initial
+                            # resume avoids heavy mdpopups/fold layout cost.
+                            self.response_phantoms.add(
+                                region, md_text, raw_mode=True
+                            )
 
         if session_info and session_info.get("mtime"):
             dt = datetime.datetime.fromtimestamp(session_info["mtime"]).strftime("%Y-%m-%d %H:%M")
@@ -2567,6 +2740,8 @@ class TermChatSendInputCommand(sublime_plugin.TextCommand):
         if not user_input:
             return
 
+        session.finalize_response_render()
+
         if sublime.platform() == "osx":
             sublime.status_message("Sending... (Cmd+Esc to stop)")
         else:
@@ -2642,6 +2817,69 @@ class TermChatHistoryDownCommand(sublime_plugin.TextCommand):
         self.view.sel().add(sublime.Region(self.view.size()))
         self.view.show(self.view.size())
 
+
+class TermChatTogglePreviewCommand(sublime_plugin.TextCommand):
+    """Toggle Markdown preview/raw mode for the response in viewport or at cursor."""
+
+    def _resolve_cursor_target(self, entries, point, input_start=None):
+        """Fallback cursor-based resolution when layout geometry is unavailable."""
+        if point is not None:
+            if input_start is not None and point >= input_start:
+                return (entries[-1][0], False)
+            for key, raw_mode, reg in entries:
+                line_begin = self.view.line(reg.begin()).begin()
+                line_end = self.view.line(reg.end()).end()
+                if point <= line_end:
+                    if point >= line_begin and raw_mode:
+                        is_top = (point - line_begin) <= (line_end - point)
+                        return (key, is_top)
+                    return (key, True)
+        return (entries[-1][0], False)
+
+    def _resolve_visible_cursor_target(self, entries, point, input_start=None):
+        """Resolve target when the cursor is visible in the viewport."""
+        if point is None:
+            return None
+        if input_start is not None and point >= input_start:
+            return (entries[-1][0], False)
+        for key, raw_mode, reg in entries:
+            line_begin = self.view.line(reg.begin()).begin()
+            line_end = self.view.line(reg.end()).end()
+            if line_begin <= point <= line_end:
+                is_top = (point - line_begin) <= (line_end - point) if raw_mode else True
+                return (key, is_top)
+        return None
+
+    def run(self, edit, scope="auto"):
+        session = chatview_sessions.get(self.view.id())
+        if not session:
+            return
+        if scope == "all":
+            session.response_phantoms.toggle_all()
+            return
+        entries = session.response_phantoms.active_entries()
+        if not entries:
+            return
+        sel = self.view.sel()
+        point = sel[0].begin() if sel else None
+        input_start = (
+            input_editable_start(self.view)
+            if self.view.settings().has(CHAT_INPUT_START)
+            else None
+        )
+        cursor_visible = session.response_phantoms.is_point_in_viewport(point)
+        if cursor_visible is None:
+            target = self._resolve_cursor_target(entries, point, input_start)
+        else:
+            target = (
+                self._resolve_visible_cursor_target(entries, point, input_start)
+                if cursor_visible
+                else None
+            )
+            if target is None:
+                target = session.response_phantoms.viewport_target()
+        if target is not None:
+            session.response_phantoms.toggle_entry(target[0], is_top=target[1])
 
 
 class ChatViewListener(sublime_plugin.EventListener):
@@ -3003,27 +3241,33 @@ class TermChatRewindTruncateCommand(sublime_plugin.TextCommand):
             session.input_marker.update()
 
 
+def _should_autoscroll(view):
+    """Return True when streaming or finalized output should follow the bottom."""
+    _, y = view.viewport_position()
+    settings = view.settings()
+    last_y = settings.get(CHAT_LAST_Y)
+    autoscroll = settings.get(CHAT_AUTOSCROLL, True)
+
+    # 1. Upward motion detection: user actively scrolling up disengages follow.
+    # A small threshold (~3px) filters layout jitter.
+    scroll_up_threshold = 3.0
+    if last_y is not None and (y < last_y - scroll_up_threshold):
+        settings.set(CHAT_AUTOSCROLL, False)
+        return False
+
+    # 2. If detached, re-engage only when user scrolls back to the bottom.
+    if not autoscroll and view.visible_region().end() >= view.size():
+        settings.set(CHAT_AUTOSCROLL, True)
+        return True
+
+    return autoscroll
+
+
 class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
 
     def _should_follow(self):
         """Determine if streaming output should auto-scroll the viewport."""
-        _, y = self.view.viewport_position()
-        last_y = self.view.settings().get(CHAT_LAST_Y)
-        autoscroll = self.view.settings().get(CHAT_AUTOSCROLL, True)
-
-        # 1. Upward motion detection: user actively scrolling up disengages follow.
-        # A small threshold (~3px) filters layout jitter
-        scroll_up_threshold = 3.0
-        if last_y is not None and (y < last_y - scroll_up_threshold):
-            self.view.settings().set(CHAT_AUTOSCROLL, False)
-            return False
-
-        # 2. If detached, re-engage only when user scrolls back to the bottom
-        if not autoscroll and self.view.visible_region().end() >= self.view.size():
-            self.view.settings().set(CHAT_AUTOSCROLL, True)
-            return True
-
-        return autoscroll
+        return _should_autoscroll(self.view)
 
     def _update_scroll(self, follow):
         """Update viewport position and track y coordinate for direction sensing."""
@@ -3039,27 +3283,42 @@ class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
             _, y = self.view.viewport_position()
             self.view.settings().set(CHAT_LAST_Y, y)
 
-    def run(self, edit, text, html_tables=None, is_tool=False):
-        follow = self._should_follow()
+    def run(
+        self,
+        edit,
+        text,
+        html_tables=None,
+        is_tool=False,
+        mark_resp_start=False,
+        scroll=True,
+    ):
+        follow = self._should_follow() if scroll else False
 
         insert_at = get_input_start(self.view, 0) - 1
         inserted = self.view.insert(edit, insert_at, text)
         # The anchor region shifts with the insert; re-set to keep the
         # settings value in sync (and re-anchor if the anchor was missing).
         set_input_start(self.view, insert_at + inserted + 1)
-        if html_tables:
-            session = chatview_sessions.get(self.view.id())
-            if session:
-                for table in html_tables:
-                    start = insert_at + table["start"]
-                    end = insert_at + table["end"]
-                    session.table_phantoms.add(
-                        sublime.Region(start, end), table["html"])
+        session = chatview_sessions.get(self.view.id())
+        if mark_resp_start and session:
+            sep_idx = text.find(AGENT_SEPARATOR)
+            start_pos = (
+                insert_at + sep_idx + len(AGENT_SEPARATOR)
+                if sep_idx >= 0
+                else insert_at
+            )
+            session.mark_response_start(start_pos)
+        if html_tables and session:
+            for table in html_tables:
+                start = insert_at + table["start"]
+                end = insert_at + table["end"]
+                session.table_phantoms.add(
+                    sublime.Region(start, end), table["html"])
 
         settings = sublime.load_settings(f"{PACKAGE_NAME}.sublime-settings")
         diff_folds = extract_diff_fold_ranges(
             text,
-            settings.get("diff_fold_limit", 15),
+            settings.get("diff_fold_limit", 200),
             preview_lines=settings.get("diff_preview_lines", 5),
         )
         for start, end in diff_folds:
@@ -3068,7 +3327,8 @@ class TermChatOutputAppendCommand(sublime_plugin.TextCommand):
 
         if not is_tool:
             quick_popup_manager.append(self.view.id(), text)
-        self._update_scroll(follow)
+        if scroll:
+            self._update_scroll(follow)
 
 
 class TermChatInputPromptCommand(sublime_plugin.TextCommand):
@@ -3558,13 +3818,15 @@ class TermChatInterruptCommand(sublime_plugin.WindowCommand):
                     session.agent_thread.loop
                 )
                 session.model_phantom.set_stopping(True)
-                sublime.set_timeout(
-                    lambda: session.chat_view.run_command(
+
+                def _append_interrupt_notice(target=session):
+                    target.finalize_response_render()
+                    target.chat_view.run_command(
                         "term_chat_output_append",
-                        {"text": "\n■ Conversation interrupted\n"}
-                    ),
-                    1000
-                )
+                        {"text": "\n■ Conversation interrupted\n"},
+                    )
+
+                sublime.set_timeout(_append_interrupt_notice, 1000)
                 sublime.status_message("Interrupting agent")
                 LOG.info(f"Interrupt conversation for view {session.chat_view.id()}")
             except Exception as e:
@@ -4204,6 +4466,7 @@ class TermChatImplementPlanCommand(sublime_plugin.WindowCommand):
         if session:
             sublime.status_message("Implementing plan...")
             target_vid = session.chat_view.id()
+            session.finalize_response_render()
 
             # Display implementation prompt in chat history with gutter highlight
             session._replay_prompt("Implement the plan.")

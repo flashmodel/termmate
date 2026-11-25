@@ -21,6 +21,19 @@
     // If false, the agent only has access to the agent working directory(cwd).
     "share_workspace_folders": true,
 
+    // Enable Markdown preview and the raw/preview toggle for completed agent responses,
+    // while keeping user prompts and the input area as plain text.
+    "enable_markdown_preview": true,
+
+    // Initial display mode for agent responses when "enable_markdown_preview" is true:
+    //   "raw"     — show unfolded raw Markdown with a raw/preview toggle
+    //   "preview" — fold raw Markdown and show the rendered Markdown preview
+    "markdown_preview_mode": "raw",
+
+    // Show the full "raw | preview" pill toolbar above each response when
+    // "enable_markdown_preview" is true; false uses subtle icon toggles only.
+    "show_preview_toolbar": false,
+
     // How markdown tables are rendered in the chat view.
     //   "bordered" — draw tables with horizontal border lines and
     //                space-aligned columns:
